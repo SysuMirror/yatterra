@@ -38,7 +38,27 @@ sudo journalctl -u yatterra-web -n 30 --no-pager
 | 主机指标 | `host_health.py` | 返回字段被前端和 insight 直接读，**加字段要同步改消费方** |
 | 多主机监控 | `fleet_monitor.py` | 采样由独立 systemd 服务跑，不在 web 进程内 |
 | 权限 | `users.py` | `ROLE_PERMS` 决定角色→权限；`can_pod` 决定 Pod 访问 |
-| 审计 | `audit.py` | 所有写操作都应 `audit.record(...)` |
+| 审计 | `audit.py` | 所有写操作都应 `audit.record(...)`；子系统动作传 `module=`（见下） |
+
+## 审计归属（`audit.record`）
+
+每个模块用自己的角色记账，便于追溯：
+
+```python
+# 用户直接触发的动作 —— actor 就是操作人（自动解析 Bearer/session）
+audit.record("api_proxy_add", detail=f"{sub}:{port}", actor=current_username() or "unknown")
+
+# 子系统/共享模块代表用户做的事 —— 用 module=
+audit.record("proxy_add", detail=f"{sub}:{port}", module="proxy_map")
+# → {"action":"proxy_add","actor":"proxy_map","detail":"...:23011 by=mony"}
+```
+
+`module=` 会把 `actor` 设成模块名（`proxy_map` / `minio_svc` / `db_svc` / `deploys`），
+并把解析出的真实操作人追加到 `detail` 的 `by=<user>`。这样审计里既能看到
+「哪个子系统做的」，也能看到「谁触发的」。
+
+**不要**再写 `actor="teacher"` 这类假用户名 —— 它既不指向真实用户，也丢失了
+子系统信息。后台任务（无请求上下文）解析到 `system`，用 `module=` 仍能标出模块。
 
 ## Agent 提示词（重要）
 

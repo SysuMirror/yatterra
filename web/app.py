@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Student platform management GUI."""
+"""Platform management GUI."""
 import os, secrets, time, pty, struct, fcntl, termios, threading, subprocess, json, shlex, re
 shlex_quote = shlex.quote
 from datetime import timedelta

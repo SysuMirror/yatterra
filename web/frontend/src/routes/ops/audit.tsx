@@ -20,6 +20,9 @@ import { formatDatetime } from '@/lib/format'
 
 const ACTION_COLORS = ['#0a84ff', '#ff9f0a', '#30d158', '#ff453a', '#bf5af2', '#64d2ff', '#ff6482', '#ac8e68']
 
+/** Actors that are subsystems rather than people (audit.record(module=...)). */
+const MODULE_ACTORS = new Set(['proxy_map', 'minio_svc', 'db_svc', 'deploys', 'scheduler', 'platform', 'webhook', 'app', 'agent', 'harness', 'subagent', 'system'])
+
 const LIMIT_OPTIONS = [
   { value: '50', label: '最近 50' },
   { value: '100', label: '最近 100' },
@@ -259,7 +262,18 @@ export default function OpsAudit() {
             { key: 'time', title: '时间', sortable: true, width: '180px', render: (r: any) => (
               <span className="text-xs text-muted">{formatDatetime(r.ts || r.time)}</span>
             )},
-            { key: 'actor', title: '操作者', sortable: true, render: (r: any) => <span className="font-medium">{r.actor || r.user}</span> },
+            { key: 'actor', title: '操作者 / 模块', sortable: true, render: (r: any) => {
+              const a = r.actor || r.user || '—'
+              // Subsystem entries carry the module name as actor and put the
+              // real operator in detail as `by=<user>`; render them distinctly.
+              const isModule = MODULE_ACTORS.has(a)
+              return (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="font-medium">{a}</span>
+                  {isModule && <Badge variant="muted" className="text-[10px]">模块</Badge>}
+                </span>
+              )
+            }},
             { key: 'action', title: '操作', render: (r: any) => {
               const a = r.action || r.type
               return <Badge variant={actionVariant(a)}>{a}</Badge>

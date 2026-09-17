@@ -306,7 +306,7 @@ export default function InfraStorage() {
         )}
       </Card>
 
-      {/* Student Python Example */}
+      {/* Python connection example */}
       {data?.status?.deployed && (
         <Card padding="lg">
           <h2 className="text-sm font-semibold mb-3">Python 连接示例</h2>

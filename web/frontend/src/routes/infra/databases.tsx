@@ -38,7 +38,7 @@ const FRP_ENDPOINTS = [
   { label: 'Qdrant gRPC', value: '127.0.0.1:25034' },
 ]
 
-const STUDENT_EXAMPLE = `# MySQL (pip install --break-system-packages pymysql)
+const CONN_EXAMPLE = `# MySQL (pip install --break-system-packages pymysql)
 import pymysql
 db = pymysql.connect(host="mysql.platform-infra.svc.cluster.local", port=3306,
                      user="管理员发的用户", password="管理员发的密码",
@@ -266,7 +266,7 @@ export default function InfraDatabases() {
         </Card>
       )}
 
-      {/* Student connection examples */}
+      {/* Connection examples */}
       {anyReady && (
         <Card padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
@@ -274,7 +274,7 @@ export default function InfraDatabases() {
             <h2 className="text-sm font-semibold">连接示例</h2>
           </div>
           <pre className="bg-[#3a3329] text-[#d9d2c8] p-3 rounded-lg text-xs overflow-auto">
-            <code>{STUDENT_EXAMPLE}</code>
+            <code>{CONN_EXAMPLE}</code>
           </pre>
         </Card>
       )}

@@ -18,12 +18,13 @@ cd /opt/yatterra/image && sudo bash build.sh
 
 ## 改镜像
 
-**改 `build.sh`**，不要改 Dockerfile —— 见 README 的「两份来源不一致」。
+**改 `build.sh`**（Dockerfile 只是等价参考写法，两边要对齐）。
 
 - 加软件：在 `build.sh` 的 apt install 列表里加。
 - 改用户/权限：`useradd -m -s /bin/bash -G sudo cloud` 那段。
 - 改 sshd：`sed -i` 那几行。
-- 改启动行为：entrypoint heredoc。
+- 改**容器启动行为**：改 `web/groups.py` 的 `INIT_SCRIPT`，**不是**这里的
+  `entrypoint.sh` —— Pod manifest 的 `command:` 会覆盖镜像 ENTRYPOINT。
 
 ## 生效方式
 
@@ -39,7 +40,9 @@ kubectl -n students rollout restart deploy/group-<name>
 ## 坑
 
 - 用户必须是 **`cloud`**，uid 1001。平台代码（`groups.py` 的 hostPath chown、
-  `agent.py` 的 `su -l cloud`、SSH 凭证）全都硬编码这个名字。
+  `agent.py` 的 `su -l cloud`、SSH 凭证）全都硬编码这个名字。名字/uid 可通过
+  `YATTERRA_CLOUD_USER` / `YATTERRA_CLOUD_UID` 覆盖，但镜像里也得同步改。
+- 密码环境变量是 **`CLOUD_PASSWORD`**（旧名 `STUDENT_PASSWORD` 仍兼容）。
 - `entrypoint.sh` 里 `set -e` + 前台 `sshd -D`：sshd 挂了容器就退出，
   这正是 Pod 自愈依赖的信号。
 - 镜像导入 k3s 用的是 `k3s ctr images import`（containerd），不是 docker daemon。
