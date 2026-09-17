@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a84ff" />
+    <meta name="description" content="sseinfra — 云基础设施平台" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="sseinfra" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="application-name" content="sseinfra" />
+    <meta name="msapplication-TileColor" content="#0a84ff" />
+    <meta name="msapplication-tooltip" content="sseinfra" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="512x512" href="/icons/icon-512.png" />
+    <title>sseinfra</title>
+  </head>
+  <body style="touch-action:pan-x pan-y;overscroll-behavior:none">
+    <div id="root">
+      <div id="boot-msg" style="padding:40px;font-family:system-ui;color:#86868b">
+        Loading SPA…
+      </div>
+    </div>
+    <script>
+      // Inline diagnostic — runs before React, visible even if JS bundle fails
+      window.__SPA_DIAG = [];
+      window.__SPA_DIAG.push('inline-script OK ' + new Date().toISOString());
+      window.addEventListener('error', function(e) {
+        window.__SPA_DIAG.push('ERROR: ' + e.message + ' at ' + e.filename + ':' + e.lineno);
+        var el = document.getElementById('boot-msg');
+        if (el) el.innerHTML = '<b style="color:#ff453a">⚠ JS Error:</b> ' + e.message +
+          '<br><span style="font-size:12px">' + e.filename + ':' + e.lineno + '</span>';
+      });
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

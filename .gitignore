@@ -1,0 +1,119 @@
+# ============================================================================
+# YatTerra .gitignore — 公开仓库安全基线
+# 原则：凡是「含凭证 / 含用户数据 / 运行时生成 / 可重建」的，一律不入库。
+# ============================================================================
+
+# ── 密钥与凭证 ──────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.conf
+!gunicorn.conf.py
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secret.key
+vapid.json
+db_creds.json
+minio_keys.json
+users.json
+webhook.conf
+llm.conf
+llm_providers.json
+remote_hosts.json
+mcp_servers.json
+agent.conf
+web.conf
+db.conf
+minio.conf
+
+# ── 运行时状态（含用户数据 / 凭证 / 审计流水）────────────────────────────────
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!manifest.webmanifest
+!vapid.example.json
+# 目录级：编排、知识库上传、生成清单
+harnesses/
+harnesses_public/
+kb/uploads/
+kb/uploads-public/
+manifests/*.yaml
+manifests/*.yml
+users.db
+*.db
+*.db.lock
+*.sqlite
+*.sqlite3
+
+# ── 日志 ────────────────────────────────────────────────────────────────────
+*.log
+audit.log
+*_loop.log
+pressure_writer.log
+priority_kill.log
+
+# ── 备份 / 临时 / 编辑器残留 ────────────────────────────────────────────────
+*.bak
+*.bak.*
+*.bak-*
+*.backup
+*.backup.*
+*.audit-backup
+*.orig
+*.rej
+*.tmp
+*.swp
+*~
+.#*
+\#*#
+.spa-staging/
+web/.spa-staging/
+.spa.publish.lock
+.DS_Store
+Thumbs.db
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Node / 前端 ─────────────────────────────────────────────────────────────
+node_modules/
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+web/frontend/.env
+web/frontend/.env.*
+!web/frontend/.env.example
+
+# ── 构建产物（由 npm run build:stage 生成，不入库）────────────────────────────
+web/static/spa/
+web/static/icons
+web/static/vendor/
+web/static/sw.js
+web/static/manifest.webmanifest
+web/static/offline.html
+
+# ── Kubernetes / 集群凭证 ───────────────────────────────────────────────────
+.kube/
+kubeconfig
+*.kubeconfig
+k3s.yaml
+
+# ── 其它 ────────────────────────────────────────────────────────────────────
+image/rootfs/
+*.iso
+*.img

@@ -1,0 +1,22 @@
+[Unit]
+Description=YatTerra fleet monitoring sampler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sse
+Group=sse
+WorkingDirectory=/opt/yatterra/web
+Environment=YATTERRA_FLEET_DB=/opt/yatterra/web/fleet_metrics.db
+ExecStart=/usr/bin/python3 /opt/yatterra/web/fleet_sampler.py --interval 15
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=35
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

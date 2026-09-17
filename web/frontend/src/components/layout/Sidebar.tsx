@@ -3,7 +3,7 @@ import { NavLink, Link, useLocation } from 'react-router'
 import { motion, AnimatePresence, useMotionValue, animate } from 'framer-motion'
 import { useDrag } from '@use-gesture/react'
 import {
-  LayoutDashboard, Box, Server, HardDrive, Database, Globe,
+  LayoutDashboard, Box, Server, HardDrive, Database, Globe, Monitor, Network,
   Workflow, Plug, Bot, ShieldCheck, FolderOpen, Users, User,
   BookOpen, Swords, ChevronLeft, ChevronRight, X,
 } from 'lucide-react'
@@ -11,11 +11,15 @@ import { useSidebarStore } from '@/stores/sidebar'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 import { cn } from '@/lib/cn'
 import { haptic } from '@/lib/haptic'
+import { motionBind } from '@/lib/gesture'
+
+import { useAuth } from '@/hooks/useAuth'
 
 interface NavItem {
   to: string
   icon: React.ReactNode
   label: string
+  perm?: string  // required permission; undefined = visible to all logged-in users
 }
 
 interface NavGroup {
@@ -28,53 +32,61 @@ const navGroups: NavGroup[] = [
   {
     label: '',
     items: [
-      { to: '/', icon: <LayoutDashboard size={18} />, label: '概览' },
-      { to: '/pods', icon: <Box size={18} />, label: 'Pod' },
+      { to: '/', icon: <LayoutDashboard size={18} />, label: '概览', perm: 'group.view' },
+      { to: '/pods', icon: <Box size={18} />, label: 'Pod', perm: 'group.view' },
     ],
   },
   {
     label: '基础设施',
     to: '/infra',
     items: [
-      { to: '/infra/host', icon: <Server size={18} />, label: '主机' },
-      { to: '/infra/storage', icon: <HardDrive size={18} />, label: '存储' },
-      { to: '/infra/databases', icon: <Database size={18} />, label: '数据库' },
-      { to: '/infra/proxy', icon: <Globe size={18} />, label: '子域名' },
+      { to: '/infra/host', icon: <Server size={18} />, label: '主机', perm: 'infra.host' },
+      { to: '/infra/fleet', icon: <Network size={18} />, label: '集群', perm: 'infra.host' },
+      { to: '/infra/gpu', icon: <Monitor size={18} />, label: 'GPU', perm: 'infra.host' },
+      { to: '/infra/storage', icon: <HardDrive size={18} />, label: '存储', perm: 'infra.storage.read' },
+      { to: '/infra/databases', icon: <Database size={18} />, label: '数据库', perm: 'infra.db.read' },
+      { to: '/infra/proxy', icon: <Globe size={18} />, label: '子域名', perm: 'infra.proxy' },
     ],
   },
   {
     label: '开发',
     to: '/dev',
     items: [
-      { to: '/dev/harness', icon: <Workflow size={18} />, label: '编排' },
-      { to: '/dev/mcp', icon: <Plug size={18} />, label: 'MCP' },
-      { to: '/dev/llm', icon: <Bot size={18} />, label: 'LLM' },
+      { to: '/dev/harness', icon: <Workflow size={18} />, label: '编排', perm: 'dev.harness' },
+      { to: '/dev/mcp', icon: <Plug size={18} />, label: 'MCP', perm: 'dev.mcp' },
+      { to: '/dev/llm', icon: <Bot size={18} />, label: 'LLM', perm: 'dev.llm' },
     ],
   },
   {
     label: '运维',
     to: '/ops',
     items: [
-      { to: '/ops/audit', icon: <ShieldCheck size={18} />, label: '审计' },
-      { to: '/ops/shared', icon: <FolderOpen size={18} />, label: '共享' },
+      { to: '/ops/audit', icon: <ShieldCheck size={18} />, label: '审计', perm: 'ops.audit' },
+      { to: '/ops/shared', icon: <FolderOpen size={18} />, label: '共享', perm: 'ops.shared.read' },
+      { to: '/threat-map', icon: <Swords size={18} />, label: '攻防', perm: 'ops.threat' },
     ],
   },
   {
     label: '',
     items: [
-      { to: '/users', icon: <Users size={18} />, label: '用户' },
+      { to: '/users', icon: <Users size={18} />, label: '用户', perm: 'admin.users' },
       { to: '/profile', icon: <User size={18} />, label: '个人' },
       { to: '/docs', icon: <BookOpen size={18} />, label: '文档' },
-      { to: '/threat-map', icon: <Swords size={18} />, label: '攻防' },
     ],
   },
 ]
 
 function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const location = useLocation()
+  const { hasPerm } = useAuth()
+  // Permission-filtered nav: drop items the user lacks perms for,
+  // then drop whole groups whose items are all hidden.
+  const visibleGroups = navGroups
+    .map((group) => ({ ...group, items: group.items.filter((i) => !i.perm || hasPerm(i.perm)) }))
+    .filter((group) => group.items.length > 0)
   return (
     <nav className="flex-1 py-3" aria-label="主导航">
-      {navGroups.map((group, gi) => (
+      {visibleGroups.map((group, gi) => (
         <div key={gi}>
           {group.label && (
             <div
@@ -103,10 +115,10 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
                 title={collapsed ? item.label : undefined}
                 className={({ isActive: active }) =>
                   cn(
-                    'flex items-center rounded-lg text-sm font-medium transition-all duration-100',
+                    'flex items-center rounded-md text-sm font-medium transition-all duration-150',
                     collapsed ? 'justify-center mx-2 w-10 h-10' : 'gap-3 mx-2 px-2.5 py-2',
                     active || isActive
-                      ? 'bg-accent/10 text-accent font-semibold'
+                      ? 'bg-accent/10 text-accent font-semibold ring-1 ring-inset ring-accent/10'
                       : 'text-ink-2 hover:bg-black/[0.05] hover:text-ink active:bg-black/[0.08] active:scale-[0.97]',
                   )
                 }
@@ -118,7 +130,7 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
               </NavLink>
             )
           })}
-          {gi < navGroups.length - 1 && group.label && (
+          {gi < visibleGroups.length - 1 && group.label && (
             <div className={cn('mx-4 my-2 h-px bg-black/[0.06] transition-opacity duration-150', collapsed && 'opacity-0')} />
           )}
         </div>
@@ -151,13 +163,13 @@ export default function Sidebar() {
   if (isDesktop) {
     return (
       <motion.aside
-        className="hidden md:flex sticky top-[var(--topbar-h)] h-[calc(100vh-var(--topbar-h))] z-30 flex-col flex-shrink-0 overflow-y-auto overflow-x-hidden"
+        className="hidden md:flex h-full z-[var(--z-chrome)] flex-col flex-shrink-0 overflow-y-auto overflow-x-hidden"
         style={{
-          background: 'rgba(250, 250, 251, 0.92)',
+          background: 'rgba(255, 255, 255, 0.96)',
           backdropFilter: 'blur(var(--blur-sm)) saturate(160%)',
           WebkitBackdropFilter: 'blur(var(--blur-sm)) saturate(160%)',
-          borderRight: '1px solid rgba(0, 0, 0, 0.09)',
-          boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.6)',
+          borderRight: '1px solid var(--line)',
+          boxShadow: '0 8px 24px rgba(15, 23, 42, 0.03)',
         }}
         animate={{ width: collapsed ? 56 : 220 }}
         transition={{ type: 'spring', stiffness: 400, damping: 35 }}
@@ -234,7 +246,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
   return (
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-[60] md:hidden" style={{ pointerEvents: 'auto' }}>
+        <div className="fixed inset-0 z-[var(--z-drawer)] md:hidden" style={{ pointerEvents: 'auto' }}>
           {/* Backdrop */}
           <motion.div
             className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
@@ -262,7 +274,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
             animate={{ x: 0 }}
             exit={{ x: -DRAWER_W }}
             transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-            {...bind()}
+            {...motionBind(bind())}
           >
             <div className="flex items-center justify-between h-12 px-4 border-b border-black/[0.08] flex-shrink-0">
               <span className="text-sm font-bold tracking-tight">sseinfra</span>

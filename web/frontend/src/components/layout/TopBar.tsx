@@ -18,26 +18,32 @@ export default function TopBar() {
   const [profileOpen, setProfileOpen] = useState(false)
   const notifRef = useRef<HTMLButtonElement>(null)
   const avatarRef = useRef<HTMLButtonElement>(null)
+  // Store position in a ref so the dropdown reads it synchronously on mount
+  const menuPosRef = useRef({ top: 0, right: 0 })
+  const notifPosRef = useRef({ top: 0, right: 0 })
+  // Also keep state to trigger re-renders when position changes (resize)
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
   const [notifPos, setNotifPos] = useState({ top: 0, right: 0 })
 
-  // Calculate position from a button ref — called synchronously on click
   const calcPos = useCallback((ref: React.RefObject<HTMLButtonElement | null>) => {
     if (ref.current) {
       const rect = ref.current.getBoundingClientRect()
       return { top: rect.bottom + 8, right: window.innerWidth - rect.right }
     }
-    return { top: 0, right: 0 }
+    return { top: 60, right: 8 } // fallback: below typical topbar
   }, [])
 
-  // Open handlers: compute position FIRST, then open
   const openNotif = useCallback(() => {
-    if (isDesktop) setNotifPos(calcPos(notifRef))
+    const pos = calcPos(notifRef)
+    notifPosRef.current = pos
+    if (isDesktop) setNotifPos(pos)
     setNotifOpen((v) => !v)
   }, [isDesktop, calcPos])
 
   const openProfile = useCallback(() => {
-    if (isDesktop) setMenuPos(calcPos(avatarRef))
+    const pos = calcPos(avatarRef)
+    menuPosRef.current = pos
+    if (isDesktop) setMenuPos(pos)
     setProfileOpen((v) => !v)
   }, [isDesktop, calcPos])
 
@@ -45,8 +51,16 @@ export default function TopBar() {
   useEffect(() => {
     if (!profileOpen && !notifOpen) return
     const onResize = () => {
-      if (profileOpen) setMenuPos(calcPos(avatarRef))
-      if (notifOpen) setNotifPos(calcPos(notifRef))
+      if (profileOpen) {
+        const pos = calcPos(avatarRef)
+        menuPosRef.current = pos
+        setMenuPos(pos)
+      }
+      if (notifOpen) {
+        const pos = calcPos(notifRef)
+        notifPosRef.current = pos
+        setNotifPos(pos)
+      }
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
@@ -86,15 +100,15 @@ export default function TopBar() {
   return (
     <>
       <header
-        className="fixed top-0 left-0 right-0 z-50 flex items-center px-3 sm:px-4"
+        className="fixed top-0 left-0 right-0 z-[var(--z-chrome)] flex items-center px-3 sm:px-4"
         style={{
           paddingTop: 'var(--sat)',
           minHeight: 'var(--topbar-h)',
           height: 'var(--topbar-h)',
-          background: 'var(--surface-4)',
+          background: 'rgba(23, 33, 43, 0.96)',
           backdropFilter: 'var(--blur-lg)',
           WebkitBackdropFilter: 'var(--blur-lg)',
-          borderBottom: '0.5px solid rgba(255,255,255,0.08)',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
         }}
       >
         {/* Hamburger */}
@@ -111,7 +125,7 @@ export default function TopBar() {
           <span className="text-white font-bold text-sm tracking-tight">sseinfra</span>
         </div>
 
-        <div className="flex items-center gap-2 ml-auto">
+        <div className="flex min-w-0 items-center gap-1.5 ml-auto">
           {/* Notification bell */}
           <button
             ref={notifRef}
@@ -121,11 +135,6 @@ export default function TopBar() {
           >
             <Bell size={20} />
           </button>
-          {!isDesktop && (
-            <Dialog open={notifOpen} onClose={() => setNotifOpen(false)} title="通知">
-              <div className="py-8 text-sm text-muted text-center">暂无通知</div>
-            </Dialog>
-          )}
 
           {/* Avatar button */}
           <button
@@ -138,50 +147,67 @@ export default function TopBar() {
             <span className="text-white/80 text-xs font-bold">{initial}</span>
           </button>
         </div>
-
-        {/* Mobile: bottom sheet */}
-        {!isDesktop && (
-          <Dialog open={profileOpen} onClose={() => setProfileOpen(false)} title="账户">
-            <div className="space-y-1 -mx-4 -mt-2">
-              <div className="px-5 py-4 border-b border-black/[0.06]">
-                <div className="flex items-center gap-3">
-                  <div className="w-11 h-11 rounded-full bg-accent/10 flex items-center justify-center">
-                    <span className="text-accent text-sm font-bold">{initial}</span>
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-ink">{user || '—'}</p>
-                    <p className="text-xs text-muted">{role || 'user'}</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => { haptic('light'); setProfileOpen(false); navigate('/profile') }}
-                className="w-full flex items-center gap-3 px-5 py-3.5 text-sm text-ink-2 hover:bg-black/[0.03] active:bg-black/[0.06] active:scale-[0.98] transition-all text-left"
-              >
-                <User size={16} className="text-muted" />
-                <span className="flex-1">个人管理</span>
-                <ChevronRight size={14} className="text-muted/50" />
-              </button>
-              <button
-                onClick={() => { haptic('heavy'); handleLogout() }}
-                className="w-full flex items-center gap-3 px-5 py-3.5 text-sm text-red-600 hover:bg-red-50 active:bg-red-100 active:scale-[0.98] transition-all text-left"
-              >
-                <LogOut size={16} />
-                <span className="flex-1">退出登录</span>
-              </button>
-            </div>
-          </Dialog>
-        )}
       </header>
 
-      {/* Desktop dropdowns via portal — position computed on click, not in useEffect */}
+      {/* Mobile dialogs — rendered OUTSIDE <header> so their position:fixed
+          isn't trapped by the header's backdrop-filter containing block
+          (which would pin the bottom sheet to the top of the viewport). */}
+      {!isDesktop && (
+        <Dialog open={notifOpen} onClose={() => setNotifOpen(false)} title="通知">
+          <div className="py-8 text-sm text-muted text-center">暂无通知</div>
+        </Dialog>
+      )}
+      {!isDesktop && (
+        <Dialog open={profileOpen} onClose={() => setProfileOpen(false)} title="账户">
+          <div className="space-y-1 -mx-4 -mt-2">
+            <div className="px-5 py-4 border-b border-black/[0.06]">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-full bg-accent/10 flex items-center justify-center">
+                  <span className="text-accent text-sm font-bold">{initial}</span>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-ink">{user || '—'}</p>
+                  <p className="text-xs text-muted">{role || 'user'}</p>
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => { haptic('light'); setProfileOpen(false); navigate('/profile') }}
+              className="w-full flex items-center gap-3 px-5 py-3.5 text-sm text-ink-2 hover:bg-black/[0.03] active:bg-black/[0.06] active:scale-[0.98] transition-all text-left"
+            >
+              <User size={16} className="text-muted" />
+              <span className="flex-1">个人管理</span>
+              <ChevronRight size={14} className="text-muted/50" />
+            </button>
+            <button
+              onClick={() => { haptic('heavy'); handleLogout() }}
+              className="w-full flex items-center gap-3 px-5 py-3.5 text-sm text-red-600 hover:bg-red-50 active:bg-red-100 active:scale-[0.98] transition-all text-left"
+            >
+              <LogOut size={16} />
+              <span className="flex-1">退出登录</span>
+            </button>
+          </div>
+        </Dialog>
+      )}
+
+      {/* Desktop dropdowns via portal — uses a fixed overlay container so
+          position:absolute inside it behaves like fixed but without
+          containing-block pitfalls from backdrop-filter etc. */}
       {createPortal(
-        <>
+        <div
+          id="topbar-dropdown-layer"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 'var(--z-popover)',
+            pointerEvents: (profileOpen || notifOpen) ? undefined : 'none',
+          }}
+        >
           {isDesktop && notifOpen && (
             <div
               id="notif-dropdown"
-              className="fixed z-[60] w-64 rounded-xl bg-white shadow-2 border border-black/[0.06] p-4 text-sm text-ink-2 text-center"
-              style={{ top: notifPos.top, right: notifPos.right }}
+              className="absolute w-64 rounded-xl bg-white shadow-2 border border-black/[0.06] p-4 text-sm text-ink-2 text-center"
+              style={{ top: notifPosRef.current.top, right: notifPosRef.current.right, pointerEvents: 'auto' }}
             >
               暂无通知
             </div>
@@ -190,8 +216,8 @@ export default function TopBar() {
           {isDesktop && profileOpen && (
             <div
               id="profile-dropdown"
-              className="fixed z-[60] w-56 rounded-xl bg-white shadow-2 border border-black/[0.06] overflow-hidden"
-              style={{ top: menuPos.top, right: menuPos.right }}
+              className="absolute w-56 rounded-xl bg-white shadow-2 border border-black/[0.06] overflow-hidden"
+              style={{ top: menuPosRef.current.top, right: menuPosRef.current.right, pointerEvents: 'auto' }}
             >
               <div className="px-4 py-3 border-b border-black/[0.06]">
                 <p className="text-sm font-semibold text-ink truncate">{user || '—'}</p>
@@ -216,7 +242,7 @@ export default function TopBar() {
               </div>
             </div>
           )}
-        </>,
+        </div>,
         document.body,
       )}
     </>

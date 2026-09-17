@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useId } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/cn'
 import { haptic } from '@/lib/haptic'
@@ -22,6 +22,8 @@ interface DropdownProps {
 export function Dropdown({ trigger, items, align = 'right', className }: DropdownProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLDivElement>(null)
+  const menuId = useId()
 
   useEffect(() => {
     if (!open) return
@@ -34,12 +36,14 @@ export function Dropdown({ trigger, items, align = 'right', className }: Dropdow
 
   return (
     <div ref={ref} className={cn('relative inline-flex', className)}>
-      <div onClick={() => { haptic('light'); setOpen(!open) }}>{trigger}</div>
+      <div ref={triggerRef} role="button" tabIndex={0} aria-haspopup="menu" aria-expanded={open} aria-controls={menuId} onClick={() => { haptic('light'); setOpen(!open) }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); haptic('light'); setOpen(!open) } if (e.key === 'Escape' && open) { e.preventDefault(); setOpen(false); triggerRef.current?.focus() } }}>{trigger}</div>
       <AnimatePresence>
         {open && (
           <motion.div
+            id={menuId}
+            role="menu"
             className={cn(
-              'absolute top-full mt-1 py-1 min-w-[180px] rounded-xl border-[0.5px] border-black/[0.06] bg-white/95 backdrop-blur-xl shadow-2 z-50',
+              'absolute top-full mt-1 py-1 min-w-[180px] rounded-xl border-[0.5px] border-black/[0.06] bg-white/95 backdrop-blur-xl shadow-2 z-[var(--z-popover)]',
               align === 'right' ? 'right-0' : 'left-0',
             )}
             style={{ paddingBottom: 'calc(0.25rem + var(--sab, 0px))' }}
@@ -51,6 +55,8 @@ export function Dropdown({ trigger, items, align = 'right', className }: Dropdow
             {items.map((item) => (
               <button
                 key={item.key}
+                type="button"
+                role="menuitem"
                 disabled={item.disabled}
                 onClick={() => { haptic(item.danger ? 'heavy' : 'light'); item.onClick(); setOpen(false) }}
                 className={cn(

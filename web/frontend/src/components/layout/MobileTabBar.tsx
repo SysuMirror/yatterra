@@ -24,7 +24,7 @@ export function MobileTabBar() {
 
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
+      className="fixed bottom-0 left-0 right-0 z-[var(--z-chrome)] md:hidden"
       style={{
         paddingBottom: 'var(--sab)',
         background: 'rgba(250, 250, 251, 0.92)',

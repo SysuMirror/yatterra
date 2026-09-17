@@ -1,0 +1,171 @@
+@import "tailwindcss";
+/* Tailwind v4 does not auto-load JS config files — without this directive
+   every theme utility (bg-ok, text-accent, text-ink, …) silently fails to
+   generate and color classes render as no-ops. */
+@config "../../tailwind.config.ts";
+
+/* ── Console design tokens ── */
+:root {
+  --surface-0: #ffffff;
+  --surface-1: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #f1f5f9;
+  --surface-4: #17212b;
+  --canvas: #f4f6f8;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --ink: #17212b;
+  --ink-soft: #475569;
+  --muted-foreground: #64748b;
+
+  /* Backdrop blur levels */
+  --blur-sm: blur(8px);
+  --blur-md: blur(12px);
+  --blur-lg: blur(16px);
+
+  /* Safe area insets (PWA / notched devices) */
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+
+  /* Layout — topbar includes safe-area so content padding auto-adjusts */
+  --topbar-h: calc(48px + env(safe-area-inset-top, 0px));
+  --sidebar-w: 220px;
+  --sidebar-collapsed-w: 56px;
+  --content-max: 1200px;
+  --mobile-tabbar-h: calc(56px + env(safe-area-inset-bottom, 0px));
+
+  /* ── Stacking scale ──────────────────────────────────────────────
+     One ordered ladder for every overlay. Never hand-pick a z-index:
+     use the matching token so two overlays can't silently tie at the
+     same level (which is how the mobile logout button ended up under
+     the tab bar — both were z-50 and the tab bar won on DOM order).
+       base      page content
+       sticky    in-flow sticky headers
+       edge      left-edge swipe zone
+       fab       floating action buttons
+       chrome    topbar / tab bar / sidebar rail
+       drawer    nav drawer + its backdrop
+       popover   dropdowns, selects, tooltips, context menus
+       modal     dialogs, bottom sheets, slide-in AI panel
+       toast     toasts, update prompts
+       skip      skip-to-content link (a11y, must beat everything) */
+  --z-sticky: 10;
+  --z-edge: 30;
+  --z-fab: 40;
+  --z-chrome: 50;
+  --z-drawer: 60;
+  --z-popover: 80;
+  --z-modal: 90;
+  --z-toast: 100;
+  --z-skip: 110;
+}
+
+/* ── Base ── */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden; /* prevent horizontal overflow from any child */
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "Inter", -apple-system, system-ui, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--ink);
+  line-height: 1.5;
+  height: 100vh;
+  height: 100dvh; /* dynamic viewport height for mobile browser chrome */
+  overflow: hidden; /* lock document — only <main> scrolls */
+  overscroll-behavior: none; /* prevent browser swipe-to-go-back */
+  -webkit-overflow-scrolling: touch;
+  background: var(--canvas);
+}
+
+/* Numeric data aligns in columns */
+.tnum,
+table td.num,
+table th.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shared surface primitive for repeated operational content. */
+.glass-card {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+
+@media (min-width: 769px) {
+  main { overflow-y: auto; height: calc(100dvh - var(--topbar-h)); scroll-padding-top: 16px; }
+}
+
+/* ── Ops HUD (threat globe) ── */
+.hud-blink {
+  animation: hud-blink 1.6s ease-in-out infinite;
+}
+@keyframes hud-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-blink { animation: none; }
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.2); }
+
+/* ── Selection ── */
+::selection { background: rgba(10, 132, 255, 0.2); }
+
+/* ── Focus ring ── */
+:focus-visible {
+  outline: 2px solid #0a84ff;
+  outline-offset: 2px;
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Mobile: tighten page gutters so content keeps breathing room ── */
+@media (max-width: 640px) {
+  body { background: var(--canvas); }
+}
+
+/* ── Mobile touch targets: ensure interactive elements meet 44px minimum ── */
+@media (max-width: 768px) {
+  button,
+  [role="button"],
+  a,
+  summary,
+  select,
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-height: 44px;
+  }
+}
+
+/* ── Touch-action: prevent browser gestures from conflicting with app gestures ── */
+.touch-pan-y {
+  touch-action: pan-y;
+}
+.touch-pan-x {
+  touch-action: pan-x;
+}
+.touch-none {
+  touch-action: none;
+}
