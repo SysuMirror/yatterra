@@ -287,6 +287,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 function QuickAction({ icon, label, desc, to }: { icon: React.ReactNode; label: string; desc: string; to: string }) {
   return (
     <Link
+      data-onboarding-target={`goto-${to}`}
       to={to}
       className="glass-card rounded-2xl p-4 flex items-center gap-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group"
     >

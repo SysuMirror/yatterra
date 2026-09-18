@@ -12,6 +12,7 @@ interface DocHintProps {
   /** Optional tooltip-ish longer text */
   title?: string
   className?: string
+  onboardingTarget?: string
 }
 
 /**
@@ -21,9 +22,13 @@ interface DocHintProps {
  * scrolls it into view — so a hint placed next to a feature lands the user on
  * the exact paragraph that explains it.
  */
-export function DocHint({ section, item = 0, label = '文档', title, className }: DocHintProps) {
+export function DocHint({ section, item = 0, label = '文档', title, className, onboardingTarget }: DocHintProps) {
   return (
     <Link
+      data-onboarding-target={onboardingTarget}
+      data-assistant-control={onboardingTarget === 'page-docs' ? 'page-docs' : undefined}
+      data-assistant-label={onboardingTarget === 'page-docs' ? '当前页面文档' : undefined}
+      data-assistant-actions={onboardingTarget === 'page-docs' ? 'inspect navigate' : undefined}
       to={`/docs?s=${encodeURIComponent(section)}&i=${item}`}
       title={title ?? '查看相关文档'}
       className={cn(

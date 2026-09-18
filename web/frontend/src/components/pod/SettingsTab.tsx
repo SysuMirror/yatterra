@@ -41,7 +41,7 @@ export function SettingsTab({ podName, pod, canManage }: { podName: string; pod:
     <div className="space-y-6">
       {/* Resources */}
       <Card padding="lg">
-        <h3 className="text-sm font-semibold mb-4">资源配置</h3>
+        <h3 data-onboarding-target="pod-resources" className="text-sm font-semibold mb-4">资源配置</h3>
         {canManage ? (
           <>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-xl">
@@ -124,7 +124,7 @@ function EnvCard({ podName, initialEnv, canManage }: { podName: string; initialE
 
   return (
     <Card padding="lg">
-      <h3 className="text-sm font-semibold mb-4">环境变量</h3>
+      <h3 data-onboarding-target="pod-env" className="text-sm font-semibold mb-4">环境变量</h3>
       <div className="space-y-1.5 font-mono text-xs max-h-72 overflow-y-auto overflow-x-auto">
         {Object.entries(env).map(([k, v]) => (
           <div key={k} className="flex items-center gap-2 py-1 group">

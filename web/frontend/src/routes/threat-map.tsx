@@ -146,7 +146,7 @@ export default function ThreatMap() {
     <>
       <PageHeader title="攻防态势" description="实时威胁地图与安全事件" doc={{ section: 'ops', item: 2, label: '威胁地图文档' }}>
         <PageAiAssistant page="threat-map" context={attacks.length > 0 ? `威胁统计: 总攻击 ${stats.total_attacks ?? attacks.length}, 封禁 ${stats.total_banned ?? 0}\n攻击类型: ${[...new Set(attacks.map(a => a.pattern))].join(', ')}\n最近攻击:\n${attacks.slice(0, 15).map(a => `  ${a.ts ?? ''} ${a.ip ?? '?'} (${a.country ?? '?'}/${a.city ?? '?'}) x${a.count ?? 0} ${a.pattern}${a.banned ? ' [已封禁]' : ''}`).join('\n')}` : '暂无威胁数据'} />
-        <Select value={window} onChange={setWindow} options={WINDOWS} className="w-[110px]" />
+        <Select onboardingTarget="threat-window" value={window} onChange={setWindow} options={WINDOWS} className="w-[110px]" />
       </PageHeader>
 
       {/* AI Insight */}
@@ -271,7 +271,7 @@ export default function ThreatMap() {
               <Badge variant="bad">{filtered.length}</Badge>
             </div>
             <div className="w-full sm:w-48">
-              <Select value={patternFilter} onChange={setPatternFilter} options={patternOptions} />
+              <Select onboardingTarget="threat-pattern" value={patternFilter} onChange={setPatternFilter} options={patternOptions} />
             </div>
           </div>
 

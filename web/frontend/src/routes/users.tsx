@@ -100,7 +100,7 @@ export default function Users() {
       <PageHeader title="用户管理" description="系统用户与权限管理" count={users.length ? `${users.length} 人` : undefined} doc={{ section: 'ops', item: 1, label: '用户管理文档' }}>
         {canManage && <>
           <PageAiAssistant page="users" context={users.length > 0 ? `用户总数: ${users.length}, 当前用户: ${data?.current ?? ''}\n${users.map((u: any) => `  ${u.name ?? u.username ?? u} [${u.role ?? '?'}]`).join('\n')}` : '暂无用户数据'} />
-          <Button size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建用户</Button>
+          <Button data-onboarding-target="users-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建用户</Button>
         </>}
       </PageHeader>
 
@@ -199,7 +199,7 @@ export default function Users() {
           <h2 className="text-sm font-semibold flex items-center gap-2">
             <Key size={16} /> API Token
           </h2>
-          <Button size="sm" onClick={() => { setTokenOpen(true); setCreatedToken(''); setTokenDesc('') }}>
+          <Button data-onboarding-target="users-token" size="sm" onClick={() => { setTokenOpen(true); setCreatedToken(''); setTokenDesc('') }}>
             <Plus size={14} /> 创建
           </Button>
         </div>

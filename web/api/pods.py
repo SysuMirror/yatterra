@@ -1040,6 +1040,25 @@ def delete_env(name, key):
 # ═══════════════════════════════════════════════════════════════
 #  Members: list / invite / approve / remove
 # ═══════════════════════════════════════════════════════════════
+@pods_bp.route("/<name>/members/candidates", methods=["GET"])
+@api_pod("owner")
+def member_candidates(name):
+    """Return limited username prefix matches not already attached to this Pod."""
+    prefix = (request.args.get("q", "") or "").strip()
+    if len(prefix) < 2:
+        return jsonify({"items": []})
+    try:
+        limit = min(max(int(request.args.get("limit", 10)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 10
+    pod = g.api_pod
+    excluded = set(pod.get("owners", [])) | set(pod.get("members", []))
+    excluded |= {str(p.get("username", "")) for p in pod.get("pending", []) if isinstance(p, dict)}
+    items = [u for u in users.search_users_prefix(prefix, limit=limit * 2)
+             if u.get("username") not in excluded][:limit]
+    return jsonify({"items": items})
+
+
 @pods_bp.route("/<name>/members", methods=["GET"])
 @api_pod("member")
 def list_members(name):
@@ -1055,7 +1074,7 @@ def list_members(name):
 @api_pod("owner")
 def invite_member(name):
     b = _body()
-    username = b.get("username", "")
+    username = (b.get("username", "") or "").strip()
     if not username:
         return jsonify({"error": "缺少 username"}), 400
     try:
@@ -1071,7 +1090,7 @@ def invite_member(name):
 @api_pod("owner")
 def approve_member(name):
     b = _body()
-    username = b.get("username", "")
+    username = (b.get("username", "") or "").strip()
     approved = b.get("approved", False)
     if not username:
         return jsonify({"error": "缺少 username"}), 400

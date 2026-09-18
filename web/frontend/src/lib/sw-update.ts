@@ -1,56 +1,52 @@
-/**
- * Service Worker manual update check — native SW API, no virtual modules.
- *
- * Flow:
- * 1. checkForUpdate() → forces browser to ask server for new SW
- * 2. New SW found → installs → skipWaiting() (built-in) → activates
- * 3. controllerchange fires → main.tsx listener reloads page
- *
- * If no update: resolves false.
- */
-
+/** User-controlled service worker update flow. */
 export type UpdateStatus = 'idle' | 'checking' | 'found' | 'up-to-date' | 'error'
 
-let _status: UpdateStatus = 'idle'
-let _onChange: ((s: UpdateStatus) => void) | undefined = undefined
+let status: UpdateStatus = 'idle'
+let registration: ServiceWorkerRegistration | null = null
+const listeners = new Set<(status: UpdateStatus) => void>()
 
-export function onStatusChange(fn: (s: UpdateStatus) => void) { _onChange = fn }
-export function getStatus(): UpdateStatus { return _status }
+function setStatus(next: UpdateStatus) {
+  status = next
+  listeners.forEach((listener) => listener(next))
+}
 
-function setStatus(s: UpdateStatus) { _status = s; _onChange?.(s) }
+export function onStatusChange(listener: (status: UpdateStatus) => void) {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+export function getStatus() { return status }
+
+function watchRegistration(reg: ServiceWorkerRegistration) {
+  if (registration === reg) return
+  registration = reg
+  reg.addEventListener('updatefound', () => {
+    const worker = reg.installing
+    if (!worker) return
+    worker.addEventListener('statechange', () => {
+      if (worker.state === 'installed' && navigator.serviceWorker.controller) setStatus('found')
+    })
+  })
+}
 
 export async function checkForUpdate(): Promise<boolean> {
-  if (!('serviceWorker' in navigator)) {
-    setStatus('error')
-    return false
-  }
-
+  if (!('serviceWorker' in navigator)) { setStatus('error'); return false }
   const reg = await navigator.serviceWorker.getRegistration()
-  if (!reg) {
-    setStatus('error')
-    return false
-  }
-
+  if (!reg) { setStatus('error'); return false }
+  watchRegistration(reg)
   setStatus('checking')
-
-  try {
-    // Force the browser to fetch /sw.js from server and compare
-    await reg.update()
-  } catch {
-    setStatus('error')
-    return false
-  }
-
-  // After update(), check if a new SW appeared
-  // reg.installing = new SW being installed
-  // reg.waiting = new SW installed, waiting to activate
-  // If either exists, an update was found
-  if (reg.installing || reg.waiting) {
+  try { await reg.update() } catch { setStatus('error'); return false }
+  if (reg.waiting || reg.installing) {
     setStatus('found')
-    // skipWaiting is already in the SW — controllerchange will auto-reload
     return true
   }
-
   setStatus('up-to-date')
   return false
+}
+
+export async function acceptUpdate(): Promise<void> {
+  const reg = registration || await navigator.serviceWorker.getRegistration()
+  const worker = reg?.waiting
+  if (!worker) return
+  setStatus('checking')
+  worker.postMessage({ type: 'SKIP_WAITING' })
 }

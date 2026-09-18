@@ -208,7 +208,7 @@ function ServiceCard({ icon, title, to, ok, children }: {
   children: React.ReactNode
 }) {
   return (
-    <Link to={to} className="glass-card rounded-2xl p-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group flex flex-col">
+    <Link data-onboarding-target={`goto-${to}`} to={to} className="glass-card rounded-2xl p-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group flex flex-col">
       <div className="flex items-center gap-3 mb-3">
         {icon}
         <span className="text-sm font-semibold">{title}</span>
@@ -223,6 +223,7 @@ function ServiceCard({ icon, title, to, ok, children }: {
 function QuickAction({ icon, label, desc, to }: { icon: React.ReactNode; label: string; desc: string; to: string }) {
   return (
     <Link
+      data-onboarding-target={`goto-${to}`}
       to={to}
       className="glass-card rounded-2xl p-4 flex items-center gap-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group"
     >

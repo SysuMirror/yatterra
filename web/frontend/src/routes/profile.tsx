@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { User, Key, Link, Unlink, RefreshCw, Bell, BellOff, Check } from 'lucide-react'
+import { User, Key, Link, Unlink, RefreshCw, Bell, BellOff, Check, Download, Smartphone } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -15,6 +15,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { checkForUpdate } from '@/lib/sw-update'
 import { isPushSupported, getSubscriptionState, subscribePush, unsubscribePush, type PushState } from '@/lib/push'
+import { usePwaInstall } from '@/lib/pwa-install'
 
 const PROVIDER_COLORS: Record<string, string> = {
   ssemarket: '#0a84ff',
@@ -33,6 +34,7 @@ export default function Profile() {
   const toast = useToastStore((s) => s.add)
   const auth = useAuthStore()
   const qc = useQueryClient()
+  const { canInstall, isInstalled, isIos, promptInstall } = usePwaInstall()
   const [pwOpen, setPwOpen] = useState(false)
   const [oldPw, setOldPw] = useState('')
   const [newPw, setNewPw] = useState('')
@@ -216,18 +218,46 @@ export default function Profile() {
             <h2 className="text-sm font-semibold">修改密码</h2>
             <p className="text-xs text-muted mt-0.5">更新你的登录密码</p>
           </div>
-          <Button variant="secondary" size="sm" onClick={() => setPwOpen(true)}><Key size={14} /> 修改</Button>
+          <Button data-onboarding-target="profile-password" variant="secondary" size="sm" onClick={() => setPwOpen(true)}><Key size={14} /> 修改</Button>
         </div>
       </Card>
 
-      {/* PWA Update */}
+      {/* PWA Install */}
       <Card padding="lg" className="mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold">应用更新</h2>
-            <p className="text-xs text-muted mt-0.5">检查并获取最新版本</p>
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent-light text-accent">
+            <Smartphone size={18} />
           </div>
-          <Button variant="secondary" size="sm" onClick={handleCheckUpdate} disabled={checking}>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold">YatTerra 应用</h2>
+            <p className="mt-0.5 text-xs leading-5 text-muted">
+              {isInstalled
+                ? '应用已安装，可从桌面或主屏幕直接打开；资源管理和终端操作仍需联网。'
+                : isIos
+                  ? '在 Safari 中点击分享 → 添加到主屏幕，即可像应用一样使用。'
+                  : '安装到桌面或主屏幕，通过独立窗口快速打开。资源管理和终端操作仍需联网。'}
+            </p>
+            {isInstalled ? (
+              <p className="mt-2 text-xs font-semibold text-green-600">已安装</p>
+            ) : canInstall ? (
+              <Button className="mt-3" size="sm" onClick={() => { void promptInstall().catch(() => toast({ type: 'error', message: '未能打开安装提示，请通过浏览器菜单安装。' })) }}>
+                <Download size={14} /> 安装应用
+              </Button>
+            ) : (
+              <p className="mt-2 text-xs text-muted">也可以使用浏览器菜单中的“安装应用”或“添加到主屏幕”。</p>
+            )}
+          </div>
+        </div>
+      </Card>
+
+      {/* Version Update */}
+      <Card padding="lg" className="mb-6">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold">版本更新</h2>
+            <p className="mt-0.5 text-xs text-muted">检查并获取最新版本，刷新后即可使用。</p>
+          </div>
+          <Button data-onboarding-target="profile-update" variant="secondary" size="sm" onClick={handleCheckUpdate} disabled={checking}>
             <RefreshCw size={14} className={checking ? 'animate-spin' : ''} />
             {checking ? '检查中…' : '检查更新'}
           </Button>

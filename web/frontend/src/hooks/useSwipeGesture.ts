@@ -34,14 +34,14 @@ export function useSwipeGesture({
   enabled = true,
 }: SwipeGestureOptions): DragHandlers {
   return useDrag(
-    ({ movement: [mx, my], velocity: [vx, vy], direction: [dx, dy], cancel, active }) => {
+    ({ movement: [mx, my], velocity: [vx, vy], direction: [dx, dy], cancel, active, canceled }) => {
       if (!enabled) {
         cancel()
         return
       }
 
       // Only fire on release (not during drag) for discrete swipe actions
-      if (active) return
+      if (active || canceled) return
 
       const absX = Math.abs(mx)
       const absY = Math.abs(my)
@@ -93,16 +93,15 @@ export function useEdgeSwipe({
   enabled?: boolean
 }): DragHandlers {
   return useDrag(
-    ({ movement: [mx], direction: [dx], active, cancel, event }) => {
+    ({ movement: [mx], direction: [dx], active, cancel, initial: [startX], canceled }) => {
       if (!enabled) {
         cancel()
         return
       }
 
-      if (active) return
+      if (active || canceled) return
 
       // Check that the drag started within the edge zone
-      const startX = (event as PointerEvent).clientX
       if (edge === 'left' && startX > edgeWidth) {
         cancel()
         return

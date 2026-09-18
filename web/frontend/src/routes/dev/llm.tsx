@@ -118,7 +118,7 @@ export default function DevLlm() {
     <>
       <PageHeader title="LLM 服务" description="大语言模型服务管理" count={providers?.length ? `${providers.length} 个` : undefined} doc={{ section: 'dev', item: 4, label: 'LLM 文档' }}>
         <PageAiAssistant page="llm" context={providers && providers.length > 0 ? `LLM Providers: ${providers.length} 个\n${providers.map((p: any) => `  ${p.name} [${p.type ?? p.model ?? '?'}] ${p.is_default ? '(默认)' : ''} ${p.enabled === false ? '(禁用)' : ''}`).join('\n')}\n用量: 总Token ${usage?.total_tokens ?? 0}, 费用 ¥${(usage?.total_cost ?? 0).toFixed(2)}` : '暂无 LLM Provider'} />
-        <Button size="sm" onClick={() => setAddOpen(true)}><Plus size={14} /> 添加</Button>
+        <Button data-onboarding-target="llm-add" size="sm" onClick={() => setAddOpen(true)}><Plus size={14} /> 添加</Button>
       </PageHeader>
 
       {/* AI Insight */}
@@ -157,7 +157,7 @@ export default function DevLlm() {
                     <Star size={14} />
                   </Button>
                 )}
-                <Button variant="ghost" size="sm" onClick={() => testMut.mutate(r.id ?? r.name)} aria-label="测试">
+                <Button data-onboarding-target="llm-test" variant="ghost" size="sm" onClick={() => testMut.mutate(r.id ?? r.name)} aria-label="测试">
                   <FlaskConical size={14} />
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => { if (confirm(`删除 Provider ${r.name}?`)) deleteMut.mutate(r.id ?? r.name) }} aria-label="删除">

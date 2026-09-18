@@ -349,6 +349,44 @@ def authenticate(username, password):
     return None
 
 
+def search_users_prefix(prefix, limit=10):
+    """Return a small, stable username-only prefix search result."""
+    _ensure_init()
+    prefix = (prefix or "").strip()
+    try:
+        limit = max(1, min(int(limit), 20))
+    except (TypeError, ValueError):
+        limit = 10
+    if len(prefix) < 2:
+        return []
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            cur.execute(
+                "SELECT username FROM users WHERE username LIKE %s ORDER BY username ASC LIMIT %s",
+                (prefix + "%", limit),
+            )
+            return [{"username": r["username"]} for r in cur.fetchall()]
+
+
+def search_users_prefix(prefix, limit=10):
+    """Return a small, stable username-only prefix search result."""
+    _ensure_init()
+    prefix = (prefix or "").strip()
+    try:
+        limit = max(1, min(int(limit), 20))
+    except (TypeError, ValueError):
+        limit = 10
+    if len(prefix) < 2:
+        return []
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            cur.execute(
+                "SELECT username FROM users WHERE username LIKE %s ORDER BY username ASC LIMIT %s",
+                (prefix + "%", limit),
+            )
+            return [{"username": r["username"]} for r in cur.fetchall()]
+
+
 def get_user(username):
     _ensure_init()
     with _conn() as cn:

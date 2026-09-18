@@ -133,7 +133,7 @@ export default function OpsAudit() {
     <>
       <PageHeader title="审计日志" description="系统操作审计追踪" count={total > 0 ? `共 ${total} 条` : undefined} doc={{ section: 'ops', item: 0, label: '审计文档' }}>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" size="sm" disabled={!items.length} onClick={handleExportCsv}><Download size={14} /> 导出</Button>
+          <Button data-onboarding-target="audit-export" variant="secondary" size="sm" disabled={!items.length} onClick={handleExportCsv}><Download size={14} /> 导出</Button>
           <Button variant="secondary" size="sm" disabled={!items.length} onClick={handleSummarize}>让运维助手总结</Button>
           <PageAiAssistant page="audit" ref={aiRef} context={items.length > 0 ? `审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n最近事件:\n${items.slice(0, 15).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? ''}`).join('\n')}` : ''} />
         </div>
@@ -222,8 +222,9 @@ export default function OpsAudit() {
 
       {/* Filters */}
       <div className="flex items-center gap-3 mb-5 flex-wrap">
-        <SearchBar value={actor} onChange={(v) => { setActor(v) }} placeholder="搜索操作者..." className="max-w-xs" />
+        <SearchBar onboardingTarget="audit-search" value={actor} onChange={(v) => { setActor(v) }} placeholder="搜索操作者..." className="max-w-xs" />
         <Select
+          onboardingTarget="audit-action"
           value={action}
           onChange={(v) => { setAction(v) }}
           options={[

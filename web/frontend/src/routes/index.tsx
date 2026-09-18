@@ -15,6 +15,7 @@ import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiFormHelper } from '@/components/domain/AiFormHelper'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
 import { api } from '@/api/client'
+import { useAuth } from '@/hooks/useAuth'
 import { useToastStore } from '@/stores/toast'
 import { formatBytes, podStatusLabel } from '@/lib/format'
 
@@ -56,6 +57,7 @@ interface DashboardData {
 
 export default function Dashboard() {
   const toast = useToastStore((s) => s.add)
+  const { hasPerm } = useAuth()
   const qc = useQueryClient()
   const [joinTarget, setJoinTarget] = useState<string | null>(null)
   const [joinReason, setJoinReason] = useState('')
@@ -69,9 +71,13 @@ export default function Dashboard() {
           api.get<any>('/infra/host').catch(() => null),
           api.get<{ gpus: GpuInfo[]; count: number; error?: string }>('/infra/gpu').catch(() => ({ gpus: [], count: 0 })),
           api.get<any>('/agents').then(d => ({ total: (d.agents ?? d)?.length ?? 0, running: (d.agents ?? d)?.filter((a: any) => a.run_id)?.length ?? 0 })).catch(() => ({ total: 0, running: 0 })),
-          api.get<any>('/mcp').then(d => { const s = d.servers ?? d; return { total: s?.length ?? 0, enabled: s?.filter((x: any) => x.enabled !== false)?.length ?? 0 } }).catch(() => ({ total: 0, enabled: 0 })),
+          hasPerm('dev.mcp')
+            ? api.get<any>('/mcp').then(d => { const s = d.servers ?? d; return { total: s?.length ?? 0, enabled: s?.filter((x: any) => x.enabled !== false)?.length ?? 0 } }).catch(() => ({ total: 0, enabled: 0 }))
+            : Promise.resolve({ total: 0, enabled: 0 }),
           api.get<any>('/llm/providers').then(d => ({ total: (d.providers ?? d)?.length ?? 0 })).catch(() => ({ total: 0 })),
-          api.get<any>('/audit?per_page=1&since=' + new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).then(d => ({ total: d.total ?? 0 })).catch(() => ({ total: 0 })),
+          hasPerm('ops.audit')
+            ? api.get<any>('/audit?per_page=1&since=' + new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).then(d => ({ total: d.total ?? 0 })).catch(() => ({ total: 0 }))
+            : Promise.resolve({ total: 0 }),
           api.get<any>('/threat-map?window=1d').then(d => ({ attacks: d?.stats?.total_attacks ?? d?.attacks?.length ?? 0, banned: d?.stats?.total_banned ?? 0 })).catch(() => ({ attacks: 0, banned: 0 })),
         ])
         const h = host as any
@@ -142,8 +148,10 @@ export default function Dashboard() {
       `Pod: 总 ${d.pods.total}, 运行 ${d.pods.running}, 停止 ${d.pods.stopped}, 失败 ${d.pods.failed}\n` +
       `资源: CPU负载 ${d.metrics.cpu.toFixed(1)}, 内存 ${d.metrics.mem.toFixed(1)}%, 磁盘 ${d.metrics.disk.toFixed(1)}%, GPU ${d.metrics.gpu} 块\n` +
       `K3s: ${d.k3s ? `${d.k3s.nodeCount} 节点, ${d.k3s.version}` : '未检测'}\n` +
-      `Agent: ${d.agents.total} 个 (${d.agents.running} 运行中), MCP: ${d.mcp.total} (${d.mcp.enabled} 启用), LLM: ${d.llm.total} 个\n` +
-      `今日审计: ${d.auditToday} 条, 威胁: ${d.threat.attacks} 次攻击, ${d.threat.banned} 个封禁\n` +
+      `Agent: ${d.agents.total} 个 (${d.agents.running} 运行中), LLM: ${d.llm.total} 个\n` +
+      (hasPerm('dev.mcp') ? `MCP: ${d.mcp.total} (${d.mcp.enabled} 启用)\n` : '') +
+      (hasPerm('ops.audit') ? `今日审计: ${d.auditToday} 条, ` : '') +
+      `威胁: ${d.threat.attacks} 次攻击, ${d.threat.banned} 个封禁\n` +
       (d.gpuList.length > 0 ? `GPU 详情:\n${d.gpuList.map(g => `  GPU ${g.index}: ${g.name}, 利用率 ${g.util}%, 显存 ${g.mem_used}/${g.mem_total}GB, ${g.temp}°C`).join('\n')}\n` : '') +
       (d.podList.length > 0 ? `Pod 列表:\n${d.podList.slice(0, 20).map(p => `  ${p.name} [${p.status}] CPU:${p.cpu} Mem:${p.mem} GPU:${p.gpus.join(',')}`).join('\n')}` : '')
     : ''
@@ -245,17 +253,21 @@ export default function Dashboard() {
           <ModuleChip
             icon={<Workflow size={16} className="text-accent" />}
             label="开发"
-            detail={`${d?.agents.total ?? 0} Agent · ${d?.mcp.enabled ?? 0} MCP`}
+            detail={hasPerm('dev.mcp')
+              ? `${d?.agents.total ?? 0} Agent · ${d?.mcp.enabled ?? 0} MCP`
+              : `${d?.agents.total ?? 0} Agent`}
             ok={(d?.agents.total ?? 0) > 0}
             to="/dev"
           />
-          <ModuleChip
-            icon={<Shield size={16} className="text-muted" />}
-            label="运维"
-            detail={`今日 ${d?.auditToday ?? 0} 事件`}
-            ok
-            to="/ops"
-          />
+          {hasPerm('ops.audit') && (
+            <ModuleChip
+              icon={<Shield size={16} className="text-muted" />}
+              label="运维"
+              detail={`今日 ${d?.auditToday ?? 0} 事件`}
+              ok
+              to="/ops"
+            />
+          )}
           <ModuleChip
             icon={<Swords size={16} className="text-bad" />}
             label="攻防"
@@ -371,6 +383,7 @@ export default function Dashboard() {
 function ModuleChip({ icon, label, detail, ok, to }: { icon: React.ReactNode; label: string; detail: string; ok: boolean; to: string }) {
   return (
     <Link
+      data-onboarding-target={`goto-${to}`}
       to={to}
       className="flex items-center gap-3 p-3 rounded-xl hover:bg-black/[0.03] active:bg-black/[0.05] transition-colors group"
     >
@@ -391,6 +404,7 @@ function ModuleChip({ icon, label, detail, ok, to }: { icon: React.ReactNode; la
 function QuickAction({ icon, label, desc, to }: { icon: React.ReactNode; label: string; desc: string; to: string }) {
   return (
     <Link
+      data-onboarding-target={`goto-${to}`}
       to={to}
       className="glass-card rounded-2xl p-4 flex items-center gap-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group"
     >

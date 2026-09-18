@@ -1,9 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react'
 
-/**
- * Hook for Server-Sent Events (EventSource).
- * Automatically reconnects on error with exponential backoff.
- */
 export function useSSE(
   url: string | null,
   handlers: {
@@ -11,47 +7,60 @@ export function useSSE(
     onError?: (e: Event) => void
     onOpen?: () => void
   },
-  options?: { withCredentials?: boolean },
+  options?: { withCredentials?: boolean; pauseWhenHidden?: boolean },
 ) {
   const esRef = useRef<EventSource | null>(null)
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const retryRef = useRef(0)
+  const handlersRef = useRef(handlers)
+  const optionsRef = useRef(options)
+  const stoppedRef = useRef(false)
+  handlersRef.current = handlers
+  optionsRef.current = options
 
   const connect = useCallback(() => {
-    if (!url) return
-    const es = new EventSource(url, { withCredentials: options?.withCredentials ?? true })
+    if (!url || stoppedRef.current || !navigator.onLine) return
+    if (optionsRef.current?.pauseWhenHidden !== false && document.visibilityState !== 'visible') return
+    if (esRef.current) return
+    const es = new EventSource(url, { withCredentials: optionsRef.current?.withCredentials ?? true })
     esRef.current = es
-
-    es.onopen = () => {
-      retryRef.current = 0
-      handlers.onOpen?.()
-    }
-
-    es.onmessage = (e) => {
-      handlers.onMessage?.(e.data)
-    }
-
+    es.onopen = () => { retryRef.current = 0; handlersRef.current.onOpen?.() }
+    es.onmessage = (e) => { handlersRef.current.onMessage?.(e.data) }
     es.onerror = (e) => {
-      handlers.onError?.(e)
+      handlersRef.current.onError?.(e)
       es.close()
-      // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
-      const delay = Math.min(1000 * Math.pow(2, retryRef.current), 30_000)
+      if (esRef.current === es) esRef.current = null
+      if (stoppedRef.current || !navigator.onLine) return
+      const delay = Math.min(1000 * Math.pow(2, retryRef.current), 30_000) + Math.round(Math.random() * 250)
       retryRef.current++
-      setTimeout(connect, delay)
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = setTimeout(() => { retryTimerRef.current = null; connect() }, delay)
     }
-  }, [url, handlers, options])
+  }, [url])
 
   useEffect(() => {
+    stoppedRef.current = false
+    const pause = () => {
+      if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null }
+      esRef.current?.close(); esRef.current = null
+    }
+    const resume = () => { if (navigator.onLine && (optionsRef.current?.pauseWhenHidden === false || document.visibilityState === 'visible')) connect() }
+    const onVisibility = () => document.visibilityState === 'visible' ? resume() : (optionsRef.current?.pauseWhenHidden !== false ? pause() : undefined)
+    window.addEventListener('offline', pause)
+    window.addEventListener('online', resume)
+    document.addEventListener('visibilitychange', onVisibility)
     connect()
     return () => {
-      esRef.current?.close()
-      esRef.current = null
+      stoppedRef.current = true
+      window.removeEventListener('offline', pause); window.removeEventListener('online', resume); document.removeEventListener('visibilitychange', onVisibility)
+      pause()
     }
   }, [connect])
 
   const disconnect = useCallback(() => {
-    esRef.current?.close()
-    esRef.current = null
+    stoppedRef.current = true
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null }
+    esRef.current?.close(); esRef.current = null
   }, [])
-
   return { disconnect }
 }

@@ -123,7 +123,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
     <div className="space-y-3">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold flex items-center gap-2"><Rocket size={15} /> 部署</h3>
-        {canManage && <Button size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建部署</Button>}
+        {canManage && <Button data-onboarding-target="deploy-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建部署</Button>}
       </div>
 
       {/* ── Quickstart templates ── */}
@@ -167,7 +167,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
             </div>
           ) : (
             <div>
-              <Input label="deploy.sh 路径" value={dScript} onChange={e => setDScript(e.target.value)} placeholder="/home/cloud/myapp/start.sh" />
+              <Input data-onboarding-target="deploy-script" label="deploy.sh 路径" value={dScript} onChange={e => setDScript(e.target.value)} placeholder="/home/cloud/myapp/start.sh" />
               <div className="mt-1"><AiFormHelper type="general" partial={dScript} context="部署脚本路径" onApply={setDScript} /></div>
             </div>
           )}
@@ -203,7 +203,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
           {/* Row 5: Token (repo only) + Health check */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {isRepo && (
-              <Input label="私有库 token" type="password" value={dToken} onChange={e => setDToken(e.target.value)} placeholder="公开库留空" />
+              <Input data-onboarding-target="deploy-token" label="私有库 token" type="password" value={dToken} onChange={e => setDToken(e.target.value)} placeholder="公开库留空" />
             )}
             <div>
               <Input label="健康检查路径" value={dHealth} onChange={e => setDHealth(e.target.value)} placeholder="/health 留空跳过" />
@@ -226,7 +226,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
           {/* Actions */}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" onClick={() => setCreateOpen(false)}>取消</Button>
-            <Button disabled={!canSubmit} loading={createDeploy.isPending} onClick={() => createDeploy.mutate()}>确认</Button>
+            <Button data-onboarding-target="deploy-submit" disabled={!canSubmit} loading={createDeploy.isPending} onClick={() => createDeploy.mutate()}>确认</Button>
           </div>
         </div>
       </Dialog>

@@ -96,7 +96,7 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
               )}
             >
               {group.to ? (
-                <Link to={group.to} className="text-muted hover:text-ink transition-colors">{group.label}</Link>
+                <Link to={group.to} onClick={onNavigate} className="text-muted hover:text-ink transition-colors">{group.label}</Link>
               ) : (
                 <span className="text-muted">{group.label}</span>
               )}
@@ -110,6 +110,10 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
               <NavLink
                 key={item.to}
                 to={item.to}
+                data-onboarding-nav={item.to}
+                data-assistant-control={`nav-${item.to === '/' ? 'home' : item.to.slice(1).replace(/\//g, '-')}`}
+                data-assistant-label={item.label}
+                data-assistant-actions="navigate inspect"
                 end={item.to === '/'}
                 onClick={() => { haptic('light'); onNavigate?.() }}
                 title={collapsed ? item.label : undefined}
@@ -201,12 +205,14 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
 
   // Sync position when open state changes externally (hamburger button, escape key)
   useEffect(() => {
-    animate(x, open ? 0 : -DRAWER_W, {
+    if (!open) return
+    const controls = animate(x, 0, {
       type: 'spring',
       stiffness: 300,
       damping: 30,
     })
-  }, [open])
+    return () => controls.stop()
+  }, [open, x])
 
   // Swipe-to-close gesture
   const bind = useDrag(
@@ -246,7 +252,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
   return (
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-[var(--z-drawer)] md:hidden" style={{ pointerEvents: 'auto' }}>
+        <motion.div className="fixed inset-0 z-[var(--z-drawer)] md:hidden" exit={{ pointerEvents: 'none' }}>
           {/* Backdrop */}
           <motion.div
             className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
@@ -290,7 +296,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
               <NavList collapsed={false} onNavigate={onClose} />
             </div>
           </motion.aside>
-        </div>
+        </motion.div>
       )}
     </AnimatePresence>
   )

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { lazy, Suspense, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -11,11 +11,11 @@ import { Dialog } from '@/components/ui/Dialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { MonitorTab } from '@/components/pod/MonitorTab'
-import { TerminalPane, preloadSocketIO } from '@/components/pod/TerminalPane'
-import { FilesTab } from '@/components/pod/FilesTab'
-import { SettingsTab } from '@/components/pod/SettingsTab'
-import { MembersTab } from '@/components/pod/MembersTab'
-import { DeploysTab } from '@/components/pod/DeploysTab'
+import { TerminalPane } from '@/components/pod/TerminalPane'
+const FilesTab = lazy(() => import('@/components/pod/FilesTab').then(m => ({ default: m.FilesTab })))
+const SettingsTab = lazy(() => import('@/components/pod/SettingsTab').then(m => ({ default: m.SettingsTab })))
+const MembersTab = lazy(() => import('@/components/pod/MembersTab').then(m => ({ default: m.MembersTab })))
+const DeploysTab = lazy(() => import('@/components/pod/DeploysTab').then(m => ({ default: m.DeploysTab })))
 import { CredentialCard } from '@/components/domain/CredentialCard'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { LogViewer } from '@/components/domain/LogViewer'
@@ -90,15 +90,13 @@ export default function PodDetail() {
     refetchInterval: 30_000,
   })
 
-  // Warm the socket.io client so the first terminal open doesn't race a
-  // cold script load (a slow load can surface as a spurious connect error).
-  useEffect(() => { preloadSocketIO().catch(() => {}) }, [])
+
 
   if (isLoading) return <PodDetailSkeleton />
 
   if (noAccess) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 relative">
+      <div data-onboarding-unavailable className="flex flex-col items-center justify-center min-h-[60vh] gap-4 relative">
         <button onClick={() => navigate('/pods')} aria-label="返回" className="absolute top-0 left-0 w-10 h-10 rounded-lg flex items-center justify-center text-muted hover:text-ink hover:bg-black/[0.04] active:bg-black/[0.06] transition-colors">
           <ArrowLeft size={18} />
         </button>
@@ -175,7 +173,7 @@ export default function PodDetail() {
         context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator ?? ''}, 成员: ${(pod.members ?? []).join(', ')}, 角色: ${pod.my_role ?? ''}` : ''}
       />
 
-      <Tabs tabs={tabDefs} active={activeTab} onChange={setActiveTab} className="mb-6" swipeable />
+      <Tabs onboardingPrefix="pod-tab" tabs={tabDefs} active={activeTab} onChange={setActiveTab} className="mb-6" swipeable />
 
       <AnimatePresence mode="wait">
         <motion.div
@@ -185,6 +183,7 @@ export default function PodDetail() {
           exit={{ opacity: 0, y: -6 }}
           transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
         >
+          <Suspense fallback={<Skeleton height={200} />}>
           {activeTab === 'monitor' && <MonitorTab metrics={metrics} history={history} pod={{ ...pod, name }} />}
           {activeTab === 'connect' && <ConnectTab pod={pod} />}
           {activeTab === 'terminal' && <TerminalPane podName={name!} running={running} />}
@@ -196,6 +195,7 @@ export default function PodDetail() {
           {activeTab === 'deploys' && <DeploysTab podName={name!} canManage={canManage} />}
           {activeTab === 'members' && <MembersTab podName={name!} canManage={canManage} />}
           {activeTab === 'settings' && <SettingsTab podName={name!} pod={pod} canManage={canManage} />}
+          </Suspense>
         </motion.div>
       </AnimatePresence>
     </>

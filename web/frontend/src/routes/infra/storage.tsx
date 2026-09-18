@@ -125,7 +125,7 @@ export default function InfraStorage() {
         <div className="flex gap-2">
           {canManage && <>
             <Button variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
-            <Button size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建桶</Button>
+            <Button data-onboarding-target="storage-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建桶</Button>
           </>}
           <a
             href="http://localhost:9001"
@@ -165,6 +165,7 @@ export default function InfraStorage() {
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/[0.04] border-[0.5px] border-black/[0.06] font-mono text-xs text-ink-2 max-w-full">
             <code className="select-all break-all min-w-0">{CLUSTER_ENDPOINT}</code>
             <button
+              data-onboarding-target="storage-endpoint"
               onClick={handleCopyEndpoint}
               className="w-8 h-8 rounded flex items-center justify-center text-muted hover:text-ink hover:bg-black/[0.04] active:bg-black/[0.06] transition-colors"
               title="复制"
@@ -229,7 +230,7 @@ export default function InfraStorage() {
       <Card padding="lg" className="mb-6">
         <div className="flex items-center justify-between gap-2 mb-3">
           <h2 className="text-sm font-semibold">访问密钥</h2>
-          {canManage && <Button size="sm" onClick={() => { setKeyFormOpen(true); if (bucketOptions.length && !keyBucket) setKeyBucket(bucketOptions[0].value) }}>
+          {canManage && <Button data-onboarding-target="storage-key" size="sm" onClick={() => { setKeyFormOpen(true); if (bucketOptions.length && !keyBucket) setKeyBucket(bucketOptions[0].value) }}>
             <Plus size={14} /> 发密钥
           </Button>}
         </div>

@@ -4,7 +4,6 @@ import { useDrag } from '@use-gesture/react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Portal } from '@/components/ui/Portal'
-import { motionBind } from '@/lib/gesture'
 
 interface DialogProps {
   open: boolean
@@ -50,10 +49,11 @@ function CenteredDialog({ open, onClose, title, description, width = 'max-w-lg',
       <AnimatePresence>
         {open && (
         <motion.div
+          data-onboarding-overlay
           className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center p-4"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
+          exit={{ opacity: 0, pointerEvents: 'none' }}
           transition={{ duration: 0.15 }}
         >
           <motion.div
@@ -64,7 +64,7 @@ function CenteredDialog({ open, onClose, title, description, width = 'max-w-lg',
             exit={{ opacity: 0 }}
           />
           <motion.div
-            className={cn('relative w-full rounded-2xl p-6', width, className)}
+            className={cn('relative w-full max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl p-6', width, className)}
             style={{
               background: 'rgba(255,255,255,0.88)',
               backdropFilter: 'blur(40px) saturate(180%)',
@@ -115,14 +115,16 @@ function BottomSheet({ open, onClose, title, description, children, className }:
   useEffect(() => {
     if (open) {
       y.set(window.innerHeight)
-      animate(y, 0, { type: 'spring', stiffness: 300, damping: 30 })
+      const controls = animate(y, 0, { type: 'spring', stiffness: 300, damping: 30 })
+      return () => controls.stop()
     }
-  }, [open])
+  }, [open, y])
 
   // Drag-to-dismiss gesture
   const bind = useDrag(
-    ({ movement: [_, my], velocity: [__, vy], active, cancel }) => {
+    ({ movement: [_, my], velocity: [__, vy], active, cancel, canceled }) => {
       if (!open) { cancel(); return }
+      if (canceled) { y.set(0); return }
 
       if (active) {
         // Only allow downward drag
@@ -138,13 +140,7 @@ function BottomSheet({ open, onClose, title, description, children, className }:
 
       // Dismiss on sufficient drag or fast flick
       if (my > 80 || (my > 30 && vy > 0.3)) {
-        animate(y, window.innerHeight, {
-          type: 'spring',
-          stiffness: 200,
-          damping: 25,
-          velocity: vy,
-          onComplete: onClose,
-        })
+        onClose()
       } else {
         // Snap back
         animate(y, 0, { type: 'spring', stiffness: 300, damping: 30, velocity: vy })
@@ -162,7 +158,7 @@ function BottomSheet({ open, onClose, title, description, children, className }:
     <Portal>
       <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-[var(--z-modal)]">
+        <motion.div data-onboarding-overlay className="fixed inset-0 z-[var(--z-modal)]" exit={{ pointerEvents: 'none' }}>
           {/* Backdrop */}
           <motion.div
             className="absolute inset-0 bg-black/30 backdrop-blur-sm"
@@ -176,7 +172,7 @@ function BottomSheet({ open, onClose, title, description, children, className }:
           {/* Sheet panel */}
           <motion.div
             className={cn(
-              'absolute inset-x-0 bottom-0 rounded-t-2xl max-h-[85vh] overflow-y-auto',
+              'absolute inset-x-0 bottom-0 rounded-t-2xl max-h-[85dvh] flex flex-col overflow-hidden',
               className,
             )}
             style={{
@@ -192,15 +188,14 @@ function BottomSheet({ open, onClose, title, description, children, className }:
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
             transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-            {...motionBind(bind())}
           >
             {/* Drag handle */}
-            <div className="flex justify-center pt-3 pb-1">
+            <div {...bind()} className="flex shrink-0 justify-center pt-3 pb-3 touch-none" aria-label="拖动关闭">
               <div className="w-10 h-1 rounded-full bg-black/[0.12]" />
             </div>
 
             {/* Header */}
-            <div className="flex items-center justify-between px-5 pb-2">
+            <div className="flex shrink-0 items-center justify-between px-5 pb-2">
               <div>
                 {title && <h3 className="text-lg font-semibold tracking-tight">{title}</h3>}
                 {description && <p className="text-sm text-muted mt-0.5">{description}</p>}
@@ -214,11 +209,11 @@ function BottomSheet({ open, onClose, title, description, children, className }:
             </div>
 
             {/* Content */}
-            <div className="px-5 pb-5">
+            <div className="min-h-0 overflow-y-auto overscroll-contain touch-pan-y px-5 pb-5">
               {children}
             </div>
           </motion.div>
-        </div>
+        </motion.div>
       )}
       </AnimatePresence>
     </Portal>

@@ -8,7 +8,7 @@ Endpoints:
   POST /api/push/unsubscribe  → Remove a push subscription
   POST /api/push/notify-all   → Send push to all subscribers (admin only)
 """
-import json, os, logging
+import json, os, logging, threading
 from flask import Blueprint, request, jsonify, g
 from pywebpush import webpush, WebPushException
 from api._auth import require_auth, current_username
@@ -22,6 +22,7 @@ import siteconf
 
 VAPID_FILE = siteconf.web_path("vapid.json")
 SUBS_FILE = siteconf.web_path("push_subscriptions.json")
+_SUBS_LOCK = threading.RLock()
 
 
 def _load_vapid():
@@ -31,24 +32,32 @@ def _load_vapid():
 
 def _vapid_info():
     keys = _load_vapid()
+    # pywebpush accepts only the private key and claims; the public key is
+    # carried by the subscription and passing it is not a valid kwarg.
     return {
         "vapid_private_key": keys["private_key_pem"],
-        "vapid_public_key": keys["public_key_pem"],
         "vapid_claims": {"sub": keys["subject"]},
+        "ttl": 3600,
     }
 
 
 def _load_subs():
-    try:
-        with open(SUBS_FILE) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return []
+    with _SUBS_LOCK:
+        try:
+            with open(SUBS_FILE) as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except (OSError, json.JSONDecodeError):
+            return []
 
 
 def _save_subs(subs):
-    with open(SUBS_FILE, "w") as f:
-        json.dump(subs, f, indent=2)
+    with _SUBS_LOCK:
+        tmp = SUBS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(subs, f, indent=2)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, SUBS_FILE)
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -69,13 +78,12 @@ def subscribe():
     if not sub or not sub.get("endpoint"):
         return jsonify({"error": {"code": "BAD_REQUEST", "message": "Missing subscription data"}}), 400
 
-    subs = _load_subs()
-    # Remove existing subscription for this endpoint (dedup)
-    subs = [s for s in subs if s.get("endpoint") != sub["endpoint"]]
-    # Add with username
-    sub["_user"] = user
-    subs.append(sub)
-    _save_subs(subs)
+    with _SUBS_LOCK:
+        subs = _load_subs()
+        subs = [s for s in subs if s.get("endpoint") != sub["endpoint"]]
+        sub["_user"] = user
+        subs.append(sub)
+        _save_subs(subs)
 
     logger.info("Push subscription saved for %s (total: %d)", user, len(subs))
     return jsonify({"ok": True})
@@ -89,12 +97,13 @@ def unsubscribe():
     data = request.get_json(silent=True) or {}
     endpoint = data.get("endpoint")
 
-    subs = _load_subs()
-    if endpoint:
-        subs = [s for s in subs if s.get("endpoint") != endpoint]
-    else:
-        subs = [s for s in subs if s.get("_user") != user]
-    _save_subs(subs)
+    with _SUBS_LOCK:
+        subs = _load_subs()
+        if endpoint:
+            subs = [s for s in subs if s.get("endpoint") != endpoint]
+        else:
+            subs = [s for s in subs if s.get("_user") != user]
+        _save_subs(subs)
 
     logger.info("Push subscription removed for %s (remaining: %d)", user, len(subs))
     return jsonify({"ok": True})
@@ -113,41 +122,51 @@ def notify_all():
     if not subs:
         return jsonify({"sent": 0, "total": 0, "errors": 0})
 
-    payload = json.dumps({"title": title, "body": body, "url": url})
-    vapid = _vapid_info()
+    payload = {"title": title, "body": body, "url": url}
+    result = _send_subscriptions(subs, payload)
+    return jsonify({"sent": result["sent"], "total": result["total"],
+                    "errors": result["errors"], "stale_removed": result["stale_removed"]})
 
-    sent = 0
-    errors = 0
+
+def _send_subscriptions(subs, payload):
+    """Send one payload to subscriptions and prune expired endpoints."""
+    try:
+        vapid = _vapid_info()
+    except Exception:
+        logger.exception("Push VAPID configuration unavailable")
+        return {"sent": 0, "total": len(subs), "errors": len(subs), "stale_removed": 0}
+    sent = errors = 0
     stale = []
-
+    encoded = json.dumps(payload, ensure_ascii=False)
     for sub in subs:
         try:
-            webpush(
-                subscription_info={
-                    "endpoint": sub["endpoint"],
-                    "keys": sub.get("keys", {}),
-                },
-                data=payload,
-                **vapid,
-            )
+            webpush(subscription_info={"endpoint": sub["endpoint"],
+                                       "keys": sub.get("keys", {})},
+                    data=encoded, **vapid)
             sent += 1
-        except WebPushException as e:
-            logger.warning("Push failed for %s: %s", sub.get("_user", "?"), e)
+        except WebPushException as exc:
+            logger.warning("Push failed for user %s: %s", sub.get("_user", "?"), exc)
             errors += 1
-            # If the subscription is expired/invalid, mark for removal
-            if "410" in str(e) or "not found" in str(e).lower():
+            if "410" in str(exc) or "404" in str(exc) or "not found" in str(exc).lower():
                 stale.append(sub)
-        except Exception as e:
-            logger.error("Push error for %s: %s", sub.get("_user", "?"), e)
+        except Exception:
+            logger.exception("Push error for user %s", sub.get("_user", "?"))
             errors += 1
-
-    # Remove stale subscriptions
     if stale:
-        subs = [s for s in subs if s not in stale]
-        _save_subs(subs)
-        logger.info("Removed %d stale subscriptions", len(stale))
+        with _SUBS_LOCK:
+            current = _load_subs()
+            stale_endpoints = {s.get("endpoint") for s in stale}
+            _save_subs([s for s in current if s.get("endpoint") not in stale_endpoints])
+    return {"sent": sent, "total": len(subs), "errors": errors, "stale_removed": len(stale)}
 
-    return jsonify({"sent": sent, "total": len(subs) + len(stale), "errors": errors, "stale_removed": len(stale)})
+
+def send_to_users(usernames, payload):
+    """Send a notification only to subscriptions owned by these users."""
+    wanted = {str(u) for u in (usernames or []) if u}
+    if not wanted:
+        return {"sent": 0, "total": 0, "errors": 0, "stale_removed": 0}
+    subs = [s for s in _load_subs() if s.get("_user") in wanted]
+    return _send_subscriptions(subs, payload)
 
 
 @push_bp.route("/status", methods=["GET"])

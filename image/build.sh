@@ -52,7 +52,7 @@ sudo tee "$ROOTFS/entrypoint.sh" >/dev/null <<'ENT'
 #!/bin/bash
 set -e
 mkdir -p /run/sshd
-PW="${CLOUD_PASSWORD:-${STUDENT_PASSWORD:-}}"
+PW="${CLOUD_PASSWORD:-}"
 if [ -n "$PW" ]; then
   echo "cloud:${PW}" | chpasswd
 fi

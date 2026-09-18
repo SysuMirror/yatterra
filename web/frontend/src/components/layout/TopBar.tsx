@@ -200,7 +200,7 @@ export default function TopBar() {
             position: 'fixed',
             inset: 0,
             zIndex: 'var(--z-popover)',
-            pointerEvents: (profileOpen || notifOpen) ? undefined : 'none',
+            pointerEvents: 'none',
           }}
         >
           {isDesktop && notifOpen && (

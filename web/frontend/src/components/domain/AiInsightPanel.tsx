@@ -4,6 +4,7 @@ import { aiApi, streamAi } from '@/api/ai'
 import type { ToolCall, ToolResult } from '@/api/ai'
 import { MarkdownContent, InlineReasoning, ToolCallsBlock } from '@/components/ai'
 import type { ToolCallEntry } from '@/components/ai'
+import { usePageAiAllowed } from '@/lib/pagePerms'
 
 interface Props {
   /** Page type for context routing */
@@ -50,6 +51,8 @@ export function AiInsightPanel({
   maxHeight = 200,
   className,
 }: Props) {
+  // hide the insight panel on pages the user has no permission for
+  const aiAllowed = usePageAiAllowed(page ?? '')
   const [summary, setSummary] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -225,6 +228,7 @@ export function AiInsightPanel({
     }
   }
 
+  if (!aiAllowed) return null
   if (!context || context.length < 10) return null
 
   const tsLabel = insightTs ? `更新于 ${Math.round((Date.now() / 1000 - insightTs) / 60)} 分钟前` : ''

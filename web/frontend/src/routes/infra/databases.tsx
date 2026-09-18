@@ -137,7 +137,7 @@ export default function InfraDatabases() {
         <div className="flex gap-2">
           {canManage && <>
             <Button variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
-            <Button size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建凭证</Button>
+            <Button data-onboarding-target="db-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建凭证</Button>
           </>}
         </div>
       </PageHeader>
@@ -170,7 +170,7 @@ export default function InfraDatabases() {
               </div>
               <CodeChip code={`${svc}:${port}`} className="mt-2" />
               {connStr && (
-                <Button variant="ghost" size="sm" className="mt-2" onClick={() => copyConnStr(connStr)}>
+                <Button data-onboarding-target="db-copy" variant="ghost" size="sm" className="mt-2" onClick={() => copyConnStr(connStr)}>
                   <Link2 size={14} /> 复制连接串
                 </Button>
               )}

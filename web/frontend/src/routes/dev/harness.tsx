@@ -165,13 +165,14 @@ export default function DevHarness() {
           <div className="flex items-center justify-between mb-4">
             <button
               className="flex items-center gap-2 text-sm font-semibold rounded-md px-2 py-1 hover:bg-black/[0.04] transition-colors"
+              data-onboarding-target="harness-sessions"
               onClick={() => setSessionsOpen(!sessionsOpen)}
             >
               {sessionsOpen ? <ChevronDown size={16} className="text-muted" /> : <ChevronRight size={16} className="text-muted" />}
               Agent 会话
               <Badge variant="muted">{sessions?.length ?? 0} 个</Badge>
             </button>
-            <Button size="sm" variant="outline" onClick={() => setNewSessionOpen(true)}>
+            <Button data-onboarding-target="harness-session" size="sm" variant="outline" onClick={() => setNewSessionOpen(true)}>
               <Plus size={14} /> 新建会话
             </Button>
           </div>

@@ -7,6 +7,7 @@ import type { AiPageType, ToolCall, ToolResult } from '@/api/ai'
 import { MarkdownContent, InlineReasoning, ToolCallsBlock } from '@/components/ai'
 import type { ToolCallEntry } from '@/components/ai'
 import { Portal } from '@/components/ui/Portal'
+import { usePageAiAllowed } from '@/lib/pagePerms'
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -54,6 +55,8 @@ export interface PageAiAssistantHandle {
 
 export const PageAiAssistant = forwardRef<PageAiAssistantHandle, PageAiAssistantProps>(
   function PageAiAssistant({ page, context, className }, ref) {
+  // hide the assistant entirely on pages the user has no permission for
+  const aiAllowed = usePageAiAllowed(page)
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
@@ -200,6 +203,8 @@ export const PageAiAssistant = forwardRef<PageAiAssistantHandle, PageAiAssistant
 
   const hints = PAGE_HINTS[page] || PAGE_HINTS.dashboard
 
+  if (!aiAllowed) return null
+
   useImperativeHandle(ref, () => ({
     send(text: string) {
       setOpen(true)
@@ -211,6 +216,7 @@ export const PageAiAssistant = forwardRef<PageAiAssistantHandle, PageAiAssistant
     <>
       {/* Toggle button */}
       <button
+        data-onboarding-target="page-assistant"
         onClick={() => setOpen(!open)}
         className={cn(
           'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all',
@@ -230,7 +236,7 @@ export const PageAiAssistant = forwardRef<PageAiAssistantHandle, PageAiAssistant
       <Portal>
       <AnimatePresence>
         {open && (
-          <div className="fixed inset-0 z-[var(--z-modal)]">
+          <div data-onboarding-overlay className="fixed inset-0 z-[var(--z-modal)]">
             {/* Backdrop */}
             <motion.div
               className="absolute inset-0 bg-black/20"

@@ -9,6 +9,7 @@ from middleware.error_handler import ApiError, not_found, bad_request
 import agent
 import agent_runs
 import agent_conf
+import browser_assistant
 import users
 import groups
 import audit
@@ -233,6 +234,89 @@ def agents_session_rename():
     if not sid:
         raise bad_request("id is required")
     agent_runs.rename_session(sid, title, current_username())
+    return jsonify({"ok": True})
+
+
+@agents_bp.route("/browser/run", methods=["POST"])
+@require_auth()
+def browser_run():
+    """Start universal browser assistant; it emits proposals only."""
+    body = request.get_json(silent=True) or {}
+    try:
+        sid, run_id = browser_assistant.start(
+            current_username(), body.get("session_id", ""), body.get("message", ""),
+            body.get("page", ""), body.get("context", ""), body.get("receipt"))
+    except ValueError as exc:
+        raise bad_request(str(exc))
+    except LookupError:
+        raise not_found("Browser assistant session not found")
+    return jsonify({"session_id": sid, "run_id": run_id})
+
+
+@agents_bp.route("/browser/stream", methods=["GET"])
+@require_auth()
+def browser_stream():
+    run_id = request.args.get("run_id", "")
+    last = request.headers.get("Last-Event-ID")
+    try:
+        after = int(last) + 1 if last is not None else int(request.args.get("offset", "0"))
+    except (TypeError, ValueError):
+        after = 0
+    username = current_username()
+    if not browser_assistant.get_run(run_id, username):
+        raise not_found("Browser assistant run not found")
+    def stream():
+        yield "retry: 5000\n\n"
+        for item in browser_assistant.stream(run_id, username, after):
+            if item is None:
+                yield ": keepalive\n\n"
+            else:
+                idx, event = item
+                yield f"id: {idx}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+    response = Response(stream(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@agents_bp.route("/browser/stop", methods=["POST"])
+@require_auth()
+def browser_stop():
+    body = request.get_json(silent=True) or {}
+    if not browser_assistant.stop(body.get("run_id", ""), current_username()):
+        raise not_found("Browser assistant run not found")
+    return jsonify({"ok": True})
+
+
+@agents_bp.route("/browser/sessions", methods=["GET"])
+@require_auth()
+def browser_sessions():
+    return jsonify({"sessions": browser_assistant.list_sessions(current_username())})
+
+
+@agents_bp.route("/browser/session/new", methods=["POST"])
+@require_auth()
+def browser_session_new():
+    sid = browser_assistant._new_session(current_username())
+    return jsonify({"session_id": sid})
+
+
+@agents_bp.route("/browser/session/load", methods=["GET"])
+@require_auth()
+def browser_session_load():
+    sid = request.args.get("id", "")
+    data = browser_assistant.get_session(sid, current_username())
+    if not data:
+        raise not_found("Browser assistant session not found")
+    return jsonify({"turns": data.get("turns", []), "title": data.get("title", "New conversation")})
+
+
+@agents_bp.route("/browser/session/delete", methods=["POST", "DELETE"])
+@require_auth()
+def browser_session_delete():
+    body = request.get_json(silent=True) or {}
+    if not browser_assistant.delete_session(body.get("id", ""), current_username()):
+        raise not_found("Browser assistant session not found")
     return jsonify({"ok": True})
 
 

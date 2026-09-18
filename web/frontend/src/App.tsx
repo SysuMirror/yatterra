@@ -62,18 +62,13 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     refetchOnReconnect: true,  // only re-check on network reconnect
   })
 
-  // Badge: poll for failed pods + today's attacks
+  // Badge: poll for Pods that are currently down
   const { data: badgeData } = useQuery({
     queryKey: ['badge-status'],
     queryFn: async () => {
       try {
-        const [pods, threat] = await Promise.all([
-          api.get<{ pods: any[] }>('/pods?per_page=200').catch(() => ({ pods: [] })),
-          api.get<any>('/threat-map?window=1d').catch(() => ({ stats: {} })),
-        ])
-        const failed = (pods.pods ?? []).filter((p: any) => p.status === 'Failed').length
-        const attacks = threat?.stats?.total_attacks ?? 0
-        return failed + attacks
+        const pods = await api.get<{ pods: any[] }>('/pods?per_page=200').catch(() => ({ pods: [] }))
+        return (pods.pods ?? []).filter((p: any) => ['Failed', 'CrashLoopBackOff', 'Error'].includes(p.status)).length
       } catch { return 0 }
     },
     staleTime: 60_000,          // 1 min
@@ -119,7 +114,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 /** Simple 403 page shown when a route's required permission is missing. */
 function Forbidden() {
   return (
-    <div className="flex flex-col items-center justify-center h-[60vh] gap-3 text-center px-4">
+    <div data-onboarding-unavailable className="flex flex-col items-center justify-center h-[60vh] gap-3 text-center px-4">
       <div className="text-5xl font-bold text-muted">403</div>
       <div className="text-lg font-semibold">无权访问</div>
       <p className="text-sm text-muted">你没有访问此页面的权限，请联系管理员开通。</p>

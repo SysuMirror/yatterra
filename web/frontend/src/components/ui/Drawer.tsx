@@ -43,7 +43,7 @@ export function Drawer({ open, onClose, side = 'right', title, width = 'w-[380px
     <Portal>
       <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-[var(--z-modal)]">
+        <motion.div className="fixed inset-0 z-[var(--z-modal)]" exit={{ pointerEvents: 'none' }}>
           {/* Backdrop */}
           <motion.div
             className="absolute inset-0 bg-black/20 backdrop-blur-sm"
@@ -89,11 +89,11 @@ export function Drawer({ open, onClose, side = 'right', title, width = 'w-[380px
             </div>
 
             {/* Body */}
-            <div className="flex-1 overflow-y-auto px-5 py-4">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y px-5 py-4">
               {children}
             </div>
           </motion.div>
-        </div>
+        </motion.div>
       )}
       </AnimatePresence>
     </Portal>

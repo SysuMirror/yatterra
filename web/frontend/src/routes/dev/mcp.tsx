@@ -131,7 +131,7 @@ export default function DevMCP() {
       <PageHeader title="MCP 服务器" description="Model Context Protocol 服务管理" doc={{ section: 'dev', item: 2, label: 'MCP 文档' }}>
         <div className="flex items-center gap-2">
           <PageAiAssistant page="mcp" context={data && data.length > 0 ? `MCP 服务器: ${data.length} 个\n${data.map((s: any) => `  ${s.name ?? s.id} [${s.transport ?? '?'}] ${s.enabled === false ? '(禁用)' : '(启用)'}`).join('\n')}` : '暂无 MCP 服务器'} />
-          <Button size="sm" onClick={() => openAdd()}><Plus size={14} /> 添加</Button>
+          <Button data-onboarding-target="mcp-add" size="sm" onClick={() => openAdd()}><Plus size={14} /> 添加</Button>
         </div>
       </PageHeader>
 
@@ -161,7 +161,7 @@ export default function DevMCP() {
             { key: 'actions', title: '', width: '120px', render: (r: any) => (
               <div className="flex items-center gap-1">
                 <Button variant="ghost" size="sm" onClick={() => openEdit(r)} aria-label="编辑"><Pencil size={14} /></Button>
-                <Button variant="ghost" size="sm" onClick={() => testMut.mutate(r.name)} aria-label="测试"><FlaskConical size={14} /></Button>
+                <Button data-onboarding-target="mcp-test" variant="ghost" size="sm" onClick={() => testMut.mutate(r.name)} aria-label="测试"><FlaskConical size={14} /></Button>
                 <Button variant="ghost" size="sm" onClick={() => deleteMut.mutate(r.name)} aria-label="删除"><Trash2 size={14} /></Button>
               </div>
             )},

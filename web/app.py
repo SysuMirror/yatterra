@@ -566,9 +566,32 @@ def deploy_webhook():
             audit.record('deploy_webhook', detail='sseapi mirror synced', actor='webhook')
         except Exception as e:
             audit.record('deploy_webhook', detail=f'sseapi sync fail: {e}', actor='webhook')
+    # Deployment remains independent from notifications. The notification task
+    # is deduplicated durably and runs outside the webhook request.
+    delivery = (request.headers.get("X-GitHub-Delivery") or
+                request.headers.get("X-Gitee-Delivery") or
+                payload.get("after") or
+                (payload.get("head_commit") or {}).get("id") or "")
+    payload["_delivery_id"] = str(delivery)[:256]
     for group, dep in matches:
         threading.Thread(target=deploys.run, args=(group, dep), daemon=True).start()
+        try:
+            import pwa_alerts
+            pwa_alerts.enqueue_webhook(group, dep, repo_url, branch, payload)
+        except Exception:
+            app.logger.exception("webhook notification enqueue failed for %s", group)
     return jsonify({"triggered": len(matches), "branch": branch})
+
+def _send_webhook_alert(group, dep, repo_url, branch, payload):
+    """Best-effort asynchronous webhook summary; never changes deploy outcome."""
+    try:
+        import pwa_alerts
+        key = pwa_alerts.webhook_event_key(repo_url, branch, payload) + ":" + group
+        if pwa_alerts.claim_webhook(key):
+            pwa_alerts.notify_webhook(group, dep, repo_url, branch, payload)
+    except Exception:
+        app.logger.exception("webhook notification failed for %s", group)
+
 
 # --- pod app → host status report (token auth) ---
 @app.route("/deploy-internal/report", methods=["POST"])

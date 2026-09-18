@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Core logic for the platform groups: state, manifests, frpc, kubectl."""
+import users
+import users
 import json, os, secrets, string, subprocess, textwrap, shutil, time, threading
 import audit
 import req_estimate
@@ -11,8 +13,7 @@ FRPC_FILE = os.environ.get("YATTERRA_FRPC_FILE", "/opt/frp/frpc.toml")
 MANIFEST_DIR = siteconf.path("manifests")
 NS = siteconf.GROUP_NS
 IMAGE = os.environ.get("YATTERRA_GROUP_IMAGE",
-                       os.environ.get("YATTERRA_STUDENT_IMAGE",
-                                      "docker.io/sse/cloud-ubuntu:24.04"))
+                       "docker.io/sse/cloud-ubuntu:24.04")
 
 SSH_NODEPORT_BASE = int(os.environ.get("YATTERRA_SSH_NODEPORT_BASE", "31000"))
 WEB_NODEPORT_BASE = int(os.environ.get("YATTERRA_WEB_NODEPORT_BASE", "32000"))
@@ -847,7 +848,10 @@ def approve_pending(name, username, approved):
 
 
 def invite_member(name, username):
-    """Owner directly invites a user as member."""
+    """Owner directly invites an existing user as member."""
+    username = (username or "").strip()
+    if not username or not users.get_user(username):
+        raise ValueError("用户不存在")
     state = load_state()
     if name not in state["groups"]:
         raise ValueError(f"组 {name} 不存在")
@@ -877,7 +881,10 @@ def remove_member(name, username):
 
 
 def add_owner(name, username):
-    """Owner promotes a member (or any user) to co-owner."""
+    """Owner promotes an existing user (or member) to co-owner."""
+    username = (username or "").strip()
+    if not username or not users.get_user(username):
+        raise ValueError("用户不存在")
     state = load_state()
     if name not in state["groups"]:
         raise ValueError(f"组 {name} 不存在")

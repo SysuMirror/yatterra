@@ -10,6 +10,7 @@ import { MobileTabBar } from '@/components/layout/MobileTabBar'
 import { AgentWidget } from '@/components/domain/AgentWidget'
 import { AiContextMenu } from '@/components/domain/AiContextMenu'
 import { PullToRefresh } from '@/components/ui/PullToRefresh'
+import { OnboardingGuide } from '@/components/ui/OnboardingGuide'
 import { useSidebarStore } from '@/stores/sidebar'
 import { useNavStore } from '@/stores/nav'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
@@ -48,6 +49,10 @@ export default function MainLayout() {
   const qc = useQueryClient()
   const prevPathname = useRef(location.pathname)
 
+  useEffect(() => {
+    setMobileOpen(false)
+  }, [location.pathname, isDesktop, setMobileOpen])
+
   // Detect navigation direction by comparing path depth
   useEffect(() => {
     const prev = prevPathname.current
@@ -78,10 +83,10 @@ export default function MainLayout() {
   const pageX = useMotionValue(0)
 
   const edgeBind = useDrag(
-    ({ movement: [mx], velocity: [vx], active, cancel, event }) => {
+    ({ movement: [mx], velocity: [vx], active, cancel, initial: [startX], canceled }) => {
       if (isDesktop) { cancel(); return }
 
-      const startX = (event as PointerEvent).clientX
+      if (canceled) { pageX.set(0); return }
 
       if (isDetailPage) {
         // Swipe-from-left-edge to go back
@@ -128,7 +133,7 @@ export default function MainLayout() {
     {
       axis: 'x',
       enabled: !isDesktop && !mobileOpen,
-      filterTaps: true,
+      filterTaps: false,
       pointer: { touch: true },
     },
   )
@@ -140,19 +145,11 @@ export default function MainLayout() {
     <div className="h-full overflow-hidden">
       <TopBar />
 
-      {/* Left-edge swipe zone (mobile only) */}
-      {!isDesktop && !mobileOpen && (
-        <div
-          className="fixed top-0 left-0 bottom-0 w-6 z-[var(--z-edge)] touch-pan-y"
-          {...edgeBind()}
-          aria-hidden="true"
-        />
-      )}
-
       <div className="flex h-[calc(100dvh-var(--topbar-h))]" style={{ marginTop: 'var(--topbar-h)' }}>
         <Sidebar />
         <main
-          className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden"
+          {...edgeBind()}
+          className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden touch-pan-y"
           style={!isDesktop ? { paddingBottom: 'var(--mobile-tabbar-h)' } : undefined}
         >
           <PullToRefresh
@@ -162,6 +159,7 @@ export default function MainLayout() {
             <div className="px-3 py-4 sm:px-6 sm:py-6 lg:px-8 xl:px-10 2xl:mx-auto 2xl:max-w-[80%]">
               <AnimatePresence mode="wait">
                 <motion.div
+                  data-onboarding-page={location.pathname}
                   key={location.pathname}
                   initial={variants.initial}
                   animate={variants.animate}
@@ -186,6 +184,7 @@ export default function MainLayout() {
 
       <AgentWidget />
       <AiContextMenu />
+      <OnboardingGuide />
     </div>
   )
 }

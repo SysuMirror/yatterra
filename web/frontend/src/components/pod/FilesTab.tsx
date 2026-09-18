@@ -78,7 +78,7 @@ export function FilesTab({ podName }: { podName: string }) {
         >
           <ArrowLeft size={13} className="inline mr-1" />{dir === HOME ? '/shared' : HOME}
         </button>
-        <nav className="flex items-center gap-1 text-sm font-mono min-w-0 overflow-x-auto" aria-label="目录">
+        <nav data-onboarding-target="pod-files" className="flex items-center gap-1 text-sm font-mono min-w-0 overflow-x-auto" aria-label="目录">
           <button className="px-1.5 py-0.5 rounded text-muted hover:text-ink" onClick={() => setDir('/')}>/</button>
           {crumbs.map((c, i) => (
             <span key={i} className="flex items-center gap-1 whitespace-nowrap">

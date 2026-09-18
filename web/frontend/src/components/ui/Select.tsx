@@ -15,9 +15,10 @@ interface SelectProps {
   placeholder?: string
   label?: string
   className?: string
+  onboardingTarget?: string
 }
 
-export function Select({ value, onChange, options, placeholder = '选择...', label, className }: SelectProps) {
+export function Select({ value, onChange, options, placeholder = '选择...', label, className, onboardingTarget }: SelectProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -41,6 +42,7 @@ export function Select({ value, onChange, options, placeholder = '选择...', la
         <label htmlFor={`${listboxId}-trigger`} className="block text-xs font-semibold text-ink-2 mb-1.5">{label}</label>
       )}
       <button
+        data-onboarding-target={onboardingTarget}
         ref={triggerRef}
         id={`${listboxId}-trigger`}
         type="button"

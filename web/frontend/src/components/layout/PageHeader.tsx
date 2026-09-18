@@ -23,7 +23,7 @@ export default function PageHeader({ title, description, count, actions, childre
           <span className="text-sm text-muted">{description}</span>
         )}
         {doc && (
-          <DocHint section={doc.section} item={doc.item} label={doc.label ?? '使用文档'} />
+          <DocHint onboardingTarget="page-docs" section={doc.section} item={doc.item} label={doc.label ?? '使用文档'} />
         )}
       </div>
       {(actions || children) && (

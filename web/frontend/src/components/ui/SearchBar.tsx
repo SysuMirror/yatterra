@@ -6,13 +6,18 @@ interface SearchBarProps {
   onChange: (value: string) => void
   placeholder?: string
   className?: string
+  onboardingTarget?: string
 }
 
-export function SearchBar({ value, onChange, placeholder = '搜索...', className }: SearchBarProps) {
+export function SearchBar({ value, onChange, placeholder = '搜索...', className, onboardingTarget }: SearchBarProps) {
   return (
     <div className={cn('relative', className)}>
       <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
       <input
+        data-onboarding-target={onboardingTarget}
+        data-assistant-control={onboardingTarget ? `search-${onboardingTarget}` : undefined}
+        data-assistant-label={onboardingTarget ? placeholder : undefined}
+        data-assistant-actions={onboardingTarget ? 'inspect fill' : undefined}
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}

@@ -192,7 +192,7 @@ export default function PodList() {
             </div>
           )}
           <PageAiAssistant page="pod" context={pods.length > 0 ? `Pod 总数: ${pods.length}\n${pods.slice(0, 30).map(p => `  ${p.name} [${p.status}] CPU:${p.cpu} Mem:${p.mem}GB GPU:${p.gpus.join(',')} 类型:${p.type}`).join('\n')}` : '暂无 Pod'} />
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button data-onboarding-target="pods-create" onClick={() => setCreateOpen(true)}>
             <Plus size={16} /> 创建 Pod
           </Button>
         </div>
@@ -234,8 +234,9 @@ export default function PodList() {
 
       {/* Filters — wrap on narrow screens instead of squeezing */}
       <div className="flex items-center gap-3 mb-5 flex-wrap">
-        <SearchBar value={search} onChange={setSearch} placeholder="搜索 Pod 名称..." className="flex-1 min-w-[180px] max-w-xs" />
+        <SearchBar onboardingTarget="pods-search" value={search} onChange={setSearch} placeholder="搜索 Pod 名称..." className="flex-1 min-w-[180px] max-w-xs" />
         <Select
+          onboardingTarget="pods-status"
           value={statusFilter}
           onChange={setStatusFilter}
           options={[
@@ -262,7 +263,7 @@ export default function PodList() {
           action={<Button onClick={() => setCreateOpen(true)}><Plus size={16} /> 创建 Pod</Button>}
         />
       ) : view === 'table' ? (
-        <div className="glass-card rounded-2xl">
+        <div data-onboarding-state={pods.length > 0 ? 'pods-created' : undefined} className="glass-card rounded-2xl">
           <DataTable
             columns={columns}
             data={pods}
@@ -273,7 +274,7 @@ export default function PodList() {
       ) : (
         /* auto-fill + minmax: cards wrap to a new column instead of being
            crushed — never narrower than 260px, never stretched past 1fr */
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
+        <div data-onboarding-state={pods.length > 0 ? 'pods-created' : undefined} className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
           {pods.map((pod) => (
             <PodCard
               key={pod.name}

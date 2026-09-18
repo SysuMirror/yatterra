@@ -67,7 +67,7 @@ export default function InfraProxy() {
       <PageHeader title="子域名反代" description="Nginx 反向代理映射管理" doc={{ section: 'infra', item: 3, label: '子域名文档' }}>
         <div className="flex items-center gap-2">
           <PageAiAssistant page="proxy" context={`反代映射: ${mappings.length} 个 (${enabledCount} 启用, ${disabledCount} 禁用), FRP 隧道 ${frpc?.running ?? 0}/${frpc?.total ?? 0} 运行, 反代容器 ${data?.container_running ? '运行中' : '停止'}, 远程主机 ${remoteHosts?.length ?? 0} 台\n映射列表:\n${mappings.slice(0, 20).map((m: any) => `  ${m.subdomain} → :${m.port} ${m.enabled !== false ? '✓' : '✗'} ${m.note || ''}`).join('\n')}${remoteHosts?.length ? '\n远程主机:\n' + remoteHosts.slice(0, 10).map((h: any) => `  ${h.hostname || h.name}: ${h.online !== false ? '在线' : '离线'}, 磁盘 ${Math.round(h.disk?.used_pct ?? 0)}%, 内存 ${Math.round(h.mem?.used_pct ?? 0)}%${h.nvidia?.count ? `, ${h.nvidia.count} GPU` : ''}`).join('\n') : ''}`} />
-          <Button size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 添加映射</Button>
+          <Button data-onboarding-target="proxy-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 添加映射</Button>
         </div>
       </PageHeader>
 

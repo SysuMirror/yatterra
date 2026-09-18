@@ -1,63 +1,81 @@
 /// <reference lib="webworker" />
 /**
- * Custom Service Worker — workbox precaching + push notifications.
+ * Custom Service Worker — Workbox precaching, safe offline navigation, and push.
  *
- * VitePWA injectManifest mode: workbox injects __WB_MANIFEST into this file
- * at build time, replacing the placeholder below.
+ * VitePWA injectManifest mode replaces __WB_MANIFEST at build time.
  */
 declare const self: ServiceWorkerGlobalScope
 
-import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching'
+import { precacheAndRoute, cleanupOutdatedCaches, createHandlerBoundToURL } from 'workbox-precaching'
 import { registerRoute, NavigationRoute } from 'workbox-routing'
-import { createHandlerBoundToURL } from 'workbox-precaching'
-import { NetworkFirst } from 'workbox-strategies'
-import { CacheFirst } from 'workbox-strategies'
+import { NetworkFirst, CacheFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
+import { CacheableResponsePlugin } from 'workbox-cacheable-response'
 import { clientsClaim } from 'workbox-core'
 
-// ── Precache all build assets ────────────────────────────────
+// Build assets, including offline.html, are immutable and safe to precache.
 precacheAndRoute(self.__WB_MANIFEST)
 cleanupOutdatedCaches()
 
-// ── Take control immediately ─────────────────────────────────
-self.skipWaiting()
+// Keep a new worker waiting until the user explicitly accepts the update.
+// This prevents a background tab from being refreshed while a form is open.
 clientsClaim()
+self.addEventListener('activate', (event) => {
+  // Remove the previous broad API cache, which could contain personalized
+  // infrastructure responses from an older service-worker version.
+  event.waitUntil(caches.delete('api-cache'))
+})
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting()
+})
 
-// ── Navigation fallback (SPA) ────────────────────────────────
-// Exclude /api/ and /oauth/ from SW navigation interception so that OAuth
-// redirects (e.g. /api/auth/oauth/ssemarket → 302) and callbacks reach the
-// backend instead of being swallowed by the SPA shell (which 404s them).
-registerRoute(new NavigationRoute(createHandlerBoundToURL('/index.html'), {
-  denylist: [/^\/api\//, /^\/oauth\//],
-}))
+const offlineHandler = createHandlerBoundToURL('/offline.html')
 
-// ── Runtime caching ──────────────────────────────────────────
-// API: NetworkFirst (10s timeout) — but never cache credential-bearing
-// endpoints (storage/databases return root secrets for admins); those must
-// always hit the network so secrets never linger in Cache Storage.
+// Navigations use the network when possible, then a short-lived cached shell;
+// if neither exists, show the standalone offline page. API and OAuth requests
+// are deliberately excluded so they can never receive HTML from this route.
+const navigationStrategy = new NetworkFirst({
+  cacheName: 'navigation-pages',
+  networkTimeoutSeconds: 3,
+  plugins: [
+    new CacheableResponsePlugin({ statuses: [200] }),
+    new ExpirationPlugin({ maxEntries: 20, maxAgeSeconds: 24 * 60 * 60 }),
+  ],
+})
+
+registerRoute(
+  new NavigationRoute(
+    async ({ event, request, url }) => {
+      try {
+        return await navigationStrategy.handle({ event, request, url })
+      } catch {
+        return offlineHandler({ event, request, url })
+      }
+    },
+    { denylist: [/^\/api\//, /^\/oauth\//] },
+  ),
+)
+
+// Do not persist API responses: this app serves personalized infrastructure
+// data and secrets. Queries still work online and React Query retains a short
+// in-memory cache for fast in-app navigation. Mutations are never queued.
+
+// Versioned/static resources are safe to reuse across sessions.
 registerRoute(
   ({ url, request, sameOrigin }) =>
     request.method === 'GET'
     && sameOrigin
-    && url.pathname.startsWith('/api/')
-    && !/^\/api\/(infra\/(storage|databases)|users)/.test(url.pathname),
-  new NetworkFirst({
-    networkTimeoutSeconds: 10,
-    cacheName: 'api-cache',
-  }),
-)
-
-// Static assets: CacheFirst (30 days)
-registerRoute(
-  /\.(ttf|woff2|css|js)$/,
+    && /\.(ttf|woff2|css|js)$/.test(url.pathname),
   new CacheFirst({
     cacheName: 'static-assets',
-    plugins: [new ExpirationPlugin({ maxEntries: 100, maxAgeSeconds: 30 * 24 * 3600 })],
+    plugins: [
+      new CacheableResponsePlugin({ statuses: [200] }),
+      new ExpirationPlugin({ maxEntries: 100, maxAgeSeconds: 30 * 24 * 3600 }),
+    ],
   }),
   'GET',
 )
 
-// ── Push notifications ───────────────────────────────────────
 self.addEventListener('push', (event) => {
   let data: { title?: string; body?: string; url?: string } = {}
   try {
@@ -75,9 +93,6 @@ self.addEventListener('push', (event) => {
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-96.png',
       data: { url: data.url || '/' },
-      // `vibrate` and `actions` are valid in the spec and honoured by
-      // Chrome/Firefox, but TS's DOM lib doesn't declare them — spread a
-      // cast so the extra keys survive without widening the whole object.
       ...({
         vibrate: [100, 50, 100],
         actions: [
@@ -89,18 +104,13 @@ self.addEventListener('push', (event) => {
   )
 })
 
-// ── Notification click ───────────────────────────────────────
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-
-  // If user clicked "dismiss", do nothing
   if (event.action === 'dismiss') return
 
   const url = event.notification.data?.url || '/'
-
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-      // Focus existing window if open, otherwise open new
       for (const client of clients) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
           return (client as WindowClient).focus()

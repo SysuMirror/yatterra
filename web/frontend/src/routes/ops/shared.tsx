@@ -100,8 +100,8 @@ export default function OpsShared() {
       <PageHeader title="共享目录" description="跨 Pod 共享文件管理" doc={{ section: 'dev', item: 3, label: '共享目录文档' }}>
         <div className="flex gap-2">
           <PageAiAssistant page="shared" context={fileEntries.length > 0 ? `共享目录文件: ${fileEntries.length} 个\n${fileEntries.slice(0, 20).map((e: any) => `  ${e.isDir ? '📁' : '📄'} ${e.name} ${e.size ? `(${e.size})` : ''}`).join('\n')}` : '暂无共享文件'} />
-          <Button variant="secondary" size="sm" onClick={() => setMkdirOpen(true)}><FolderPlus size={14} /> <span className="hidden sm:inline">新目录</span></Button>
-          <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}><Upload size={14} /> <span className="hidden sm:inline">上传</span></Button>
+          <Button data-onboarding-target="shared-mkdir" variant="secondary" size="sm" onClick={() => setMkdirOpen(true)}><FolderPlus size={14} /> <span className="hidden sm:inline">新目录</span></Button>
+          <Button data-onboarding-target="shared-upload" variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}><Upload size={14} /> <span className="hidden sm:inline">上传</span></Button>
           <input type="file" ref={fileInputRef} onChange={handleUpload} className="hidden" />
         </div>
       </PageHeader>

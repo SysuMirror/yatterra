@@ -17,9 +17,10 @@ interface TabsProps {
   className?: string
   /** Enable horizontal swipe to switch tabs (mobile-friendly). */
   swipeable?: boolean
+  onboardingPrefix?: string
 }
 
-export function Tabs({ tabs, active, onChange, className, swipeable = false }: TabsProps) {
+export function Tabs({ tabs, active, onChange, className, swipeable = false, onboardingPrefix }: TabsProps) {
   const [indicator, setIndicator] = useState({ left: 0, width: 0 })
   const [showScrollHint, setShowScrollHint] = useState(false)
   const refs = useRef<Record<string, HTMLButtonElement | null>>({})
@@ -62,10 +63,9 @@ export function Tabs({ tabs, active, onChange, className, swipeable = false }: T
 
   // ── Swipe-to-switch-tab gesture ──
   const swipeBind = useDrag(
-    ({ movement: [mx], velocity: [vx], active: dragging, cancel }) => {
-      if (!swipeable || !dragging) return
-      // Only fire on release
-      if (dragging) return
+    ({ movement: [mx], velocity: [vx], last, canceled, event }) => {
+      // Only a completed release can change tabs; cancellation is not a swipe.
+      if (!swipeable || !last || canceled || event.type === 'touchcancel') return
 
       // Swipe left → next tab, swipe right → prev tab
       if (mx < -40 || (mx < -20 && vx < -0.3)) {
@@ -101,6 +101,11 @@ export function Tabs({ tabs, active, onChange, className, swipeable = false }: T
 
         {tabs.map((tab) => (
           <button
+            data-onboarding-target={onboardingPrefix ? `${onboardingPrefix}-${tab.key}` : undefined}
+            data-assistant-control={onboardingPrefix === 'pod-tab' ? `pod-tab-${tab.key}` : undefined}
+            data-assistant-label={onboardingPrefix === 'pod-tab' ? tab.label : undefined}
+            data-assistant-actions={onboardingPrefix === 'pod-tab' ? 'inspect click' : undefined}
+            type="button"
             key={tab.key}
             ref={(el) => { refs.current[tab.key] = el }}
             onClick={() => { haptic('selection'); onChange(tab.key) }}

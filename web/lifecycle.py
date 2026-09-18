@@ -30,6 +30,16 @@ def _deploy(name):
     return f"group-{name}"
 
 
+def _intent(name, stopped):
+    """Persist lifecycle intent without coupling imports at module load."""
+    try:
+        import pwa_alerts
+        pwa_alerts.set_intent(name, stopped)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("failed to persist lifecycle intent for %s", name)
+
+
 def start_group(name):
     """Scale deployment/group-{name} to 1. Returns dict {ok, msg, error}."""
     try:
@@ -39,6 +49,7 @@ def start_group(name):
         kvcache.delete(f"lifecycle:{name}")
         kvcache.delete("pod:statuses")
         kvcache.delete("pod:names")
+        _intent(name, False)
         return {"ok": True, "msg": f"已启动 {name}", "error": ""}
     except Exception as e:
         return {"ok": False, "msg": "", "error": str(e)}
@@ -53,6 +64,7 @@ def stop_group(name):
         kvcache.delete(f"lifecycle:{name}")
         kvcache.delete("pod:statuses")
         kvcache.delete("pod:names")
+        _intent(name, True)
         return {"ok": True, "msg": f"已停止 {name}", "error": ""}
     except Exception as e:
         return {"ok": False, "msg": "", "error": str(e)}
@@ -68,6 +80,7 @@ def restart_group(name):
         kvcache.delete(f"events:{name}")
         kvcache.delete("pod:statuses")
         kvcache.delete("pod:names")
+        _intent(name, False)
         return {"ok": True, "msg": f"已重启 {name}", "error": ""}
     except Exception as e:
         return {"ok": False, "msg": "", "error": str(e)}
@@ -215,10 +228,10 @@ def _group_state_raw(name):
     return d
 
 
-def group_state(name):
+def group_state(name, fresh=False):
     """kubectl get deployment -o json -> replicas/readyReplicas + pod phase + age.
     Cached in Redis for 10s. Returns dict. Never raises."""
-    cached = kvcache.get(f"lifecycle:{name}")
+    cached = None if fresh else kvcache.get(f"lifecycle:{name}")
     if cached is not None:
         return cached
     default = {
