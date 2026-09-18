@@ -7,10 +7,10 @@ description: YatTerra 分组开发平台（K3s + frp + Flask）的运维与开�
 
 ## 先建立心智模型
 
-平台 = **一个 Flask 应用**（`web/`，跑在宿主机 root）+ **25 个组容器 Pod**（K3s `students` 命名空间）
-+ **一组基础设施**（`platform-infra`：MySQL/Redis/Qdrant/MinIO）+ **公网中继**（ssemarket.cn 上的 frps + nginx_proxy 容器）。
+平台 = **一个 Flask 应用**（`web/`，跑在宿主机 root）+ **25 个组容器 Pod**（K3s `clouds` 命名空间）
++ **一组基础设施**（`platform-infra`：MySQL/Redis/Qdrant/MinIO）+ **公网中继**（example.com 上的 frps + nginx_proxy 容器）。
 
-所有跨机器动作都走 `web/remote_hosts.py`（SSH 到 ssemarket.cn），**不要**直接打 Tailscale 100.x。
+所有跨机器动作都走 `web/remote_hosts.py`（SSH 到 example.com），**不要**直接打 Tailscale 100.x。
 
 ## 下钻顺序（不要一上来读全部）
 
@@ -45,7 +45,7 @@ description: YatTerra 分组开发平台（K3s + frp + Flask）的运维与开�
 ```bash
 systemctl status yatterra-web yatterra-fleet-sampler yatterra-req-estimator
 sudo journalctl -u yatterra-web -n 50 --no-pager
-kubectl -n students get pods
+kubectl -n clouds get pods
 kubectl -n platform-infra get pods
 curl --noproxy '*' -s http://127.0.0.1:8090/health    # 注意本机 curl 需 --noproxy
 ```

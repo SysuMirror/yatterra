@@ -113,11 +113,11 @@ const sections: DocSection[] = [
           <>
             {P('进入 Pod 详情页后，可通过以下方式连接：')}
             {UL(
-              <>Web 终端 — 点击「终端」标签页，直接在浏览器中打开 Shell</>,
-              <>SSH — 在「凭证」标签页查看 SSH 连接信息和密码</>,
-              <>文件管理 — 在「文件」标签页浏览、编辑、上传文件</>,
+              <>连接 — 仅使用页面实际显示的连接信息；若没有主机、端口或凭证，平台未提供该连接，不要自行拼接公网地址</>,
+              <>文件管理 — 在「文件」标签页浏览、编辑、上传允许目录中的文件</>,
+              <>终端 — 仅在当前部署实际提供并加载成功时使用；本平台不承诺公共主机终端</>,
             )}
-            {P('终端基于 Socket.IO 实时连接，支持多会话。')}
+            {P('连接能力随 Pod 权限和状态变化。空、加载中或错误状态应以页面提示为准；不要把凭证复制到聊天、代码仓库或日志中。')}
           </>
         ),
       },
@@ -154,14 +154,16 @@ const sections: DocSection[] = [
         title: 'Pod 详情标签页',
         content: (
           <>
-            {P('每个 Pod 包含 8 个标签页：')}
+            {P('Pod 详情页的标签页按当前权限和功能显示，包括监控、连接、终端、文件、日志、应用日志、部署、成员和设置；凭证与子域名等能力也可能单独显示。')}
             {TB({
               headers: ['标签', '功能'],
               rows: [
                 ['监控', 'CPU / 内存实时曲线，历史指标图表'],
-                ['终端', 'Web Shell 终端（Socket.IO）'],
+                ['连接', '显示当前 Pod 实际提供的 SSH 命令、密码和 Web 地址'],
+                ['终端', '浏览器终端（当前部署实际提供并加载成功时）'],
                 ['文件', '文件浏览器 + 代码编辑器'],
                 ['日志', '容器标准输出日志流'],
+                ['应用日志', '应用服务输出'],
                 ['凭证', '数据库 / MinIO 连接信息'],
                 ['部署', '应用部署配置与运行管理'],
                 ['成员', 'Pod 成员邀请 / 审批 / 移除'],
@@ -192,12 +194,57 @@ const sections: DocSection[] = [
         title: '部署管理',
         content: (
           <>
-            {P('每个 Pod 支持多个部署（Deploy），每个部署定义一个应用运行配置：')}
+            {P('部署页创建并管理应用运行配置。先确认 Pod 正常运行，再选择仓库或本地 deploy.sh；提交后以状态徽标、启动/停止操作和部署日志确认结果：')}
             {UL(
-              <>名称 + 启动命令 + 端口映射</>,
-              <>支持启动 / 停止 / 查看日志 / 浏览文件</>,
-              <>部署独立于 Pod 生命周期，可单独启停</>,
+              <>来源可选仓库或本地脚本；本地脚本需填写界面要求的 deploy.sh 路径</>,
+              <>可配置服务/一次性任务、GPU、健康检查和（私有仓库时）Token</>,
+              <>支持启动、停止、查看运行日志；状态以页面轮询结果为准</>,
+              <>不要把仓库 Token 或环境变量秘密写进脚本、提交记录或截图</>,
             )}
+          </>
+        ),
+      },
+      {
+        title: '新手部署步骤',
+        content: (
+          <>
+            {P('下面是一条从 Pod 到应用的最短路径，所有主机、端口和凭证都以当前页面显示的值为准。')}
+            {UL(
+              <>在「连接」标签页查看分配的 SSH 命令、密码和 Web 地址；不要自行拼接未显示的端点</>,
+              <>在「设置」的环境变量区域添加应用需要的变量。环境变量变更按页面提示需要重启后生效；不要暴露凭证或 Token</>,
+              <>在「部署」中选择仓库或本地 deploy.sh，填写健康检查路径（如应用实际提供），然后提交</>,
+              <>应用应监听 0.0.0.0:8080；平台会注入 PORT=8080。根目录的 deploy.sh 应可执行</>,
+              <>部署脚本以前台方式运行主进程（使用 exec；不要用 nohup 把进程放到后台），并在脚本中安装所需依赖</>,
+              <>创建后用部署卡片的启动、停止和部署日志确认部署；「日志」看容器 stdout/stderr，「应用日志」看服务输出</>,
+            )}
+            {H4('高级：主动回报部署状态')}
+            {P(<>需要主动回报状态时，可使用页面/运行环境提供的 {CODE('REPORT_URL')}、{CODE('REPORT_TOKEN')} 和 {CODE('DEPLOY_ID')}。这些变量属于高级用法，Token 不要写入仓库、脚本、截图或日志。</>)}
+            {P('市场与云端日志如何映射到这些日志标签页目前未验证；请不要据此推断来源或编写额外端点。')}
+            {H4('可复制的最小 Python 示例')}
+            {PRE(`import os
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+
+port = int(os.environ.get('PORT', '8080'))
+server = ThreadingHTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+server.serve_forever()`)}
+            {H4('根目录 deploy.sh 示例')}
+            {PRE(`#!/usr/bin/env bash
+set -euo pipefail
+python -m pip install -r requirements.txt
+exec python app.py`)}
+            {P(<>保存为根目录的 {CODE('deploy.sh')} 并确保可执行：{CODE('chmod +x deploy.sh')}。脚本不要使用 {CODE('nohup')} 或把主进程放到后台。</>)}
+            {H4('SSH 与 VS Code')}
+            {UL(
+              <>在「连接」标签页复制平台显示的 SSH 命令和密码；不要改写其中的主机或端口</>,
+              <>若使用 SSH Config，把页面显示的 HostName、Port、User 原样填入本地 {CODE('~/.ssh/config')}，再在 VS Code Remote-SSH 中选择该 Host</>,
+              <>未显示 SSH 信息时不要自行猜测端点；可改用页面提供的浏览器终端或文件标签页</>,
+            )}
+            {H4('应用日志持久化')}
+            {PRE(`import logging, os
+log_dir = os.environ.get('LOG_DIR', '/tmp')
+os.makedirs(log_dir, exist_ok=True)
+logging.basicConfig(filename=os.path.join(log_dir, 'app.log'), level=logging.INFO)`)}
+            {P(<>高级主动回报使用平台提供的 {CODE('REPORT_URL')}、{CODE('REPORT_TOKEN')} 和 {CODE('DEPLOY_ID')}；不要把 Token 写入代码、仓库或日志。市场与云端日志映射目前未验证，请勿推断额外端点。</>)}
           </>
         ),
       },
@@ -379,7 +426,7 @@ const sections: DocSection[] = [
           <>
             {P(LINK('共享目录', '/ops/shared') + ' 提供跨 Pod 的文件共享：')}
             {UL(
-              <>根目录：/mnt/sdb/shared</>,
+              <>根目录：共享数据根下的 shared/（由 YATTERRA_SHARED_ROOT 指定）</>,
               <>浏览目录、查看文件内容（代码编辑器）</>,
               <>面包屑导航 + 返回上级</>,
               <>创建子目录</>,
@@ -495,11 +542,11 @@ const sections: DocSection[] = [
             {H4('要点')}
             {UL(
               <>连接内部机器一律走 {DOMAIN} 中继（SSH 经跳板端口、frp 经公网端口），不要使用 Tailscale 的 100.x 地址——Tailscale 网络在节点间经常不通，只作为备用</>,
-              <>DGX 服务器（主机名 spark-b973）通过 {DOMAIN}:2223 端口 SSH 登录</>,
+              <>内网推理机（DGX）通过 {DOMAIN} 的中继端口 SSH 登录（端口见部署配置）</>,
               <>公网服务器上有 fail2ban 和云镜防火墙（YJ-FIREWALL），两者都有 IP 白名单：换办公网络或新增出口 IP 后连不上 SSH，先检查是否被 fail2ban 封禁、再把新 IP 加入白名单</>,
             )}
             {H4('排障思路')}
-            {P('SSH 连接超时/拒绝：先确认本机出口 IP 是否在 fail2ban 与云镜白名单内；再确认中继端口（如 2223）是否可达；最后才排查目标机器本身。不要一上来就怀疑 Tailscale 或目标机配置。')}
+            {P('SSH 连接超时/拒绝：先确认本机出口 IP 是否在 fail2ban 与云镜白名单内；再确认中继端口是否可达；最后才排查目标机器本身。不要一上来就怀疑 Tailscale 或目标机配置。')}
           </>
         ),
       },
@@ -557,7 +604,7 @@ const sections: DocSection[] = [
               <>limits 保留用户设定的值（硬上限，允许突发）</>,
               <>requests 按实际用量的 EWMA（指数加权滑动平均）自动估算：CPU 为 EWMA × 1.3，内存为 EWMA × 1.4（内存不可压缩，留更多余量），下限 0.5 核 / 512Mi，无历史数据时取 limits 的一半</>,
               <>自动调和只降不升：稳态运行会逐步下调闲置 Pod 的 requests 释放调度空间；上调发生在用户 resize/重启时按最新 EWMA 重新计算</>,
-              <>状态持久化在 /opt/yatterra/req_estimates.json</>,
+              <>状态持久化在平台根目录下的 req_estimates.json</>,
             )}
             {H4('判断与处理')}
             {P('新 Pod 卡 Pending 且事件显示 Insufficient cpu：这是旧的 requests 过高预留导致的，等估算循环下调即可恢复；不要通过删除别的 Pod 来腾位置。')}
@@ -571,14 +618,14 @@ const sections: DocSection[] = [
             {P('主机高负载时按三层协作降级，避免整机卡死：terra 层写压力信号，sdpy 层应用自降级，app 层兜底驱逐。')}
             {H4('机制')}
             {UL(
-              <>压力信号：pressure_writer 每 2 秒把主机 CPU/GPU/内存/带宽压力写入 hostPath 共享文件 /mnt/sdb/shared/pressure/pressure.json</>,
+              <>压力信号：pressure_writer 每 2 秒把主机 CPU/GPU/内存/带宽压力写入 hostPath 共享目录下的 pressure/pressure.json</>,
               <>应用自降级：应用读取压力文件，压力升高时主动降低自己的吞吐（sdpy 层）</>,
               <>兜底驱逐：priority_kill 循环按 PRIORITY 环境变量驱逐低优先级程序。每个程序组部署时带 PRIORITY=critical / normal / best_effort；压力越过高阈值（默认 0.80）先停 best_effort，越过临界阈值（默认 0.92）再停 normal，critical 永不动</>,
               <>驱逐打分：priority_weight × (0.1 + 资源占比)，低优先级且占用大的先被停；压力回落并稳定 30 秒后按相反顺序自动恢复（带回滞与冷却）</>,
               <>非 GPU 程序忽略 GPU 压力，只受 CPU/内存/带宽压力驱逐</>,
             )}
             {H4('使用')}
-            {P('部署新程序时在组的环境变量里声明 PRIORITY，可牺牲的服务标 best_effort。驱逐状态与日志在 /opt/yatterra/priority_kill_state.json 和 priority_kill.log。')}
+            {P('部署新程序时在组的环境变量里声明 PRIORITY，可牺牲的服务标 best_effort。驱逐状态与日志在平台根目录下的 priority_kill_state.json 和 priority_kill.log。')}
           </>
         ),
       },
@@ -607,7 +654,7 @@ const sections: DocSection[] = [
             {UL(
               <>组内一律使用桶级 access key（一个 key 只授权一个桶），由平台在存储页/凭证页发放</>,
               <>严禁把 MinIO root 凭证下发给普通用户或写进用户代码——root 凭证能读写所有桶</>,
-              <>root 凭证仅管理员使用，存放在服务器 /opt/yatterra/minio.conf</>,
+              <>root 凭证仅管理员使用，存放在服务器平台根目录下的 minio.conf</>,
             )}
             {H4('排障')}
             {P('Pod 内连不上 MinIO：先确认 Pod 与 MinIO 在同一集群且用集群内服务名（不要用公网地址或 127.0.0.1）；再确认 access key 对应的桶名没写错。')}
@@ -628,7 +675,7 @@ const sections: DocSection[] = [
             {UL(
               <>所有映射（含未绑定 Pod 的历史映射）在 /infra/proxy 页面统一查看和管理</>,
               <>底层实现：平台通过 SSH 重写公网服务器 nginx_proxy 容器配置文件中固定标记段内的 server 块，nginx -t 校验通过才 reload，失败自动回滚</>,
-              <>权威状态文件为 /opt/yatterra/proxy_mappings.json</>,
+              <>权威状态文件为平台根目录下的 proxy_mappings.json</>,
             )}
           </>
         ),
@@ -1093,6 +1140,7 @@ export default function Docs() {
           <Card key={section.id} padding="none">
             {/* Section header */}
             <button
+              data-onboarding-target="docs-section"
               onClick={() => toggleSection(section.id)}
               className="w-full flex items-center gap-2.5 px-5 py-3.5 text-sm font-semibold text-ink hover:bg-black/[0.02] transition-colors"
             >
@@ -1121,6 +1169,7 @@ export default function Docs() {
                       className={cn(itemIdx > 0 && 'border-t border-black/[0.04]')}
                     >
                       <button
+                        data-onboarding-target="docs-item"
                         onClick={() => openItem(key, section.id, itemIdx)}
                         className="w-full flex items-center gap-2 px-5 py-2.5 text-sm text-ink-2 hover:bg-black/[0.015] transition-colors"
                       >

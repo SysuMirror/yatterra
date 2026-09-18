@@ -1,0 +1,16 @@
+# YatTerra 平台后端依赖
+#
+# 只列真正被 import 的第三方包（k8s 操作全部走 `kubectl` 子进程，不需要
+# kubernetes / PyYAML 客户端库）。版本下限取自参考部署实测版本。
+#
+#   python3 -m pip install -r requirements.txt
+#
+Flask>=3.1.3
+Flask-Compress>=1.24
+Flask-SocketIO>=5.6.1
+gunicorn>=26.1.0
+minio>=7.2.20
+PyMySQL>=1.1.2
+pywebpush>=2.5.0
+redis>=8.1.0
+requests>=2.32.5

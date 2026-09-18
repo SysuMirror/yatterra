@@ -4,24 +4,31 @@ K3s 单节点上的分组开发平台：每个组一个 Ubuntu 24.04 容器 Pod�
 公网 nginx 暴露 SSH / Web / GUI 端口，平台本体是一个 Flask 应用（管理 GUI + REST API）。
 
 - 平台 Web：`http://127.0.0.1:8090`（gunicorn，systemd `yatterra-web`）
-- 公网入口：`https://ssemarket.cn:24000`（经 frp + nginx_proxy 容器）
-- 组容器命名空间：`students`（历史名，可用 `YATTERRA_GROUP_NS` 覆盖）；基础设施命名空间：`platform-infra`
+- 公网入口：`https://<YATTERRA_PUBLIC_HOST>:24000`（经 frp + nginx_proxy 容器）
+- 组容器命名空间：`clouds`（可用 `YATTERRA_GROUP_NS` 覆盖）；基础设施命名空间：`platform-infra`
 
 ## 部署配置（环境变量）
 
 所有部署相关的值（域名、端口方案、命名空间、宿主机路径、中继服务器路径）
-集中在 **`web/siteconf.py`**，从环境变量读取，默认值即参考部署。前端对应
-`web/frontend/src/lib/site.ts`（构建期 `VITE_*`）。
+集中在 **`web/siteconf.py`**，从环境变量读取。**源码里的默认值是通用占位符**
+（`example.com` / `/srv/yatterra`），不含任何真实部署的拓扑 —— 真实部署必须
+把用到的值写进 `.env`。前端对应 `web/frontend/src/lib/site.ts`（构建期 `VITE_*`）。
 
 改配置不用改源码：
 
 ```bash
-cp .env.example .env && chmod 600 .env   # 填凭证 + 按需覆盖站点值
-sudo systemctl restart yatterra-web
+cp .env.example .env && chmod 600 .env   # 填凭证 + 站点值（域名/路径/命名空间）
+sudo systemctl restart yatterra-web      # 所有守护进程都读这个 EnvironmentFile
 ```
 
 凭证（DB / MinIO / OAuth / frpc / webhook）**没有硬编码默认值**，必须来自
 `.env`。完整变量清单见 [`.env.example`](.env.example)。
+
+手动跑平台模块（不走 systemd，读不到 `.env`）时先加载：
+
+```bash
+set -a; . web/env.sh; set +a
+```
 
 ## 许可
 
@@ -35,7 +42,6 @@ sudo systemctl restart yatterra-web
 | `web/` | 平台本体：Flask 应用 + 后台守护 + 前端 SPA | [web/README.md](web/README.md) |
 | `web/api/` | REST API 蓝图（按资源分文件） | [web/api/README.md](web/api/README.md) |
 | `web/frontend/` | React + Vite SPA 源码与发布脚本 | [web/frontend/README.md](web/frontend/README.md) |
-| `web/services/` | 可脱离 Flask 独立运行的服务模块（含一份未使用的旧副本） | [web/services/README.md](web/services/README.md) |
 | `web/middleware/` | API 中间件（鉴权/CSRF/分页/错误） | [web/middleware/README.md](web/middleware/README.md) |
 | `web/tests/` | 后端单元测试 | [web/tests/README.md](web/tests/README.md) |
 | `harnesses/` | 每用户的 Agent 编排 DAG（运行时数据） | [harnesses/README.md](harnesses/README.md) |
@@ -54,21 +60,30 @@ sudo systemctl restart yatterra-web
 
 > 这些文件**不是**文档，改动即改行为。改前先看对应模块的 README/SKILL。
 
-## 三个后台服务
+## 后台服务
+
+unit 副本在 [`systemd/`](systemd/README.md)（生效位置是 `/etc/systemd/system/`）。
 
 | unit | 入口 | 作用 |
 |---|---|---|
 | `yatterra-web` | `web/app.py`（gunicorn） | 管理 GUI + REST API + 后台线程 |
 | `yatterra-fleet-sampler` | `web/fleet_sampler.py` | 每 15s 采集本机+远程主机指标 → SQLite |
 | `yatterra-req-estimator` | `web/req_loop.py` | 按 EWMA 实际用量调整 Pod 的 k8s requests |
+| `gpu-scheduler` | `web/gpu_loop.py` | GPU 压力迁移 / 驱逐 |
+| `sse-pressure-writer` | `web/pressure_writer.py` | 写主机压力信号（hostPath 共享文件） |
+| `sse-priority-kill` | `web/priority_kill.py` | 按 PRIORITY 驱逐低优先级程序 |
+| `yatterra-pwa-alert-monitor` | `web/pwa_alerts.py` | Pod 告警 → PWA 推送 |
+| `yatterra-pwa-alert-queue` | `web/pwa_alerts.py` | 推送队列 worker |
+
+所有 unit 都通过 `EnvironmentFile` 读 `<平台根目录>/.env`。
 
 ## 快速上手
 
 ```bash
 systemctl status yatterra-web
 sudo systemctl restart yatterra-web          # 改后端后
-cd /opt/yatterra/web/frontend && npm run build:stage && npm run publish:spa -- --staging <上一步输出路径>   # 改前端后
-kubectl -n students get pods
+cd <平台根目录>/web/frontend && npm run build:stage && npm run publish:spa -- --staging <上一步输出路径>   # 改前端后
+kubectl -n clouds get pods
 ```
 
 AI Agent 请先读 [SKILL.md](SKILL.md)。

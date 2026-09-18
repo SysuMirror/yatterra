@@ -29,7 +29,7 @@ react-router 7 · recharts · xterm · CodeMirror · vite-plugin-pwa（Workbox i
 ## 构建与发布
 
 ```bash
-cd /opt/yatterra/web/frontend
+cd /srv/yatterra/web/frontend
 npm run build:stage                      # 输出 staging 目录路径
 npm run publish:spa -- --staging <路径>   # 原子发布到 ../static/spa/
 npx tsc --noEmit -p tsconfig.json        # 类型检查（提交前建议跑）

@@ -46,8 +46,12 @@ manifests/*.yml
 users.db
 *.db
 *.db.lock
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 
 # ── 日志 ────────────────────────────────────────────────────────────────────
 *.log
@@ -75,6 +79,14 @@ web/.spa-staging/
 .spa.publish.lock
 .DS_Store
 Thumbs.db
+
+# 迁移/修复过程产生的备份目录（含 frpc token、Pod dump、学生密码清单）
+backup-*/
+backup-*/**
+*-backup-*/
+*-backup-*/**
+.touch-fix-backups/
+web/.touch-fix-backups/
 
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/

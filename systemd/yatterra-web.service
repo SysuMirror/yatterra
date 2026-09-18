@@ -1,0 +1,17 @@
+[Unit]
+Description=YatTerra Management GUI
+After=network.target k3s.service
+Wants=k3s.service
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/yatterra/web
+ExecStart=/usr/bin/python3 -m gunicorn -c gunicorn.conf.py app:app
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+EnvironmentFile=/srv/yatterra/.env
+
+[Install]
+WantedBy=multi-user.target

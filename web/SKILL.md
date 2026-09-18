@@ -10,7 +10,7 @@ description: 改 YatTerra 平台后端（Flask 应用、Agent 引擎、Pod 生�
 ```bash
 # 1. 改 web/*.py
 # 2. 语法自检
-python3 -c "import ast;ast.parse(open('/opt/yatterra/web/XXX.py').read())"
+python3 -c "import ast;ast.parse(open('/srv/yatterra/web/XXX.py').read())"
 # 3. 重启（唯一让改动生效的方式）
 sudo systemctl restart yatterra-web && sleep 5
 curl --noproxy '*' -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8090/health

@@ -5,7 +5,7 @@
 ## ⚠️ 这是生成产物
 
 由 `web/groups.py` 的 `write_manifest(g)` 写出，在 `apply_group()` 里被
-`kubectl apply`。**权威状态是 `/opt/yatterra/groups.json`**，不是这里的 YAML。
+`kubectl apply`。**权威状态是 `/srv/yatterra/groups.json`**，不是这里的 YAML。
 
 手改 YAML 会在下次 `create_group` / `resize` / 任何触发 `apply_group` 的操作时被覆盖。
 
@@ -32,9 +32,9 @@
 ## 常用
 
 ```bash
-ls /opt/yatterra/manifests/
-kubectl -n students get deploy,svc
-kubectl -n students get deploy group-embedding -o yaml   # 看集群里的实际状态
+ls /srv/yatterra/manifests/
+kubectl -n clouds get deploy,svc
+kubectl -n clouds get deploy group-embedding -o yaml   # 看集群里的实际状态
 ```
 
 细节见 [SKILL.md](SKILL.md)。

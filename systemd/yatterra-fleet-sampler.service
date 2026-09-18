@@ -7,9 +7,10 @@ Wants=network-online.target
 Type=simple
 User=sse
 Group=sse
-WorkingDirectory=/opt/yatterra/web
-Environment=YATTERRA_FLEET_DB=/opt/yatterra/web/fleet_metrics.db
-ExecStart=/usr/bin/python3 /opt/yatterra/web/fleet_sampler.py --interval 15
+WorkingDirectory=/srv/yatterra/web
+Environment=YATTERRA_FLEET_DB=/srv/yatterra/web/fleet_metrics.db
+ExecStart=/usr/bin/python3 /srv/yatterra/web/fleet_sampler.py --interval 15
+EnvironmentFile=-/srv/yatterra/.env
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=35

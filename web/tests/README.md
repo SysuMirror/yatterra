@@ -11,10 +11,10 @@
 ## 运行
 
 ```bash
-cd /opt/yatterra/web
-PYTHONPATH=/opt/yatterra/web python3 -m unittest discover -s tests -v
+cd /srv/yatterra/web
+PYTHONPATH=/srv/yatterra/web python3 -m unittest discover -s tests -v
 # 或单个文件
-PYTHONPATH=/opt/yatterra/web python3 tests/test_fleet.py
+PYTHONPATH=/srv/yatterra/web python3 tests/test_fleet.py
 ```
 
 注意：**必须**设 `PYTHONPATH`（模块是扁平的，不在包内）。

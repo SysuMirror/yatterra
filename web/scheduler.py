@@ -11,7 +11,7 @@ Two classes:
 
 Pressure signal is hardware sampling (nvidia-smi), per design.
 
-State: /opt/yatterra/gpu_alloc.json (root 600). Single platform process
+State: <platform root>/gpu_alloc.json (root 600). Single platform process
 serializes placements via _LOCK.
 """
 import json
@@ -19,7 +19,9 @@ import os
 import subprocess
 import threading
 
-ALLOC_FILE = "/opt/yatterra/gpu_alloc.json"
+import siteconf
+
+ALLOC_FILE = siteconf.path("gpu_alloc.json")
 
 # --- tunables ---
 DEFAULT_TRAIN_VRAM_MB = 12000      # default training VRAM need if deploy omits

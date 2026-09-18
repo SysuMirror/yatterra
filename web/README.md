@@ -26,7 +26,7 @@ Flask 应用（`app.py`）+ 一组扁平的功能模块 + 前端 SPA。gunicorn 
 
 **用户与权限**
 - `users.py` — 4 角色 + Pod 级 owner/member 权限；MySQL 存储；API Token
-- `audit.py` — 审计流水（写 `/opt/yatterra/audit.log`）
+- `audit.py` — 审计流水（写 `/srv/yatterra/audit.log`）
 - `oauth2_login.py` — SSE Market / UniSSO OAuth
 
 **AI 能力**
@@ -62,7 +62,7 @@ Flask 应用（`app.py`）+ 一组扁平的功能模块 + 前端 SPA。gunicorn 
 sudo systemctl restart yatterra-web              # 改后端后必做
 sudo journalctl -u yatterra-web -n 50 --no-pager
 curl --noproxy '*' -s http://127.0.0.1:8090/health
-PYTHONPATH=/opt/yatterra/web python3 -m unittest discover -s /opt/yatterra/web/tests -v
+PYTHONPATH=/srv/yatterra/web python3 -m unittest discover -s /srv/yatterra/web/tests -v
 ```
 
 详细操作指南见 [SKILL.md](SKILL.md)。

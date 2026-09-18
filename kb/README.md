@@ -35,8 +35,8 @@ kb/
 ```bash
 # 平台 API（需管理员）
 curl -X POST http://127.0.0.1:8090/api/ai/kb/ingest -H "Authorization: Bearer <token>"
-# 或直接跑
-cd /opt/yatterra/web && python3 -c "import kb_service; print(kb_service.ingest_all())"
+# 或直接跑（手动跑必须加载 .env，否则读到占位域名/路径）
+cd /srv/yatterra/web && set -a && . env.sh && set +a && python3 -c "import kb_service; print(kb_service.ingest_all())"
 ```
 
 状态：`GET /api/ai/kb/status`

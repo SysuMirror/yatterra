@@ -1,0 +1,13 @@
+[Unit]
+Description=yatterra priority-aware pressure eviction loop
+After=network.target sse-pressure-writer.service
+
+[Service]
+ExecStart=/usr/bin/python3 /srv/yatterra/web/priority_kill.py
+EnvironmentFile=-/srv/yatterra/.env
+Restart=always
+User=root
+Environment=PRIORITY_KILL_POLL_S=5
+
+[Install]
+WantedBy=multi-user.target

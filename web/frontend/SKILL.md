@@ -8,7 +8,7 @@ description: 改 YatTerra 前端（页面、组件、样式、PWA、发布）时
 ## 改完必须发布（两步，不能省）
 
 ```bash
-cd /opt/yatterra/web/frontend
+cd /srv/yatterra/web/frontend
 npx tsc --noEmit -p tsconfig.json                 # 先过类型
 npm run build:stage                                # 输出一个 .spa-staging/release-xxxx 路径
 npm run publish:spa -- --staging <上一步的路径>      # 原子发布到 ../static/spa/
@@ -22,7 +22,7 @@ npm run publish:spa -- --staging <上一步的路径>      # 原子发布到 ../
 ```bash
 timeout 15 curl --noproxy '*' -s http://127.0.0.1:8090/ | grep -o 'assets/index-[^"]*\.js'
 # 确认新 hash 出现；再确认新页面字符串在对应 chunk 里
-grep -rl "你的新增文案" /opt/yatterra/web/static/spa/assets/ | head
+grep -rl "你的新增文案" /srv/yatterra/web/static/spa/assets/ | head
 ```
 
 ## 定位

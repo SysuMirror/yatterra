@@ -12,8 +12,8 @@ description: 改 YatTerra 后台服务（unit 文件、环境变量、重启）�
 sudo systemctl daemon-reload
 sudo systemctl restart yatterra-xxx
 systemctl status yatterra-xxx --no-pager
-# 2. 同步副本到这里，保持版本库有记录
-sudo cp /etc/systemd/system/yatterra-xxx.service /opt/yatterra/systemd/
+# 2. 同步副本到这里（路径换成占位 /srv/yatterra），保持版本库有记录
+sudo cp /etc/systemd/system/yatterra-xxx.service <平台根目录>/systemd/
 ```
 
 **只改 `systemd/` 里的副本是无效的。**
@@ -28,7 +28,9 @@ sudo systemctl restart yatterra-web
 
 ## 环境变量
 
-- `yatterra-web` 的密钥来自 `/opt/yatterra/.env`（`EnvironmentFile`）。
+- **所有** unit 的配置都来自 `<平台根目录>/.env`（`EnvironmentFile`）。
+  源码默认值是通用占位符，真实域名/路径必须写在 `.env` 里 —— 漏了不会报错，
+  但守护进程会读到占位值（压力文件写错目录、驱逐循环读不到信号）。
 - 覆盖单个变量用 drop-in，别改主 unit：
 
 ```bash
@@ -39,9 +41,10 @@ sudo systemctl edit yatterra-web       # 生成 /etc/systemd/system/yatterra-web
 
 ## 加一个新服务
 
-1. 写 unit 放 `/etc/systemd/system/`，`WorkingDirectory=/opt/yatterra/web`。
+1. 写 unit 放 `/etc/systemd/system/`，`WorkingDirectory=<平台根目录>/web`，
+   并加 `EnvironmentFile=-<平台根目录>/.env`。
 2. `daemon-reload` + `enable --now`。
-3. 复制一份到 `systemd/`，并在 `README.md` 的表里登记。
+3. 复制一份到 `systemd/`（路径换成占位 `/srv/yatterra`），并在 `README.md` 的表里登记。
 
 ## 坑
 
@@ -50,5 +53,5 @@ sudo systemctl edit yatterra-web       # 生成 /etc/systemd/system/yatterra-web
 - `yatterra-web` 的 `workers=1` 是刻意的（SocketIO 需要粘性），别改成多 worker。
 - `preload_app=False` 是刻意的（后台线程必须在 worker 内启动），别改成 True。
 - fleet-sampler 用 `flock` 保证单实例；手动跑 `--once` 时若服务在跑会拿不到锁。
-- 三个服务都以 root 或 `sse` 运行；unit 里的 `User=` 别乱改，很多模块依赖 root 读
+- 服务以 root 或 `sse` 运行；unit 里的 `User=` 别乱改，很多模块依赖 root 读
   `groups.json`、调 `kubectl`。

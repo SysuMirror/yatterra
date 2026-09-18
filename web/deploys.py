@@ -25,8 +25,8 @@ import audit
 import groups
 import siteconf
 
-STATE_FILE = "/opt/yatterra/deploys.json"
-WEBHOOK_CONF = "/opt/yatterra/webhook.conf"
+STATE_FILE = siteconf.path("deploys.json")
+WEBHOOK_CONF = siteconf.path("webhook.conf")
 ALLOWED_HOSTS = ("github.com", "gitee.com")
 CLONE_TIMEOUT = 180            # clone/pull cap (s)
 LOG_TAIL = 400                 # lines returned by logs()

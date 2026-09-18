@@ -1,13 +1,14 @@
 """Central site configuration — every deployment-specific value in one place.
 
-All values are read from environment variables, with defaults that match the
-reference deployment so the platform runs unmodified out of the box. Operators
-override them via the systemd ``EnvironmentFile`` (``/opt/yatterra/.env``)
-without editing source.
+All values are read from environment variables. The defaults are **generic
+placeholders** (``example.com``, ``/srv/yatterra``, …) so that no real
+deployment's topology is baked into the source. A real deployment must set the
+values it cares about in the systemd ``EnvironmentFile``
+(``<platform root>/.env``) — see ``.env.example`` for the full list.
 
 Nothing secret is hardcoded here: credentials (OAuth secrets, frpc admin
 password, DB/MinIO keys) have **empty** defaults and must come from the
-environment. See ``.env.example`` for the full list.
+environment.
 """
 import os
 
@@ -35,7 +36,7 @@ def _list(name, default):
 # --------------------------------------------------------------------------- #
 # Layout
 # --------------------------------------------------------------------------- #
-ROOT = _env("YATTERRA_ROOT", "/opt/yatterra")
+ROOT = _env("YATTERRA_ROOT", "/srv/yatterra")
 WEB_DIR = _env("YATTERRA_WEB_DIR", os.path.join(ROOT, "web"))
 
 
@@ -52,10 +53,8 @@ def web_path(*parts):
 # --------------------------------------------------------------------------- #
 # Kubernetes namespaces
 # --------------------------------------------------------------------------- #
-# GROUP_NS holds the per-group work containers ("groups" in the UI). The
-# namespace name itself is still `students` for backward compatibility with
-# existing clusters; override with YATTERRA_GROUP_NS.
-GROUP_NS = _env("YATTERRA_GROUP_NS", _env("YATTERRA_STUDENT_NS", "students"))
+# GROUP_NS holds the per-group work containers ("groups" in the UI).
+GROUP_NS = _env("YATTERRA_GROUP_NS", "clouds")
 INFRA_NS = _env("YATTERRA_INFRA_NS", "platform-infra")
 
 # In-cluster service endpoints (depend on the namespaces above).
@@ -71,7 +70,7 @@ MINIO_SERVICE = _env("YATTERRA_MINIO_SERVICE",
 # --------------------------------------------------------------------------- #
 # Public entry (relay domain + port scheme)
 # --------------------------------------------------------------------------- #
-DOMAIN = _env("YATTERRA_DOMAIN", "ssemarket.cn")
+DOMAIN = _env("YATTERRA_DOMAIN", "example.com")
 PUBLIC_HOST = _env("YATTERRA_PUBLIC_HOST", DOMAIN)
 PUBLIC_SCHEME = _env("YATTERRA_PUBLIC_SCHEME", "https")
 
@@ -92,14 +91,14 @@ PLATFORM_URL = _env("YATTERRA_PLATFORM_URL", public_url(PLATFORM_GUI_PORT))
 # --------------------------------------------------------------------------- #
 # Host data roots (hostPath volumes)
 # --------------------------------------------------------------------------- #
-GROUP_DATA_ROOT = _env("YATTERRA_GROUP_DATA_ROOT", "/mnt/sdb/groups")
-SHARED_ROOT = _env("YATTERRA_SHARED_ROOT", "/mnt/sdb/shared")
-DB_DATA_ROOT = _env("YATTERRA_DB_DATA_ROOT", "/mnt/sdb/db")
-MINIO_DATA_ROOT = _env("YATTERRA_MINIO_DATA_ROOT", "/mnt/sdb/minio")
-HONEYPOT_DIR = _env("YATTERRA_HONEYPOT_DIR", "/mnt/sdb/honeypot")
+GROUP_DATA_ROOT = _env("YATTERRA_GROUP_DATA_ROOT", "/srv/data/groups")
+SHARED_ROOT = _env("YATTERRA_SHARED_ROOT", "/srv/data/shared")
+DB_DATA_ROOT = _env("YATTERRA_DB_DATA_ROOT", "/srv/data/db")
+MINIO_DATA_ROOT = _env("YATTERRA_MINIO_DATA_ROOT", "/srv/data/minio")
+HONEYPOT_DIR = _env("YATTERRA_HONEYPOT_DIR", "/srv/data/honeypot")
 PRESSURE_DIR = _env("YATTERRA_PRESSURE_DIR",
                     os.path.join(SHARED_ROOT, "pressure"))
-DISK_MOUNTS = _list("YATTERRA_DISK_MOUNTS", ["/", "/mnt/sdb"])
+DISK_MOUNTS = _list("YATTERRA_DISK_MOUNTS", ["/", "/srv/data"])
 
 # --------------------------------------------------------------------------- #
 # frp — frpc admin API (used to reload tunnels)
@@ -111,21 +110,21 @@ FRPC_ADMIN_PASS = _env("FRPC_ADMIN_PASS", "")   # required; set in .env
 # --------------------------------------------------------------------------- #
 # Public relay server (managed over SSH via remote_hosts.json)
 # --------------------------------------------------------------------------- #
-RELAY_HOST_NAME = _env("YATTERRA_RELAY_HOST", "ssemarket")
+RELAY_HOST_NAME = _env("YATTERRA_RELAY_HOST", "relay")
 NGINX_PROXY_CONF = _env("YATTERRA_NGINX_PROXY_CONF",
-                        "/root/SSE_Market/nginx_proxy/nginx.conf")
+                        "/etc/nginx/conf.d/relay-proxy.conf")
 NGINX_PROXY_CONTAINER = _env("YATTERRA_NGINX_PROXY_CONTAINER",
-                             "sse_market_server-nginx_proxy-1")
+                             "nginx-proxy")
 NGINX_WEB_CONF = _env("YATTERRA_NGINX_WEB_CONF",
                       "/etc/nginx/sites-available/https-web.conf")
 NGINX_SSL_CERT = _env("YATTERRA_NGINX_SSL_CERT",
-                      f"/root/SSE_Market/Nginx/live/{DOMAIN}/fullchain.pem")
+                      f"/etc/nginx/ssl/{DOMAIN}/fullchain.pem")
 NGINX_SSL_KEY = _env("YATTERRA_NGINX_SSL_KEY",
-                     f"/root/SSE_Market/Nginx/live/{DOMAIN}/privkey.pem")
+                     f"/etc/nginx/ssl/{DOMAIN}/privkey.pem")
 # Subdomains that the proxy manager must never hand out.
 RESERVED_SUBDOMAINS = set(_list(
     "YATTERRA_RESERVED_SUBDOMAINS",
-    ["ssemarket", "www", "cloud", "sso", "admin", "iwiki"]))
+    ["www", "cloud", "sso", "admin"]))
 
 # --------------------------------------------------------------------------- #
 # Agent harnesses (per-user orchestration DAGs)
@@ -138,9 +137,8 @@ HARNESSES_PUBLIC_DIR = _env("YATTERRA_HARNESSES_PUBLIC_DIR",
 # Group work container
 # --------------------------------------------------------------------------- #
 # Container name inside the pod, and the unprivileged login user inside it.
-GROUP_CONTAINER = _env("YATTERRA_GROUP_CONTAINER",
-                       _env("YATTERRA_STUDENT_CONTAINER", "ubuntu"))
-CLOUD_USER = _env("YATTERRA_CLOUD_USER", _env("YATTERRA_STUDENT_USER", "cloud"))
+GROUP_CONTAINER = _env("YATTERRA_GROUP_CONTAINER", "ubuntu")
+CLOUD_USER = _env("YATTERRA_CLOUD_USER", "cloud")
 CLOUD_UID = _int("YATTERRA_CLOUD_UID", 1001)
 # Env var the container entrypoint reads to set the login password.
 PASSWORD_ENV = _env("YATTERRA_PASSWORD_ENV", "CLOUD_PASSWORD")

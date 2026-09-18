@@ -1,0 +1,15 @@
+[Unit]
+Description=YatTerra GPU scheduler loop (pressure migration/eviction)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/yatterra/web
+ExecStart=/usr/bin/python3 /srv/yatterra/web/gpu_loop.py
+EnvironmentFile=-/srv/yatterra/.env
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

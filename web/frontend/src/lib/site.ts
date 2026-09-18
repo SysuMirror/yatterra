@@ -3,13 +3,14 @@
  *
  * Vite inlines `import.meta.env.VITE_*` at build time, so these are baked into
  * the bundle. Set them in `web/frontend/.env` (or the shell) before
- * `npm run build:stage`. Defaults match the reference deployment.
+ * `npm run build:stage`. Defaults are generic placeholders — a real deployment
+ * must set the values it cares about.
  */
 
 const env = import.meta.env
 
-/** Public relay parent domain, e.g. "ssemarket.cn". */
-export const DOMAIN: string = env.VITE_DOMAIN || 'ssemarket.cn'
+/** Public relay parent domain, e.g. "example.com". */
+export const DOMAIN: string = env.VITE_DOMAIN || 'example.com'
 
 /** Public host for SSH / web entry (usually the same as DOMAIN). */
 export const PUBLIC_HOST: string = env.VITE_PUBLIC_HOST || DOMAIN
@@ -23,7 +24,7 @@ export function publicUrl(port?: number | string | null): string {
   return port ? `${base}:${port}` : base
 }
 
-/** Build a subdomain URL, e.g. sub("app") → "https://app.ssemarket.cn". */
+/** Build a subdomain URL, e.g. sub("app") → "https://app.example.com". */
 export function subdomainUrl(sub: string): string {
   return `${PUBLIC_SCHEME}://${sub}.${DOMAIN}`
 }

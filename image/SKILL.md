@@ -8,7 +8,7 @@ description: 改组容器镜像（加软件、改用户、改 sshd 配置）或�
 ## 重建镜像
 
 ```bash
-cd /opt/yatterra/image && sudo bash build.sh
+cd /srv/yatterra/image && sudo bash build.sh
 ```
 
 流程：debootstrap noble → 配 apt 源 → chroot 装包/建用户/配 sshd → 写 entrypoint
@@ -34,7 +34,7 @@ cd /opt/yatterra/image && sudo bash build.sh
 注意：`/home/cloud` 是 hostPath 持久化的，重建 Pod 不丢数据。
 
 ```bash
-kubectl -n students rollout restart deploy/group-<name>
+kubectl -n clouds rollout restart deploy/group-<name>
 ```
 
 ## 坑
@@ -42,7 +42,7 @@ kubectl -n students rollout restart deploy/group-<name>
 - 用户必须是 **`cloud`**，uid 1001。平台代码（`groups.py` 的 hostPath chown、
   `agent.py` 的 `su -l cloud`、SSH 凭证）全都硬编码这个名字。名字/uid 可通过
   `YATTERRA_CLOUD_USER` / `YATTERRA_CLOUD_UID` 覆盖，但镜像里也得同步改。
-- 密码环境变量是 **`CLOUD_PASSWORD`**（旧名 `STUDENT_PASSWORD` 仍兼容）。
+- 密码环境变量是 **`CLOUD_PASSWORD`**（由 `groups.py` 注入，名可经 `YATTERRA_PASSWORD_ENV` 覆盖）。
 - `entrypoint.sh` 里 `set -e` + 前台 `sshd -D`：sshd 挂了容器就退出，
   这正是 Pod 自愈依赖的信号。
 - 镜像导入 k3s 用的是 `k3s ctr images import`（containerd），不是 docker daemon。

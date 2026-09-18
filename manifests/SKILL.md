@@ -8,7 +8,7 @@ description: 排查或修改组 K8s 清单（Deployment/Service、端口、挂�
 ## 铁律
 
 **不要手改这里的 YAML。** 它是 `web/groups.py` 的生成产物，权威状态在
-`/opt/yatterra/groups.json`。手改会在下次 `apply_group()` 时被覆盖，
+`/srv/yatterra/groups.json`。手改会在下次 `apply_group()` 时被覆盖，
 且造成「文件与集群不一致」的假象。
 
 要改清单内容 → 改 `web/groups.py` 里生成 YAML 的模板 → 触发重建：
@@ -23,15 +23,15 @@ groups.apply_group(g)          # 重新生成 + kubectl apply
 
 ```bash
 # 集群实际状态（权威）
-kubectl -n students get deploy,svc,pod -l app=group-<name>
-kubectl -n students describe deploy group-<name>
-kubectl -n students logs deploy/group-<name> --tail=50
+kubectl -n clouds get deploy,svc,pod -l app=group-<name>
+kubectl -n clouds describe deploy group-<name>
+kubectl -n clouds logs deploy/group-<name> --tail=50
 
 # 生成的文件
-cat /opt/yatterra/manifests/group-<name>.yaml
+cat /srv/yatterra/manifests/group-<name>.yaml
 
 # 权威状态
-sudo python3 -c "import json;print(json.load(open('/opt/yatterra/groups.json'))['groups']['<name>'])"
+sudo python3 -c "import json;print(json.load(open('/srv/yatterra/groups.json'))['groups']['<name>'])"
 ```
 
 ## 常见问题

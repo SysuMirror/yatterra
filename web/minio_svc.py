@@ -244,7 +244,7 @@ def remove_bucket(name, force=False):
 
 
 # --- access keys + bucket-scoped policies (via mc admin) ---
-KEYS_FILE = "/opt/yatterra/minio_keys.json"
+KEYS_FILE = siteconf.path("minio_keys.json")
 import tempfile
 
 

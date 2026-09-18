@@ -1,0 +1,15 @@
+[Unit]
+Description=YatTerra CPU/mem request estimator (EWMA → k8s requests)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/yatterra/web
+ExecStart=/usr/bin/python3 /srv/yatterra/web/req_loop.py
+EnvironmentFile=-/srv/yatterra/.env
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=yatterra pressure signal writer (env-aware apps)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /srv/yatterra/web/pressure_writer.py
+EnvironmentFile=-/srv/yatterra/.env
+Restart=always
+RestartSec=3
+User=root
+# tune via env if needed
+Environment=PRESSURE_POLL_S=2
+Environment=PRESSURE_LINK_BPS=125000000
+
+[Install]
+WantedBy=multi-user.target
