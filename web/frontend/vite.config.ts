@@ -20,11 +20,11 @@ export default defineConfig({
       manifest: {
         name: 'YatTerra',
         short_name: 'YatTerra',
-        description: 'YatTerra 云基础设施平台 — 集群管理、容器编排、攻防演练、文件共享',
+        description: '普适性的技术基础设施',
         lang: 'zh-CN',
         dir: 'ltr',
         theme_color: '#0a84ff',
-        background_color: '#f5f5f7',
+        background_color: '#070b17',
         display: 'standalone',
         orientation: 'any',
         start_url: '/',

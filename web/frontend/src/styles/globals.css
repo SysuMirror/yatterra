@@ -84,6 +84,24 @@ body {
   background: var(--canvas);
 }
 
+#root {
+  min-height: 100%;
+}
+
+.landing-scroll {
+  touch-action: pan-y;
+}
+
+html.landing-document,
+body.landing-document {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* Numeric data aligns in columns */
 .tnum,
 table td.num,

@@ -23,7 +23,11 @@ clientsClaim()
 self.addEventListener('activate', (event) => {
   // Remove the previous broad API cache, which could contain personalized
   // infrastructure responses from an older service-worker version.
-  event.waitUntil(caches.delete('api-cache'))
+  event.waitUntil(Promise.all([
+    caches.delete('api-cache'),
+    caches.delete('navigation-pages'),
+    caches.delete('static-assets'),
+  ]))
 })
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting()
@@ -35,7 +39,7 @@ const offlineHandler = createHandlerBoundToURL('/offline.html')
 // if neither exists, show the standalone offline page. API and OAuth requests
 // are deliberately excluded so they can never receive HTML from this route.
 const navigationStrategy = new NetworkFirst({
-  cacheName: 'navigation-pages',
+  cacheName: 'yatterra-navigation-v2',
   networkTimeoutSeconds: 3,
   plugins: [
     new CacheableResponsePlugin({ statuses: [200] }),
@@ -67,7 +71,7 @@ registerRoute(
     && sameOrigin
     && /\.(ttf|woff2|css|js)$/.test(url.pathname),
   new CacheFirst({
-    cacheName: 'static-assets',
+      cacheName: 'yatterra-static-v2',
     plugins: [
       new CacheableResponsePlugin({ statuses: [200] }),
       new ExpirationPlugin({ maxEntries: 100, maxAgeSeconds: 30 * 24 * 3600 }),
