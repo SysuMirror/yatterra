@@ -1,225 +1,225 @@
-import { motion, useReducedMotion } from 'framer-motion'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { motion, useInView, useReducedMotion } from 'framer-motion'
 import { Link } from 'react-router'
-import {
-  ArrowRight,
-  Boxes,
-  Check,
-  ChevronDown,
-  Cpu,
-  Globe2,
-  Home,
-  Network,
-  Orbit,
-  School,
-  ShieldCheck,
-  Sparkles,
-  TerminalSquare,
-  Wrench,
-} from 'lucide-react'
+import { ArrowDown, ArrowRight, Check, ChevronRight, Cpu, Globe2, Network, Orbit, Pause, Play, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { LayerIllustration, NetworkIllustration, ScenarioIllustration, WorkflowIllustration } from './landing-illustrations'
+import '../styles/landing.css'
 
 const constraints = [
-  {
-    icon: <Globe2 size={21} />,
-    eyebrow: '连接受限',
-    title: '服务在内网，访问却在公网',
-    description: '校园网、家庭宽带和实验室网络往往没有稳定的入站路径。设备能运行，不代表服务能被可靠地使用。',
-  },
-  {
-    icon: <Cpu size={21} />,
-    eyebrow: '资源分散',
-    title: '一块 GPU，也值得被好好编排',
-    description: 'AI 资源常常来自不同地点、不同设备。没有统一的编排和权限，算力很快变成一组难以协作的孤岛。',
-  },
-  {
-    icon: <Wrench size={21} />,
-    eyebrow: '维护复杂',
-    title: '云账单与全链路自建之间',
-    description: '把一切交给云端成本不低，从网络、集群到监控全部自建又需要长期维护。很多团队需要的是中间的选择。',
-  },
+  { icon: Globe2, title: '连接不该止步于内网', label: '01 / CONNECTIVITY', description: '校园网、家庭宽带、实验室网络。设备能运行，还需要一条清晰、可控的访问路径。', detail: '内网设备 → 统一入口 → 服务访问' },
+  { icon: Cpu, title: '一块 GPU，也值得被编排', label: '02 / COMPUTE', description: '算力散落在不同设备、不同地点。让资源进入同一套工作流，才能被更多人真正使用。', detail: '独立设备 → 资源池 → 工作负载' },
+  { icon: Wrench, title: '让维护成为共享的能力', label: '03 / OPERATIONS', description: '从网络到权限，从部署到观测。不必为每个新项目，重新搭建一整套基础设施。', detail: '重复配置 → 平台能力 → 持续运行' },
 ]
 
 const layers = [
-  {
-    number: '01',
-    icon: <Network size={20} />,
-    title: '连接层',
-    label: '从受限网络出发',
-    description: '通过内网穿透和统一入口，让本地设备拥有清晰、可控的访问路径，而不是把每个服务直接暴露在公网。',
-    color: 'from-cyan-300 to-blue-500',
-  },
-  {
-    number: '02',
-    icon: <Boxes size={20} />,
-    title: '编排层',
-    label: '把设备组织成平台',
-    description: '以 Kubernetes / K3s 统一承载工作负载、网络和生命周期，让零散的机器也能按服务被管理。',
-    color: 'from-blue-400 to-violet-500',
-  },
-  {
-    number: '03',
-    icon: <Sparkles size={20} />,
-    title: 'AI 层',
-    label: '让模型成为基础设施的一部分',
-    description: '把 GPU、模型、Agent 与 MCP 工具放进同一个可协作的运行环境，给 AI 应用一条稳定的落地路径。',
-    color: 'from-violet-400 to-fuchsia-500',
-  },
-  {
-    number: '04',
-    icon: <ShieldCheck size={20} />,
-    title: '运维层',
-    label: '把复杂度留在平台内部',
-    description: '权限、观测、审计与共享能力围绕工作负载组织，减少每个项目重复搭建基础能力的成本。',
-    color: 'from-fuchsia-400 to-orange-400',
-  },
+  { number: '01', title: '连接', english: 'CONNECT', description: '跨过网络边界', detail: '通过内网穿透与统一入口，为分散设备建立可控的访问路径。网络位置不再决定服务能被谁使用。', tags: ['内网穿透', '统一入口', '域名路由'], color: '#67e8d0' },
+  { number: '02', title: '编排', english: 'ORCHESTRATE', description: '让设备成为资源', detail: '通过 Kubernetes / K3s 组织节点、容器与工作负载。让部署、调度和生命周期在同一个平台中被管理。', tags: ['K3s / Kubernetes', 'GPU 资源', '容器生命周期'], color: '#8ab4ec' },
+  { number: '03', title: '智能', english: 'INFERENCE', description: '让模型参与工作', detail: '把 GPU、模型、Agent 和 MCP 工具连接起来。从一次模型调用，到能够持续运行的 AI 应用。', tags: ['模型服务', 'Agent 编排', 'MCP 工具'], color: '#c4b5fd' },
+  { number: '04', title: '运维', english: 'OBSERVE', description: '让运行长期可靠', detail: '围绕工作负载组织权限、监控与审计。让资源如何使用、问题发生在哪里，都有清晰的记录与边界。', tags: ['访问权限', '运行观测', '操作审计'], color: '#f6c889' },
 ]
 
 const scenarios = [
-  {
-    icon: <School size={22} />,
-    title: '学校与校园实验室',
-    description: '为课程、研究和共享 GPU 提供统一的访问与权限边界，让设备资源服务更多人。',
-  },
-  {
-    icon: <Home size={22} />,
-    title: '家庭与个人工作室',
-    description: '把家中的计算资源接入自己的 AI 工作流，不必为每个服务单独解决公网暴露问题。',
-  },
-  {
-    icon: <TerminalSquare size={22} />,
-    title: '小团队与研究项目',
-    description: '在保留本地控制权的同时，获得接近平台化的编排、协作和运维体验。',
-  },
+  { title: '校园与实验室', label: '01 / CAMPUS', description: '课程环境、科研任务与共享 GPU，在清晰的权限边界中协作，让设备资源服务更多人。', tags: ['共享 GPU', '科研环境', '课程项目'] },
+  { title: '家庭与工作室', label: '02 / HOME LAB', description: '把手边的工作站变成自己的 AI 节点。模型、数据和计算留在身边，服务从这里连接出去。', tags: ['本地模型', '个人工作流', '可控访问'] },
+  { title: '团队与研究项目', label: '03 / SMALL TEAMS', description: '从一个原型到持续运行的服务。把连接、部署和协作交给平台，让团队专注于想法本身。', tags: ['应用部署', '团队协作', 'Agent 服务'] },
 ]
 
-const particles: Array<[number, number, number, number]> = [
-  [8, 19, 2, 0], [17, 78, 1, 1.2], [26, 33, 2, 0.4], [34, 88, 1, 2],
-  [44, 14, 1, 1.6], [52, 69, 2, 0.8], [61, 27, 1, 2.4], [70, 84, 2, 1.1],
-  [78, 16, 1, 0.5], [88, 52, 2, 1.9], [94, 28, 1, 2.8], [91, 91, 1, 0.9],
+const infrastructureMilestones = [
+  { period: 'INDUSTRIAL AGE', title: '蒸汽机', text: '曾经只有大工厂才能拥有的动力。', color: '#f6c889' },
+  { period: 'ELECTRIC AGE', title: '电力', text: '从工厂的专属能力，变成触手可得的日常设施。', color: '#67e8d0' },
+  { period: 'COMPUTING AGE', title: '图灵机 → 手机', text: '从军方与研究机构的计算能力，进入每个人的口袋。', color: '#8ab4ec' },
+  { period: 'AI AGE', title: '下一层基础设施', text: '智能正在普惠，但承载智能的算力与连接还没有。', color: '#c4b5fd' },
 ]
 
-function Reveal({ children, delay = 0, className = '' }: { children: React.ReactNode; delay?: number; className?: string }) {
-  const reduceMotion = useReducedMotion()
+const startingPoints = [
+  { key: 'device', label: '一台设备', eyebrow: 'START WITH A DEVICE', title: '让一台闲置设备，重新成为生产力。', text: '从工作站、家庭服务器或实验室 GPU 开始，不需要先拥有完整的数据中心。', accent: '#67e8d0', nodes: ['本地 GPU', '内网服务', '你的项目'] },
+  { key: 'network', label: '一组节点', eyebrow: 'START WITH A NETWORK', title: '把分散的算力，组织成一个整体。', text: '不同地点、不同配置的设备，也可以共享连接、调度和运行能力。', accent: '#8ab4ec', nodes: ['校园节点', '家庭节点', '共享资源'] },
+  { key: 'idea', label: '一个想法', eyebrow: 'START WITH AN IDEA', title: '让一个想法拥有持续运行的环境。', text: '从模型、Agent 或应用开始，向下连接真实算力，向上形成可访问的服务。', accent: '#c4b5fd', nodes: ['模型 / Agent', '运行环境', '真实产出'] },
+]
+
+function Reveal({ children, delay = 0, className = '' }: { children: ReactNode; delay?: number; className?: string }) {
+  const reduce = useReducedMotion()
+  const element = useRef<HTMLDivElement>(null)
+  const visible = useInView(element, { once: true, margin: '-40px' })
   return (
     <motion.div
+      ref={element}
       className={className}
-      initial={reduceMotion ? false : { opacity: 0, y: 22 }}
-      whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: '-80px' }}
-      transition={{ duration: 0.65, delay: reduceMotion ? 0 : delay, ease: [0.22, 1, 0.36, 1] }}
-    >
-      {children}
-    </motion.div>
+      initial={{ opacity: 0, transform: reduce ? 'none' : 'translateY(18px)' }}
+      animate={visible ? { opacity: 1, transform: reduce ? 'none' : 'translateY(0px)' } : undefined}
+      transition={{ duration: reduce ? .2 : .6, delay: reduce ? 0 : delay, ease: [.23, 1, .32, 1] }}
+    >{children}</motion.div>
   )
 }
 
-function AmbientField() {
-  const reduceMotion = useReducedMotion()
+function Architecture() {
+  const [active, setActive] = useState(0)
+  const layer = layers[active]!
   return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_20%,rgba(34,211,238,.14),transparent_27%),radial-gradient(circle_at_83%_13%,rgba(139,92,246,.2),transparent_32%),linear-gradient(145deg,#070b17_0%,#0b1225_53%,#101025_100%)]" />
-      <motion.div
-        className="absolute -left-[12%] top-[7%] h-[520px] w-[520px] rounded-full bg-cyan-400/[0.07] blur-3xl"
-        animate={reduceMotion ? undefined : { x: [0, 50, 0], y: [0, 28, 0], scale: [1, 1.08, 1] }}
-        transition={{ duration: 12, repeat: Infinity, ease: 'easeInOut' }}
-      />
-      <motion.div
-        className="absolute -right-[16%] top-[18%] h-[620px] w-[620px] rounded-full bg-violet-500/[0.08] blur-3xl"
-        animate={reduceMotion ? undefined : { x: [0, -45, 0], y: [0, -32, 0], scale: [1.05, 1, 1.05] }}
-        transition={{ duration: 15, repeat: Infinity, ease: 'easeInOut' }}
-      />
-      <div className="absolute inset-x-0 top-0 h-[600px] opacity-[0.17] [mask-image:linear-gradient(to_bottom,black,transparent)]" style={{ backgroundImage: 'linear-gradient(rgba(148,163,184,.16) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,.16) 1px, transparent 1px)', backgroundSize: '56px 56px' }} />
-      {particles.map(([left, top, size, delay], index) => (
-        <motion.span
-          key={index}
-          className="absolute rounded-full bg-cyan-200/70 shadow-[0_0_12px_rgba(103,232,249,.75)]"
-          style={{ left: `${left}%`, top: `${top}%`, width: size * 2, height: size * 2 }}
-          animate={reduceMotion ? undefined : { opacity: [0.15, 0.8, 0.15], y: [0, -12, 0] }}
-          transition={{ duration: 3.5 + delay, delay, repeat: Infinity, ease: 'easeInOut' }}
-        />
-      ))}
+    <div className="terra-architecture">
+      <div className="terra-diagram-heading"><span>THE INFRASTRUCTURE STACK</span><span>选择一层，探索它如何工作</span></div>
+      <div className="terra-layer-grid">
+        {layers.map((item, index) => (
+          <button key={item.number} type="button" className="terra-layer" aria-pressed={active === index} aria-controls="terra-layer-detail" onClick={() => setActive(index)}>
+            <div className="terra-layer-top"><span>{item.number}</span><span style={{ color: item.color }}>{item.english}</span></div>
+            <LayerIllustration index={index} />
+            <div className="terra-layer-bottom"><h3>{item.title}</h3><p>{item.description}</p><ChevronRight size={16} /></div>
+          </button>
+        ))}
+      </div>
+      <div className="terra-layer-detail" id="terra-layer-detail" aria-live="polite" aria-atomic="true">
+        <div><span className="terra-detail-number" style={{ color: layer.color }}>{layer.number}</span><p>{layer.detail}</p></div>
+        <div className="terra-tags">{layer.tags.map(tag => <span key={tag}>{tag}</span>)}</div>
+      </div>
+      <div className="terra-control-rail"><ShieldCheck size={15} /><span>统一的权限、观测与审计，贯穿每一层。</span><span className="terra-rail-label">SHARED CONTROL PLANE</span></div>
     </div>
   )
 }
 
-function NetworkIllustration() {
-  const reduceMotion = useReducedMotion()
+function InfrastructureArc() {
+  const reduce = useReducedMotion()
   return (
-    <div className="relative mx-auto h-[340px] w-full max-w-[560px] overflow-hidden rounded-[30px] border border-white/10 bg-slate-950/40 shadow-2xl shadow-blue-950/50 backdrop-blur-sm sm:h-[410px]">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(96,165,250,.15),transparent_35%)]" />
-      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 560 410" fill="none" aria-hidden="true">
+    <div className="terra-history-art" aria-label="基础设施从少数组织专属能力走向普惠的演进图" role="img">
+      <svg viewBox="0 0 1000 250" fill="none" aria-hidden="true">
         <defs>
-          <linearGradient id="networkLineA" x1="80" y1="110" x2="478" y2="145" gradientUnits="userSpaceOnUse"><stop stopColor="#22d3ee" stopOpacity=".15" /><stop offset=".48" stopColor="#60a5fa" /><stop offset="1" stopColor="#c084fc" stopOpacity=".25" /></linearGradient>
-          <linearGradient id="networkLineB" x1="80" y1="300" x2="478" y2="250" gradientUnits="userSpaceOnUse"><stop stopColor="#22d3ee" stopOpacity=".18" /><stop offset=".52" stopColor="#a78bfa" /><stop offset="1" stopColor="#fb923c" stopOpacity=".25" /></linearGradient>
-          <filter id="nodeGlow"><feGaussianBlur stdDeviation="5" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+          <linearGradient id="terra-history-path" x1="50" y1="125" x2="950" y2="125" gradientUnits="userSpaceOnUse"><stop stopColor="#f6c889" /><stop offset=".37" stopColor="#67e8d0" /><stop offset=".68" stopColor="#8ab4ec" /><stop offset="1" stopColor="#c4b5fd" /></linearGradient>
+          <filter id="terra-history-glow"><feGaussianBlur stdDeviation="8" /></filter>
         </defs>
-        <path d="M94 113C165 157 172 221 278 205C362 192 366 116 466 142" stroke="url(#networkLineA)" strokeWidth="1.5" strokeDasharray="5 9" />
-        <path d="M95 294C174 255 180 203 278 205C363 207 383 273 472 250" stroke="url(#networkLineB)" strokeWidth="1.5" strokeDasharray="5 9" />
-        <path d="M278 205V96" stroke="#8b5cf6" strokeOpacity=".55" strokeWidth="1.5" strokeDasharray="4 8" />
-        <path d="M278 205V342" stroke="#22d3ee" strokeOpacity=".3" strokeWidth="1.5" strokeDasharray="4 8" />
-        <circle cx="278" cy="205" r="78" stroke="#60a5fa" strokeOpacity=".11" strokeWidth="1" />
-        <circle cx="278" cy="205" r="112" stroke="#a78bfa" strokeOpacity=".09" strokeWidth="1" strokeDasharray="2 9" />
-        <motion.circle cx="278" cy="205" r="4" fill="#67e8f9" filter="url(#nodeGlow)" animate={reduceMotion ? undefined : { r: [3, 7, 3], opacity: [0.55, 1, 0.55] }} transition={{ duration: 2.8, repeat: Infinity, ease: 'easeInOut' }} />
-        <motion.circle cx="278" cy="205" r="112" stroke="#c4b5fd" strokeOpacity=".4" strokeWidth="1" strokeDasharray="2 18" animate={reduceMotion ? undefined : { rotate: 360 }} transition={{ duration: 22, repeat: Infinity, ease: 'linear' }} style={{ transformOrigin: '278px 205px' }} />
-        <motion.circle r="4" fill="#a5f3fc" animate={reduceMotion ? undefined : { cx: [94, 278, 466, 278, 94], cy: [113, 205, 142, 205, 113], opacity: [0, 1, 1, 1, 0] }} transition={{ duration: 6, repeat: Infinity, ease: 'linear' }} />
-        <motion.circle r="4" fill="#f0abfc" animate={reduceMotion ? undefined : { cx: [95, 278, 472, 278, 95], cy: [294, 205, 250, 205, 294], opacity: [0, 1, 1, 1, 0] }} transition={{ duration: 7, delay: 1.4, repeat: Infinity, ease: 'linear' }} />
+        <path d="M50 125C230 125 300 125 440 125C620 125 720 125 950 125" stroke="url(#terra-history-path)" strokeOpacity=".28" strokeWidth="2" strokeDasharray="5 10" />
+        <path d="M50 125C230 125 300 125 440 125C620 125 720 125 950 125L950 190H50V125Z" fill="url(#terra-history-path)" fillOpacity=".05" />
+        {infrastructureMilestones.map((item, index) => {
+          const x = [105, 350, 615, 875][index]!
+          return <g key={item.title}>
+            <circle cx={x} cy="125" r="28" fill={item.color} fillOpacity=".08" filter="url(#terra-history-glow)" />
+            <circle cx={x} cy="125" r="9" fill="#0c1723" stroke={item.color} strokeWidth="2" />
+            <motion.circle cx={x} cy="125" r="3" fill={item.color} animate={reduce ? undefined : { opacity: [.25, 1, .25], scale: [.8, 1.4, .8] }} transition={{ duration: 2.8, delay: index * .32, repeat: Infinity }} />
+            <text x={x} y="70" textAnchor="middle" fill="#e4edea" fontSize="16" fontWeight="600">{item.title}</text>
+            <text x={x} y="94" textAnchor="middle" fill="#718792" fontSize="10" letterSpacing="1.5">{item.period}</text>
+          </g>
+        })}
+        <motion.circle cx="58" cy="125" r="4" fill="#fff" animate={reduce ? undefined : { cx: [58, 942], cy: [125, 125], opacity: [0, 1, 1, 0] }} transition={{ duration: 5, repeat: Infinity, ease: 'linear' }} />
       </svg>
-      <div className="absolute left-[7%] top-[22%] flex items-center gap-2 rounded-2xl border border-cyan-300/20 bg-slate-950/80 px-3 py-2 text-xs text-cyan-100 shadow-lg shadow-cyan-950/20"><span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_#67e8f9]" />校园网</div>
-      <div className="absolute bottom-[20%] left-[8%] flex items-center gap-2 rounded-2xl border border-cyan-300/20 bg-slate-950/80 px-3 py-2 text-xs text-cyan-100 shadow-lg shadow-cyan-950/20"><span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_#67e8f9]" />家庭节点</div>
-      <motion.div className="absolute left-1/2 top-1/2 flex h-[92px] w-[92px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-[28px] border border-blue-300/40 bg-blue-400/15 text-blue-100 shadow-[0_0_50px_rgba(96,165,250,.28)]" animate={reduceMotion ? undefined : { boxShadow: ['0 0 34px rgba(96,165,250,.18)', '0 0 70px rgba(167,139,250,.42)', '0 0 34px rgba(96,165,250,.18)'] }} transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}><Orbit size={35} /></motion.div>
-      <div className="absolute right-[8%] top-[27%] flex items-center gap-2 rounded-2xl border border-violet-300/20 bg-slate-950/80 px-3 py-2 text-xs text-violet-100 shadow-lg shadow-violet-950/20"><span className="h-2 w-2 rounded-full bg-violet-300 shadow-[0_0_10px_#c4b5fd]" />K3s 集群</div>
-      <div className="absolute bottom-[25%] right-[7%] flex items-center gap-2 rounded-2xl border border-orange-300/20 bg-slate-950/80 px-3 py-2 text-xs text-orange-100 shadow-lg shadow-orange-950/20"><span className="h-2 w-2 rounded-full bg-orange-300 shadow-[0_0_10px_#fdba74]" />AI 工作负载</div>
-      <div className="absolute bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] uppercase tracking-[0.28em] text-slate-400">one fabric · many places</div>
+      <div className="terra-history-scale"><span>少数组织专属</span><span>普惠性基础设施</span></div>
     </div>
   )
 }
 
-function FabricDiagram() {
-  const reduceMotion = useReducedMotion()
+function StartingPointExplorer() {
+  const [activeKey, setActiveKey] = useState(startingPoints[0]!.key)
+  const active = startingPoints.find(item => item.key === activeKey) ?? startingPoints[0]!
   return (
-    <div className="relative overflow-hidden rounded-[32px] border border-white/[0.1] bg-[#0b1327] p-5 shadow-2xl shadow-blue-950/20 sm:p-8">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(59,130,246,.13),transparent_42%)]" />
-      <div className="relative flex flex-col gap-7 sm:gap-9">
-        <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500"><span>local resources</span><span>one coherent fabric</span><span>ai workloads</span></div>
-        <svg className="h-[170px] w-full" viewBox="0 0 900 170" fill="none" aria-hidden="true">
-          <defs><linearGradient id="fabricLine" x1="100" y1="85" x2="800" y2="85" gradientUnits="userSpaceOnUse"><stop stopColor="#22d3ee" /><stop offset=".5" stopColor="#818cf8" /><stop offset="1" stopColor="#f0abfc" /></linearGradient></defs>
-          <path d="M100 85H800" stroke="url(#fabricLine)" strokeOpacity=".22" strokeWidth="2" strokeDasharray="4 10" />
-          <path d="M200 45C320 45 310 125 450 125C590 125 580 45 700 45" stroke="url(#fabricLine)" strokeOpacity=".35" strokeWidth="1.5" />
-          <path d="M200 125C320 125 310 45 450 45C590 45 580 125 700 125" stroke="url(#fabricLine)" strokeOpacity=".35" strokeWidth="1.5" />
-          {[200, 450, 700].map((x, index) => <g key={x}><circle cx={x} cy="85" r={index === 1 ? 28 : 18} fill={index === 1 ? '#312e81' : '#0e7490'} fillOpacity=".35" stroke={index === 1 ? '#a5b4fc' : '#67e8f9'} strokeOpacity=".7" /><circle cx={x} cy="85" r={index === 1 ? 7 : 5} fill={index === 1 ? '#ddd6fe' : '#a5f3fc'} /></g>)}
-          <motion.circle r="4" fill="#fff" animate={reduceMotion ? undefined : { cx: [200, 450, 700, 450, 200], cy: [85, 85, 85, 85, 85], opacity: [0, 1, 1, 1, 0] }} transition={{ duration: 5, repeat: Infinity, ease: 'linear' }} />
+    <div className="terra-explorer">
+      <div className="terra-explorer-top"><div><p className="terra-eyebrow">TRY THE IDEA</p><h3>你从哪里开始？</h3></div><span className="terra-explorer-status"><span /> SYSTEM READY</span></div>
+      <div className="terra-explorer-tabs" role="tablist" aria-label="选择基础设施起点">
+        {startingPoints.map(item => <button key={item.key} type="button" role="tab" aria-selected={activeKey === item.key} className={activeKey === item.key ? 'is-active' : ''} onClick={() => setActiveKey(item.key)}>{item.label}<small>{item.eyebrow}</small></button>)}
+      </div>
+      <div className="terra-explorer-body">
+        <div className="terra-explorer-copy"><p className="terra-eyebrow" style={{ color: active.accent }}>{active.eyebrow}</p><h4>{active.title}</h4><p>{active.text}</p><div className="terra-explorer-nodes">{active.nodes.map((node, index) => <span key={node}><b style={{ backgroundColor: active.accent }} />{node}{index < active.nodes.length - 1 && <ArrowRight size={13} />}</span>)}</div></div>
+        <svg className="terra-explorer-art" viewBox="0 0 560 230" fill="none" role="img" aria-label={`${active.label} 到系统产出的动态示意图`}>
+          <defs><linearGradient id="explorer-line" x1="44" y1="115" x2="516" y2="115" gradientUnits="userSpaceOnUse"><stop stopColor={active.accent} stopOpacity=".2" /><stop offset=".5" stopColor={active.accent} /><stop offset="1" stopColor="#f6c889" stopOpacity=".55" /></linearGradient><filter id="explorer-glow"><feGaussianBlur stdDeviation="7" /></filter></defs>
+          <path d="M56 115C153 35 188 195 280 115S407 35 504 115" stroke="url(#explorer-line)" strokeOpacity=".35" strokeWidth="2" strokeDasharray="5 9" />
+          {[56, 280, 504].map((x, index) => <g key={x}><circle cx={x} cy="115" r={index === 1 ? 36 : 25} fill={active.accent} fillOpacity=".08" filter="url(#explorer-glow)" /><circle cx={x} cy="115" r={index === 1 ? 19 : 13} fill="#0c1723" stroke={index === 1 ? active.accent : '#789198'} strokeWidth="2" /><text x={x} y="120" textAnchor="middle" fill="#e4edea" fontSize={index === 1 ? 16 : 12}>{index === 0 ? '起点' : index === 1 ? 'Y' : '产出'}</text></g>)}
+          <motion.circle key={active.key} r="4" fill={active.accent} animate={{ cx: [64, 280, 496], cy: [110, 120, 110], opacity: [0, 1, 0] }} transition={{ duration: 2.8, repeat: Infinity, ease: 'easeInOut' }} />
         </svg>
-        <div className="grid gap-3 sm:grid-cols-3"><div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.05] p-4"><p className="text-xs font-semibold text-cyan-100">连接</p><p className="mt-2 text-xs leading-6 text-slate-400">穿过网络边界，保持访问可控。</p></div><div className="rounded-2xl border border-indigo-200/10 bg-indigo-300/[0.05] p-4"><p className="text-xs font-semibold text-indigo-100">编排</p><p className="mt-2 text-xs leading-6 text-slate-400">把分散设备变成统一资源。</p></div><div className="rounded-2xl border border-fuchsia-200/10 bg-fuchsia-300/[0.05] p-4"><p className="text-xs font-semibold text-fuchsia-100">运行</p><p className="mt-2 text-xs leading-6 text-slate-400">让模型和 Agent 持续工作。</p></div></div>
       </div>
     </div>
   )
 }
 
 export default function Landing() {
+  const [paused, setPaused] = useState(false)
+  const reduce = useReducedMotion()
+
+  useEffect(() => {
+    document.documentElement.classList.add('landing-document')
+    document.body.classList.add('landing-document')
+    return () => {
+      document.documentElement.classList.remove('landing-document')
+      document.body.classList.remove('landing-document')
+    }
+  }, [])
+
   return (
-    <div className="min-h-screen overflow-y-auto bg-[#070b17] text-slate-100 selection:bg-cyan-300/30">
-      <header className="fixed inset-x-0 top-0 z-50 border-b border-white/[0.08] bg-[#070b17]/75 backdrop-blur-xl">
-        <div className="mx-auto flex h-[72px] max-w-7xl items-center justify-between px-5 sm:px-8 lg:px-10">
-          <Link to="/" className="group flex items-center gap-3" aria-label="YatTerra 首页"><span className="flex h-9 w-9 items-center justify-center rounded-xl border border-cyan-300/30 bg-cyan-300/10 text-cyan-200 shadow-[0_0_24px_rgba(34,211,238,.15)] transition-transform duration-300 group-hover:rotate-12"><Orbit size={19} /></span><span><span className="block text-[15px] font-bold tracking-[0.18em] text-white">YatTerra</span><span className="hidden text-[10px] tracking-[0.22em] text-slate-400 sm:block">AI-NATIVE INFRASTRUCTURE</span></span></Link>
-          <nav className="hidden items-center gap-8 text-sm text-slate-400 md:flex" aria-label="公开页面导航"><a href="#why" className="transition-colors hover:text-white">为什么</a><a href="#layers" className="transition-colors hover:text-white">怎么工作</a><a href="#scenarios" className="transition-colors hover:text-white">适用场景</a></nav>
-          <Link to="/login" className="inline-flex min-h-10 items-center gap-2 rounded-full border border-cyan-200/30 bg-cyan-300/10 px-4 text-sm font-semibold text-cyan-100 transition duration-200 hover:border-cyan-200/60 hover:bg-cyan-300/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70">登录 <ArrowRight size={15} /></Link>
+    <div className="terra-landing landing-scroll" data-paused={paused || Boolean(reduce)}>
+      <a className="terra-skip" href="#terra-main">跳到主要内容</a>
+      <header className="terra-header">
+        <div className="terra-container terra-header-inner">
+          <Link to="/" className="terra-brand" aria-label="YatTerra 首页"><span className="terra-brand-mark"><Orbit size={24} /></span><span>YatTerra<small>INFRASTRUCTURE, RECONNECTED.</small></span></Link>
+          <nav aria-label="公开页面导航"><a href="#thesis">为什么现在</a><a href="#why">断层</a><a href="#layers">怎么工作</a><a href="#scenarios">场景</a></nav>
+          <Link to="/login" className="terra-header-login">进入控制台 <ArrowRight size={15} /></Link>
         </div>
       </header>
+      <main id="terra-main" className="terra-main">
+        <section className="terra-hero">
+          <div className="terra-hero-grid" aria-hidden="true" />
+          <div className="terra-container terra-hero-layout">
+            <div className="terra-hero-copy">
+              <Reveal><div className="terra-eyebrow"><span className="terra-status-dot" /> BUILT FOR THE REAL WORLD</div></Reveal>
+              <Reveal delay={.06}><h1>更高级的生产力，<br /><span className="terra-heading-accent">应该属于每一个人。</span></h1></Reveal>
+              <Reveal delay={.12}><p className="terra-hero-description">蒸汽机、电力、计算机，都曾经只属于少数组织，后来成为每个人日常生活的一部分。AI 正在完成下一次普惠，而它需要一层新的基础设施。</p></Reveal>
+              <Reveal delay={.18}><div className="terra-actions"><Link to="/login" className="terra-button terra-button-primary">进入 YatTerra <ArrowRight size={17} /></Link><a href="#thesis" className="terra-button terra-button-secondary">理解这件事 <ArrowDown size={16} /></a></div></Reveal>
+              <Reveal delay={.24}><div className="terra-promises"><span><Check size={14} />普惠性的技术基础设施</span><span><Check size={14} />公有云与私有云之间</span></div></Reveal>
+            </div>
+            <Reveal delay={.12} className="terra-hero-visual"><NetworkIllustration /></Reveal>
+          </div>
+          <div className="terra-container terra-hero-bottom"><span>从少数人的机器，到每个人的基础设施。</span><div><span>PRODUCTION POWER</span><span className="terra-bottom-line" /><span>EVERYWHERE</span></div><button type="button" className="terra-motion-toggle" aria-pressed={paused || Boolean(reduce)} disabled={Boolean(reduce)} onClick={() => setPaused(value => !value)}>{paused || reduce ? <Play size={12} /> : <Pause size={12} />}{reduce ? '已减少动态' : paused ? '播放动效' : '暂停动效'}</button></div>
+        </section>
 
-      <main>
-        <section className="relative isolate overflow-hidden px-5 pb-20 pt-36 sm:px-8 sm:pb-28 sm:pt-44 lg:px-10 lg:pt-48"><AmbientField /><div className="relative mx-auto grid max-w-7xl items-center gap-14 lg:grid-cols-[1.04fr_.96fr] lg:gap-16"><div><motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .6 }} className="mb-7 flex items-center gap-3 text-xs font-semibold uppercase tracking-[0.28em] text-cyan-200/80"><span className="h-px w-8 bg-cyan-300/70" />AI-native infrastructure</motion.div><motion.h1 initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .7, delay: .08 }} className="max-w-3xl text-4xl font-semibold leading-[1.08] tracking-[-0.045em] text-white sm:text-6xl lg:text-[4.65rem]">让受限网络里的<br /><span className="bg-gradient-to-r from-cyan-200 via-blue-300 to-violet-300 bg-clip-text text-transparent">AI 基础设施</span>，也能可靠地运行。</motion.h1><motion.p initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .7, delay: .16 }} className="mt-7 max-w-xl text-base leading-8 text-slate-300 sm:text-lg">YatTerra 把内网穿透、Kubernetes 与 AI 工作负载整合在一起，为学校、家庭和小型实验室提供一条不依赖单一云厂商的基础设施路径。</motion.p><motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .7, delay: .24 }} className="mt-9 flex flex-wrap items-center gap-3"><Link to="/login" className="group inline-flex min-h-12 items-center gap-2 rounded-full bg-cyan-200 px-6 text-sm font-bold text-slate-950 shadow-[0_0_30px_rgba(103,232,249,.18)] transition duration-200 hover:bg-cyan-100 hover:shadow-[0_0_42px_rgba(103,232,249,.3)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200">进入控制台 <ArrowRight size={17} className="transition-transform duration-200 group-hover:translate-x-1" /></Link><a href="#why" className="inline-flex min-h-12 items-center gap-2 rounded-full border border-white/15 px-6 text-sm font-semibold text-slate-200 transition-colors duration-200 hover:border-white/35 hover:bg-white/[0.06]">了解 YatTerra <ChevronDown size={16} /></a></motion.div><div className="mt-12 flex flex-wrap gap-x-7 gap-y-3 text-xs text-slate-500"><span className="flex items-center gap-2"><Check size={14} className="text-cyan-300" />保留本地资源控制权</span><span className="flex items-center gap-2"><Check size={14} className="text-cyan-300" />减少重复运维工作</span></div></div><motion.div initial={{ opacity: 0, scale: .96, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={{ duration: .9, delay: .2 }}><NetworkIllustration /></motion.div></div></section>
+        <section id="thesis" className="terra-section terra-section-tinted terra-thesis-section">
+          <div className="terra-container">
+            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">00 — THE LONG ARC</p><h2>世界一直在做同一件事：<br /><span>把生产力带到日常生活。</span></h2></div><p>技术进步不只是发明新的机器，更是让越来越多的人能够使用曾经只属于少数组织的能力。</p></div></Reveal>
+            <Reveal><InfrastructureArc /></Reveal>
+            <Reveal><div className="terra-thesis-note"><span className="terra-thesis-mark">→</span><p>AI 的下一步，不只是让更多人调用模型。<strong>而是让更多人拥有承载模型、工作流与创造的基础设施。</strong></p></div></Reveal>
+          </div>
+        </section>
 
-        <section id="why" className="scroll-mt-24 border-t border-white/[0.07] bg-[#0a1020] px-5 py-24 sm:px-8 sm:py-32 lg:px-10"><div className="mx-auto max-w-7xl"><Reveal><p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-300/80">The starting point</p><h2 className="mt-4 max-w-2xl text-3xl font-semibold tracking-[-0.035em] text-white sm:text-5xl">不是每个 AI 项目，<br /><span className="text-slate-400">都从一朵云开始。</span></h2><p className="mt-6 max-w-2xl text-base leading-8 text-slate-400">真实的算力往往已经存在：一台工作站、一组校园设备、一个家庭实验室。难的是让它们安全地连接、稳定地运行，并被更多人真正使用。</p></Reveal><div className="mt-14 grid gap-4 md:grid-cols-3">{constraints.map((item, index) => <Reveal key={item.title} delay={index * .08} className="h-full"><motion.article whileHover={{ y: -6 }} transition={{ duration: .2, ease: [0.23, 1, 0.32, 1] }} className="group h-full rounded-3xl border border-white/[0.09] bg-white/[0.035] p-7 transition-colors duration-300 hover:border-cyan-200/25 hover:bg-white/[0.06]"><div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-200/20 bg-cyan-300/10 text-cyan-200 transition-transform duration-300 group-hover:rotate-6 group-hover:scale-105">{item.icon}</div><p className="mt-8 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">{item.eyebrow}</p><h3 className="mt-3 text-xl font-semibold leading-snug text-white">{item.title}</h3><p className="mt-4 text-sm leading-7 text-slate-400">{item.description}</p></motion.article></Reveal>)}</div></div></section>
+        <section className="terra-section terra-explorer-section">
+          <div className="terra-container">
+            <Reveal><StartingPointExplorer /></Reveal>
+          </div>
+        </section>
 
-        <section id="layers" className="scroll-mt-24 border-t border-white/[0.07] bg-[#070b17] px-5 py-24 sm:px-8 sm:py-32 lg:px-10"><div className="mx-auto max-w-7xl"><Reveal><div className="max-w-2xl"><p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-300/80">One coherent fabric</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-5xl">把“能跑”变成<br /><span className="text-slate-400">“能被持续使用”。</span></h2><p className="mt-6 text-base leading-8 text-slate-400">YatTerra 不是把技术名词堆在一起，而是把每一层基础能力接起来：从网络边界，到集群调度，再到 AI 应用和日常运维。</p></div></Reveal><div className="mt-14"><Reveal><FabricDiagram /></Reveal></div><div className="relative mt-6 grid gap-4 md:grid-cols-2">{layers.map((layer, index) => <Reveal key={layer.number} delay={index * .07} className="h-full"><motion.article whileHover={{ y: -5 }} transition={{ duration: .2, ease: [0.23, 1, 0.32, 1] }} className="relative h-full overflow-hidden rounded-3xl border border-white/[0.09] bg-[#0d1427] p-7"><div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${layer.color}`} /><div className="flex items-start justify-between"><div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/[0.07] text-slate-200">{layer.icon}</div><span className="font-mono text-xs tracking-[0.2em] text-slate-600">{layer.number}</span></div><p className="mt-8 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{layer.label}</p><h3 className="mt-2 text-2xl font-semibold text-white">{layer.title}</h3><p className="mt-4 max-w-lg text-sm leading-7 text-slate-400">{layer.description}</p></motion.article></Reveal>)}</div></div></section>
+        <section id="why" className="terra-section terra-section-tinted">
+          <div className="terra-container">
+            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">01 — THE MISSING LAYER</p><h2>AI 正在走向每一个人，<br /><span>基础设施却没有跟上。</span></h2></div><p>传统公有云主要服务企业、政府、医院和研究机构，解决的是“非计算机专业客户如何不必考虑运维”。但 AI 时代的创新正在不可逆地碎片化、个人化。</p></div></Reveal>
+            <div className="terra-constraint-grid">{constraints.map((item, index) => <Reveal key={item.title} delay={index * .06}><article className="terra-constraint"><div className="terra-constraint-heading"><item.icon size={23} /><span>{item.label}</span></div><h3>{item.title}</h3><p>{item.description}</p><div className="terra-constraint-path">{item.detail}</div></article></Reveal>)}</div>
+            <Reveal><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p></div></Reveal>
+          </div>
+        </section>
 
-        <section className="border-t border-white/[0.07] bg-[#0a1020] px-5 py-24 sm:px-8 sm:py-32 lg:px-10"><div className="mx-auto max-w-7xl"><Reveal><div className="grid gap-12 lg:grid-cols-[.8fr_1.2fr] lg:items-start"><div><p className="text-xs font-semibold uppercase tracking-[0.28em] text-orange-300/80">A third path</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-5xl">不是云，<br />也不是孤岛。</h2><p className="mt-6 text-base leading-8 text-slate-400">YatTerra 让基础设施的选择不再只有两端。你可以继续使用手边的设备，同时把连接、编排和运维中最容易重复的部分交给平台。</p></div><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-3xl border border-white/[0.08] bg-white/[0.025] p-6"><p className="text-xs font-semibold text-slate-500">大厂云服务</p><p className="mt-5 text-sm leading-7 text-slate-300">弹性很强，但持续账单、数据位置和资源闲置需要被认真管理。</p></div><div className="rounded-3xl border border-cyan-200/25 bg-cyan-300/[0.07] p-6 shadow-[0_0_35px_rgba(34,211,238,.07)]"><p className="text-xs font-semibold text-cyan-200">YatTerra</p><p className="mt-5 text-sm leading-7 text-slate-200">保留本地资源与控制权，减少公网接入、部署编排和重复维护的摩擦。</p></div><div className="rounded-3xl border border-white/[0.08] bg-white/[0.025] p-6"><p className="text-xs font-semibold text-slate-500">全链路自建</p><p className="mt-5 text-sm leading-7 text-slate-300">自由度很高，但网络、集群、权限、监控与可靠性都要长期自己负责。</p></div></div></div></Reveal></div></section>
+        <section id="layers" className="terra-section">
+          <div className="terra-container">
+            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">02 — ONE COHERENT FABRIC</p><h2>不是把云做小，<br /><span>而是把基础设施做普惠。</span></h2></div><p>YatTerra 把连接、编排、AI 与运维组织成一层统一的技术土壤，让真实设备也能拥有平台化的可靠性。</p></div></Reveal>
+            <Reveal><Architecture /></Reveal>
+            <Reveal><div className="terra-workflow"><div className="terra-workflow-copy"><p className="terra-eyebrow">FROM IDEA TO SERVICE</p><h3>给想法一条<br />完整的落地路径。</h3><p>从代码、容器到模型服务，<br />把日常开发接进同一套基础设施。</p><div className="terra-tags"><span>开发</span><ArrowRight size={14} /><span>部署</span><ArrowRight size={14} /><span>运行</span></div></div><WorkflowIllustration /></div></Reveal>
+          </div>
+        </section>
 
-        <section id="scenarios" className="scroll-mt-24 border-t border-white/[0.07] bg-[#070b17] px-5 py-24 sm:px-8 sm:py-32 lg:px-10"><div className="mx-auto max-w-7xl"><Reveal><p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-300/80">Made for constrained places</p><h2 className="mt-4 max-w-2xl text-3xl font-semibold tracking-[-0.035em] text-white sm:text-5xl">从身边的设备开始，<br /><span className="text-slate-400">把 AI 带到真正需要它的地方。</span></h2></Reveal><div className="mt-14 grid gap-4 md:grid-cols-3">{scenarios.map((item, index) => <Reveal key={item.title} delay={index * .08}><motion.article whileHover={{ y: -6 }} transition={{ duration: .2, ease: [0.23, 1, 0.32, 1] }} className="group rounded-3xl border border-white/[0.09] bg-white/[0.035] p-7 transition-colors duration-300 hover:border-violet-200/25 hover:bg-white/[0.06]"><div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-violet-200/20 bg-violet-300/10 text-violet-200 transition-transform duration-300 group-hover:rotate-6">{item.icon}</div><h3 className="mt-7 text-xl font-semibold text-white">{item.title}</h3><p className="mt-4 text-sm leading-7 text-slate-400">{item.description}</p></motion.article></Reveal>)}</div></div></section>
+        <section className="terra-section terra-section-tinted">
+          <div className="terra-container">
+            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">03 — A THIRD PATH</p><h2>不替代公有云，<br /><span>也不鼓励复杂自建。</span></h2></div><p>公有云解决的是托管与规模，私有云解决的是控制与成本。YatTerra 在两者之间做 tradeoff：连接真实设备，复用平台能力，把可靠性带给更小、更分散的创造者。</p></div></Reveal>
+            <Reveal><div className="terra-choice-grid">
+              <article className="terra-choice"><span className="terra-choice-index">01 / PUBLIC CLOUD</span><Globe2 size={30} /><h3>公有云</h3><p>能力完整、弹性强，默认用户拥有企业级预算、规模与运维需求。</p><div className="terra-choice-foot">规模化供给 · 长期账单</div></article>
+              <article className="terra-choice terra-choice-featured"><span className="terra-choice-index">02 / THE MISSING MIDDLE</span><Orbit size={32} /><h3>YatTerra</h3><p>让内网设备、闲置算力与本地数据成为可靠服务，同时获得连接、编排和运维能力。</p><div className="terra-choice-foot"><Check size={14} /> 更低门槛 · 平台级可靠性</div></article>
+              <article className="terra-choice"><span className="terra-choice-index">03 / PRIVATE CLOUD</span><Wrench size={29} /><h3>私有云 / 下云</h3><p>控制权更强，但需要自行承担网络、机房、集群与长期运维的全部复杂度。</p><div className="terra-choice-foot">自主控制 · 运维负担</div></article>
+            </div></Reveal>
+          </div>
+        </section>
 
-        <section className="relative isolate overflow-hidden border-t border-white/[0.07] px-5 py-24 text-center sm:px-8 sm:py-32 lg:px-10"><div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_50%_20%,rgba(59,130,246,.2),transparent_45%),#0a1020]" /><Reveal><Orbit className="mx-auto text-cyan-200" size={32} /><h2 className="mx-auto mt-7 max-w-3xl text-3xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">基础设施不应该成为<br /><span className="text-cyan-200">AI 想法的边界。</span></h2><p className="mx-auto mt-6 max-w-xl text-base leading-8 text-slate-400">公开首页讲述 YatTerra 的方向。真正的资源、部署和运维能力，留在登录后的控制台里。</p><Link to="/login" className="mt-9 inline-flex min-h-12 items-center gap-2 rounded-full bg-white px-6 text-sm font-bold text-slate-950 transition-colors duration-200 hover:bg-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200">登录控制台 <ArrowRight size={17} /></Link></Reveal></section>
+        <section id="scenarios" className="terra-section">
+          <div className="terra-container">
+            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">04 — MANY PLACES, ONE PLATFORM</p><h2>创新会发生在任何地方，<br /><span>基础设施也应该在那里。</span></h2></div><p>校园、家庭、工作室、实验室与小团队，只是不同的起点。底层需要的是同一条连接资源、模型与人的路径。</p></div></Reveal>
+            <div className="terra-scenario-grid">{scenarios.map((item, index) => <Reveal key={item.title} delay={index * .06}><article className="terra-scenario"><div className="terra-scenario-label">{item.label}<span>↗</span></div><ScenarioIllustration index={index} /><div className="terra-scenario-copy"><h3>{item.title}</h3><p>{item.description}</p><div className="terra-tags">{item.tags.map(tag => <span key={tag}>{tag}</span>)}</div></div></article></Reveal>)}</div>
+          </div>
+        </section>
+
+        <section className="terra-closing">
+          <div className="terra-container">
+            <Reveal><div className="terra-closing-symbol" aria-hidden="true"><span /><span /><Orbit size={40} /></div><p className="terra-eyebrow">YATTERRA — THE SOIL FOR AI</p><h2>让每一个想法，<br /><span>都能拥有自己的基础设施。</span></h2><p className="terra-closing-description">Yat 来自 Sun Yat-sen University。Terra 是大地，是土壤，也是让万物生长的基础。我们不替代云，我们让更多创造拥有可以扎根的土壤。</p><Link to="/login" className="terra-button terra-button-primary">进入 YatTerra <ArrowRight size={17} /></Link></Reveal>
+          </div>
+        </section>
       </main>
-
-      <footer className="border-t border-white/[0.08] bg-[#070b17] px-5 py-8 sm:px-8 lg:px-10"><div className="mx-auto flex max-w-7xl flex-col gap-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between"><span className="font-semibold tracking-[0.18em] text-slate-300">YatTerra</span><span>为受限场景构建的 AI-native 基础设施</span><span>© {new Date().getFullYear()} YatTerra</span></div></footer>
+      <footer className="terra-footer terra-container"><Link to="/" className="terra-brand"><Orbit size={21} /> YatTerra</Link><span>为真实世界构建的 AI-native 基础设施</span><span>© {new Date().getFullYear()} YatTerra</span></footer>
     </div>
   )
 }
