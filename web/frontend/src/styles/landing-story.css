@@ -1,0 +1,9 @@
+.terra-history-comparison { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 46px; }
+.terra-history-comparison article { min-height: 270px; padding: 24px; border: 1px solid var(--terra-border); border-top: 2px solid; border-radius: 12px; background: linear-gradient(145deg, #101f2c, #0b1723); }
+.terra-history-comparison article .terra-eyebrow { margin-bottom: 28px; }
+.terra-history-comparison article span { display: block; color: #708a96; font-family: monospace; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; }
+.terra-history-comparison h3 { margin: 8px 0 14px; font-size: 24px; font-weight: 550; }
+.terra-history-comparison h4 { margin: 7px 0 13px; color: #c7d8d8; font-size: 18px; font-weight: 500; }
+.terra-history-comparison article > svg { display: block; margin: 0 0 11px; color: #78949c; }
+.terra-history-comparison article > p:last-child { margin: 0; color: var(--terra-muted); font-size: 12px; line-height: 1.8; }
+@media (max-width: 760px) { .terra-history-comparison { grid-template-columns: 1fr; gap: 12px; margin-top: 30px; } .terra-history-comparison article { min-height: auto; padding: 20px; } .terra-history-comparison article .terra-eyebrow { margin-bottom: 18px; } }
