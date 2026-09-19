@@ -142,7 +142,7 @@ export default function MainLayout() {
   const variants = isDesktop ? desktopVariants : (direction === 'forward' ? forwardVariants : backVariants)
 
   return (
-    <div className="h-full overflow-hidden">
+    <div className="h-full min-h-0 overflow-hidden">
       <TopBar />
 
       <div className="flex h-[calc(100dvh-var(--topbar-h))]" style={{ marginTop: 'var(--topbar-h)' }}>
