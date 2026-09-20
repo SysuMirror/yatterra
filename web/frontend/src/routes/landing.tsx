@@ -106,6 +106,41 @@ function StartingPointExplorer() {
   )
 }
 
+function GapIllustration() {
+  return <svg className="terra-gap-art" viewBox="0 0 430 190" fill="none" role="img" aria-label="昂贵云资源和闲置内网设备之间缺少适配基础设施的示意图">
+    <path d="M42 135H388" stroke="#56727f" strokeOpacity=".22" strokeDasharray="4 8" />
+    <g transform="translate(24 42)">
+      <rect width="112" height="86" rx="14" fill="#2a2430" stroke="#f6c889" strokeOpacity=".65" />
+      <path d="M29 34c6-14 18-21 34-21 19 0 30 11 32 30 12 3 18 11 18 23 0 15-11 24-30 24H30C12 90 0 81 0 66c0-13 8-22 22-25 1-2 3-5 7-7Z" transform="translate(13 -5)" fill="#3b2d32" stroke="#f6c889" strokeOpacity=".6" />
+      <text x="56" y="56" textAnchor="middle" fill="#f6d7ab" fontSize="13" fontWeight="600">Cloud</text>
+      <text x="56" y="74" textAnchor="middle" fill="#b89b7b" fontSize="10">￥￥￥ / month</text>
+      <path d="M31 108h50" stroke="#f6c889" strokeOpacity=".55" />
+      <text x="56" y="126" textAnchor="middle" fill="#9d8370" fontSize="10">超出小团队预算</text>
+    </g>
+    <g transform="translate(162 48)">
+      <path d="M22 38h42m22 0h42" stroke="#789198" strokeOpacity=".38" strokeDasharray="5 7" />
+      <path d="M66 23 82 38 66 53" stroke="#789198" strokeOpacity=".5" />
+      <path d="M65 55 84 22" stroke="#f6c889" strokeWidth="2" strokeLinecap="round" />
+      <rect x="0" y="12" width="55" height="52" rx="10" fill="#102433" stroke="#67e8d0" strokeOpacity=".6" />
+      <path d="M13 29h27m-27 10h20" stroke="#67e8d0" strokeOpacity=".7" />
+      <circle cx="43" cy="22" r="3" fill="#67e8d0" className="terra-light" />
+      <rect x="98" y="12" width="55" height="52" rx="10" fill="#102433" stroke="#67e8d0" strokeOpacity=".6" />
+      <path d="M111 29h27m-27 10h20" stroke="#67e8d0" strokeOpacity=".7" />
+      <circle cx="141" cy="22" r="3" fill="#67e8d0" className="terra-light" style={{ animationDelay: '-.8s' }} />
+      <text x="76" y="93" textAnchor="middle" fill="#89a2ab" fontSize="10">设备在内网</text>
+    </g>
+    <g transform="translate(292 40)">
+      <rect width="114" height="92" rx="18" fill="#102b37" stroke="#9aebd2" strokeOpacity=".7" />
+      <circle cx="57" cy="40" r="23" fill="#9aebd2" fillOpacity=".08" stroke="#9aebd2" strokeOpacity=".65" />
+      <path d="M45 40h24M57 28v24" stroke="#9aebd2" strokeWidth="2" strokeLinecap="round" />
+      <text x="57" y="77" textAnchor="middle" fill="#d5fff1" fontSize="13" fontWeight="600">YatTerra</text>
+      <text x="57" y="112" textAnchor="middle" fill="#8dbab1" fontSize="10">连接 · 编排 · 运行</text>
+    </g>
+    <path d="M112 93C156 123 225 123 313 92" stroke="#9aebd2" strokeOpacity=".38" strokeDasharray="5 8" />
+    <motion.circle r="4" fill="#9aebd2" animate={{ cx: [112, 210, 313], cy: [93, 124, 92], opacity: [0, 1, 0] }} transition={{ duration: 2.9, repeat: Infinity, ease: 'easeInOut' }} />
+  </svg>
+}
+
 export default function Landing() {
   const [paused, setPaused] = useState(false)
   const reduce = useReducedMotion()
@@ -162,7 +197,7 @@ export default function Landing() {
           <div className="terra-container">
             <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">01 — THE MISSING LAYER</p><h2>AI 正在走向每一个人，<br /><span>基础设施却没有跟上。</span></h2></div><p>传统公有云主要服务企业、政府、医院和研究机构，解决的是“非计算机专业客户如何不必考虑运维”。但 AI 时代的创新正在不可逆地碎片化、个人化。</p></div></Reveal>
             <div className="terra-constraint-grid">{constraints.map((item, index) => <Reveal key={item.title} delay={index * .06}><article className="terra-constraint"><div className="terra-constraint-heading"><item.icon size={23} /><span>{item.label}</span></div><h3>{item.title}</h3><p>{item.description}</p><div className="terra-constraint-path">{item.detail}</div></article></Reveal>)}</div>
-            <Reveal><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p></div></Reveal>
+            <Reveal><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><GapIllustration /><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p></div></Reveal>
           </div>
         </section>
 
