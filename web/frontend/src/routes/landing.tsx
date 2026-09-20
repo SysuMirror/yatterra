@@ -107,37 +107,42 @@ function StartingPointExplorer() {
 }
 
 function GapIllustration() {
-  return <svg className="terra-gap-art" viewBox="0 0 430 190" fill="none" role="img" aria-label="昂贵云资源和闲置内网设备之间缺少适配基础设施的示意图">
-    <path d="M42 135H388" stroke="#56727f" strokeOpacity=".22" strokeDasharray="4 8" />
-    <g transform="translate(24 42)">
-      <rect width="112" height="86" rx="14" fill="#2a2430" stroke="#f6c889" strokeOpacity=".65" />
-      <path d="M29 34c6-14 18-21 34-21 19 0 30 11 32 30 12 3 18 11 18 23 0 15-11 24-30 24H30C12 90 0 81 0 66c0-13 8-22 22-25 1-2 3-5 7-7Z" transform="translate(13 -5)" fill="#3b2d32" stroke="#f6c889" strokeOpacity=".6" />
-      <text x="56" y="56" textAnchor="middle" fill="#f6d7ab" fontSize="13" fontWeight="600">Cloud</text>
-      <text x="56" y="74" textAnchor="middle" fill="#b89b7b" fontSize="10">￥￥￥ / month</text>
-      <path d="M31 108h50" stroke="#f6c889" strokeOpacity=".55" />
-      <text x="56" y="126" textAnchor="middle" fill="#9d8370" fontSize="10">超出小团队预算</text>
+  return <svg className="terra-gap-art" viewBox="0 0 430 190" fill="none" role="img" aria-label="云成本和闲置本地算力之间缺少基础设施层的示意图">
+    <defs>
+      <linearGradient id="terra-gap-bridge" x1="92" y1="96" x2="338" y2="96" gradientUnits="userSpaceOnUse"><stop stopColor="#f6c889" stopOpacity=".15" /><stop offset=".48" stopColor="#9aebd2" /><stop offset="1" stopColor="#8ab4ec" stopOpacity=".3" /></linearGradient>
+    </defs>
+    <rect x="16" y="20" width="398" height="150" rx="18" fill="#0b1723" stroke="#5f7a87" strokeOpacity=".18" />
+    <path d="M42 95H388" stroke="#5f7a87" strokeOpacity=".14" />
+    <g transform="translate(38 42)">
+      <rect width="122" height="42" rx="8" fill="#2a2230" stroke="#f6c889" strokeOpacity=".5" />
+      <text x="18" y="17" fill="#f6d7ab" fontSize="10" letterSpacing="1.5">PUBLIC CLOUD</text>
+      <text x="18" y="32" fill="#f6c889" fontSize="16" fontWeight="600">￥￥￥</text>
+      <path d="M86 16h20m-20 8h14" stroke="#b79674" strokeOpacity=".65" />
+      <text x="0" y="67" fill="#8b7569" fontSize="10">账单随规模增长</text>
     </g>
-    <g transform="translate(162 48)">
-      <path d="M22 38h42m22 0h42" stroke="#789198" strokeOpacity=".38" strokeDasharray="5 7" />
-      <path d="M66 23 82 38 66 53" stroke="#789198" strokeOpacity=".5" />
-      <path d="M65 55 84 22" stroke="#f6c889" strokeWidth="2" strokeLinecap="round" />
-      <rect x="0" y="12" width="55" height="52" rx="10" fill="#102433" stroke="#67e8d0" strokeOpacity=".6" />
-      <path d="M13 29h27m-27 10h20" stroke="#67e8d0" strokeOpacity=".7" />
-      <circle cx="43" cy="22" r="3" fill="#67e8d0" className="terra-light" />
-      <rect x="98" y="12" width="55" height="52" rx="10" fill="#102433" stroke="#67e8d0" strokeOpacity=".6" />
-      <path d="M111 29h27m-27 10h20" stroke="#67e8d0" strokeOpacity=".7" />
-      <circle cx="141" cy="22" r="3" fill="#67e8d0" className="terra-light" style={{ animationDelay: '-.8s' }} />
-      <text x="76" y="93" textAnchor="middle" fill="#89a2ab" fontSize="10">设备在内网</text>
+    <g transform="translate(38 112)">
+      {[0, 1, 2].map(index => <g key={index} transform={`translate(${index * 44} 0)`}>
+        <rect width="34" height="30" rx="6" fill="#102433" stroke="#67e8d0" strokeOpacity=".52" />
+        <path d="M8 12h18M8 19h12" stroke="#67e8d0" strokeOpacity=".65" />
+      </g>)}
+      <text x="0" y="54" fill="#7ea09f" fontSize="10">内网里的真实设备</text>
     </g>
-    <g transform="translate(292 40)">
-      <rect width="114" height="92" rx="18" fill="#102b37" stroke="#9aebd2" strokeOpacity=".7" />
-      <circle cx="57" cy="40" r="23" fill="#9aebd2" fillOpacity=".08" stroke="#9aebd2" strokeOpacity=".65" />
-      <path d="M45 40h24M57 28v24" stroke="#9aebd2" strokeWidth="2" strokeLinecap="round" />
-      <text x="57" y="77" textAnchor="middle" fill="#d5fff1" fontSize="13" fontWeight="600">YatTerra</text>
-      <text x="57" y="112" textAnchor="middle" fill="#8dbab1" fontSize="10">连接 · 编排 · 运行</text>
+    <g transform="translate(170 62)">
+      <rect width="90" height="66" rx="12" fill="#111f2a" stroke="#789198" strokeOpacity=".28" strokeDasharray="4 6" />
+      <path d="M24 33h42" stroke="#789198" strokeOpacity=".45" />
+      <path d="M43 21 49 33 43 45" stroke="#789198" strokeOpacity=".45" />
+      <path d="M34 48 58 18" stroke="#f6c889" strokeWidth="2" strokeLinecap="round" />
+      <text x="45" y="82" textAnchor="middle" fill="#778f99" fontSize="10">缺少适配层</text>
     </g>
-    <path d="M112 93C156 123 225 123 313 92" stroke="#9aebd2" strokeOpacity=".38" strokeDasharray="5 8" />
-    <motion.circle r="4" fill="#9aebd2" animate={{ cx: [112, 210, 313], cy: [93, 124, 92], opacity: [0, 1, 0] }} transition={{ duration: 2.9, repeat: Infinity, ease: 'easeInOut' }} />
+    <g transform="translate(280 54)">
+      <rect width="96" height="82" rx="14" fill="#102b37" stroke="#9aebd2" strokeOpacity=".62" />
+      <path d="M19 28h58M19 41h58M19 54h35" stroke="#9aebd2" strokeOpacity=".42" />
+      <circle cx="72" cy="54" r="4" fill="#9aebd2" className="terra-light" />
+      <text x="48" y="104" textAnchor="middle" fill="#a9d7ce" fontSize="10">连接 · 编排 · 运行</text>
+    </g>
+    <path d="M98 96C152 74 212 118 282 96" stroke="url(#terra-gap-bridge)" strokeWidth="2" strokeLinecap="round" />
+    <motion.circle r="4" fill="#9aebd2" animate={{ cx: [98, 190, 282], cy: [96, 105, 96], opacity: [0, 1, 0] }} transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }} />
+    <text x="215" y="30" textAnchor="middle" fill="#607984" fontSize="10" letterSpacing="2">THE MISSING MIDDLE</text>
   </svg>
 }
 
