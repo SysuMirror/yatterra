@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import fleet_monitor as fleet
 import fleet_probe as probe
+import metrics
 
 
 class FleetTests(unittest.TestCase):
@@ -79,6 +80,37 @@ class FleetTests(unittest.TestCase):
         config.write_text(json.dumps([dict(name="remote", host="-oProxyCommand=evil")]))
         with patch.object(fleet, "CONFIG_PATH", str(config)):
             with self.assertRaises(ValueError): fleet.inventory()
+
+
+class MetricsTests(unittest.TestCase):
+    def test_metric_rates_and_counter_reset(self):
+        metrics._counter_snapshot = {"ts": 10.0,
+                                     "net": {"rx_bytes": 1000, "tx_bytes": 2000, "rx_packets": 100, "tx_packets": 200,
+                                             "rx_dropped": 1, "tx_dropped": 2, "rx_errors": 0, "tx_errors": 0},
+                                     "disk": {"read_bytes": 4096, "write_bytes": 8192, "read_ops": 4, "write_ops": 8,
+                                              "io_ms": 10, "weighted_io_ms": 20}}
+        with patch.object(metrics.time, "monotonic", return_value=12.0), \
+             patch.object(metrics, "_read_net_counters", return_value=({"rx_bytes": 3000, "tx_bytes": 2600,
+                       "rx_packets": 140, "tx_packets": 220, "rx_dropped": 3, "tx_dropped": 2,
+                       "rx_errors": 0, "tx_errors": 1}, {})), \
+             patch.object(metrics, "_read_disk_counters", return_value={"read_bytes": 12288, "write_bytes": 12288,
+                       "read_ops": 8, "write_ops": 10, "io_ms": 30, "weighted_io_ms": 50}):
+            out = metrics._rate_metrics()
+        self.assertEqual(out["network"]["rx_bytes_per_sec"], 1000)
+        self.assertEqual(out["network"]["tx_packets_per_sec"], 10)
+        self.assertEqual(out["disk"]["read_ops_per_sec"], 2)
+        self.assertEqual(out["disk"]["busy_pct"], 1.0)
+
+        metrics._counter_snapshot = {"ts": 12.0, "net": {"rx_bytes": 3000}, "disk": {"read_bytes": 12288}}
+        with patch.object(metrics.time, "monotonic", return_value=13.0), \
+             patch.object(metrics, "_read_net_counters", return_value=({"rx_bytes": 10, "tx_bytes": 0,
+                       "rx_packets": 0, "tx_packets": 0, "rx_dropped": 0, "tx_dropped": 0,
+                       "rx_errors": 0, "tx_errors": 0}, {})), \
+             patch.object(metrics, "_read_disk_counters", return_value={"read_bytes": 1, "write_bytes": 0,
+                       "read_ops": 0, "write_ops": 0, "io_ms": 0, "weighted_io_ms": 0}):
+            out = metrics._rate_metrics()
+        self.assertEqual(out["network"]["rx_bytes_per_sec"], 0)
+        self.assertEqual(out["disk"]["read_bytes_per_sec"], 0)
 
 
 class EndpointTests(unittest.TestCase):

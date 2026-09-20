@@ -38,6 +38,10 @@ MAX_SAMPLES = 360      # 1 hour at 10s
 DOWNSAMPLE_TO = 120    # max points returned by metrics_snapshot()
 _CPU_SAMPLE_WINDOW = 0.5  # seconds between the two /proc/stat reads
 
+# Counter snapshots used to turn /proc counters into per-second rates.  The
+# sampler is single-threaded, so these do not need a second lock.
+_counter_snapshot = None
+
 # Ring buffer + lock
 _lock = threading.Lock()
 _samples = []          # list of sample dicts, newest appended at the end
@@ -108,6 +112,119 @@ def _host_mem_pct():
         return round((used / total) * 100.0, 1)
     except Exception:
         return None
+
+
+def _host_mem_stats():
+    """Return memory/swap capacity counters in bytes where available."""
+    try:
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                p = line.split()
+                if len(p) >= 2 and p[0].endswith(":"):
+                    info[p[0][:-1]] = int(p[1]) * 1024
+        total = info.get("MemTotal")
+        available = info.get("MemAvailable")
+        swap_total = info.get("SwapTotal", 0)
+        swap_free = info.get("SwapFree", 0)
+        return {
+            "available_bytes": available,
+            "swap_used_bytes": max(0, swap_total - swap_free),
+            "swap_total_bytes": swap_total,
+            "swap_in_bytes_sec": None,
+            "swap_out_bytes_sec": None,
+        } if total else {}
+    except Exception:
+        return {}
+
+
+def _read_net_counters():
+    """Read aggregate network counters, excluding loopback."""
+    totals = {"rx_bytes": 0, "tx_bytes": 0, "rx_packets": 0, "tx_packets": 0,
+              "rx_dropped": 0, "tx_dropped": 0, "rx_errors": 0, "tx_errors": 0}
+    interfaces = {}
+    try:
+        with open("/proc/net/dev") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                name, raw = line.split(":", 1)
+                name = name.strip()
+                if name == "lo":
+                    continue
+                # Container bridges/veths mirror host traffic and would
+                # otherwise double-count the real NIC throughput.
+                if name.startswith(("veth", "cni", "docker", "flannel", "br-", "virbr")):
+                    continue
+                vals = raw.split()
+                if len(vals) < 16:
+                    continue
+                keys = ("rx_bytes", "rx_packets", "rx_errors", "rx_dropped",
+                        "tx_bytes", "tx_packets", "tx_errors", "tx_dropped")
+                row = {k: int(vals[i]) for k, i in zip(keys, (0, 1, 2, 3, 8, 9, 10, 11))}
+                interfaces[name] = row
+                for k, v in row.items():
+                    totals[k] += v
+    except Exception:
+        return {}, {}
+    return totals, interfaces
+
+
+def _read_disk_counters():
+    """Read block-device counters from /proc/diskstats (bytes and IO time)."""
+    totals = {"read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0,
+              "io_ms": 0, "weighted_io_ms": 0}
+    try:
+        with open("/proc/diskstats") as f:
+            for line in f:
+                p = line.split()
+                if len(p) < 14:
+                    continue
+                dev = p[2]
+                # Only whole block devices; partitions would double count.
+                if os.path.exists(f"/sys/class/block/{dev}/partition"):
+                    continue
+                vals = [int(x) for x in p[3:14]]
+                totals["read_ops"] += vals[0]
+                totals["read_bytes"] += vals[2] * 512
+                totals["write_ops"] += vals[4]
+                totals["write_bytes"] += vals[6] * 512
+                totals["io_ms"] += vals[9]
+                totals["weighted_io_ms"] += int(p[13])
+    except Exception:
+        return {}
+    return totals
+
+
+def _rate_metrics():
+    """Return network and disk rates derived from monotonic counters."""
+    global _counter_snapshot
+    now = time.monotonic()
+    net, interfaces = _read_net_counters()
+    disk = _read_disk_counters()
+    if not net or not disk:
+        return {"network": {"interfaces": {}}, "disk": {}}
+    previous = _counter_snapshot
+    _counter_snapshot = {"ts": now, "net": net, "disk": disk}
+    network = {"interfaces": interfaces}
+    result_disk = {}
+    if previous:
+        elapsed = now - previous["ts"]
+        if elapsed > 0:
+            def delta(kind, obj, key):
+                d = obj.get(key, 0) - previous.get(kind, {}).get(key, 0)
+                return max(0, d)
+            for key in ("rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_dropped", "tx_dropped", "rx_errors", "tx_errors"):
+                network[key + "_per_sec"] = round(delta("net", net, key) / elapsed, 3)
+            network["rx_drop_pct"] = round(100 * delta("net", net, "rx_dropped") / max(1, delta("net", net, "rx_packets") + delta("net", net, "rx_dropped")), 4)
+            network["tx_drop_pct"] = round(100 * delta("net", net, "tx_dropped") / max(1, delta("net", net, "tx_packets") + delta("net", net, "tx_dropped")), 4)
+            for key in ("read_bytes", "write_bytes", "read_ops", "write_ops"):
+                result_disk[key + "_per_sec"] = round(delta("disk", disk, key) / elapsed, 3)
+            io_ops = delta("disk", disk, "read_ops") + delta("disk", disk, "write_ops")
+            result_disk["await_ms"] = round(delta("disk", disk, "weighted_io_ms") / max(1, io_ops), 3)
+            result_disk["busy_pct"] = round(min(100, 100 * delta("disk", disk, "io_ms") / (elapsed * 1000)), 2)
+            result_disk["queue_depth"] = round(delta("disk", disk, "weighted_io_ms") / max(1, elapsed * 1000), 3)
+    return {"network": network, "disk": result_disk}
 
 
 def _query_gpus():
@@ -233,6 +350,9 @@ def _take_sample():
         "ts": time.time(),
         "host_cpu": None,
         "host_mem": None,
+        "mem": {},
+        "network": {"interfaces": {}},
+        "disk": {},
         "gpus": {},
         "groups": {},
     }
@@ -244,6 +364,16 @@ def _take_sample():
         sample["host_mem"] = _host_mem_pct()
     except Exception:
         sample["host_mem"] = None
+    try:
+        sample["mem"] = _host_mem_stats()
+    except Exception:
+        sample["mem"] = {}
+    try:
+        rates = _rate_metrics()
+        sample["network"] = rates.get("network", {})
+        sample["disk"] = rates.get("disk", {})
+    except Exception:
+        sample["network"], sample["disk"] = {"interfaces": {}}, {}
     try:
         sample["gpus"] = _query_gpus()
     except Exception:
@@ -270,6 +400,9 @@ def _sampler_loop():
                     "ts": sample.get("ts", 0.0),
                     "host_cpu": sample.get("host_cpu"),
                     "host_mem": sample.get("host_mem"),
+                    "mem": sample.get("mem", {}),
+                    "network": sample.get("network", {}),
+                    "disk": sample.get("disk", {}),
                     "gpus": sample.get("gpus", {}),
                     "groups": sample.get("groups", {}),
                 }
@@ -332,6 +465,8 @@ def _build_snapshot():
             "samples": 0,
             "host_cpu": [],
             "host_mem": [],
+            "network": {},
+            "disk": {},
             "gpus": {},
             "groups": {},
         }
@@ -341,6 +476,21 @@ def _build_snapshot():
 
     host_cpu = [s["host_cpu"] for s in ds if s.get("host_cpu") is not None]
     host_mem = [s["host_mem"] for s in ds if s.get("host_mem") is not None]
+
+    def series(key):
+        return [obj.get(key) for obj in (s.get(obj_name, {}) for s in ds) if obj.get(key) is not None]
+
+    # Keep network/disk series aligned with the sampled window.  Missing first
+    # samples are omitted, just like the existing CPU and memory series.
+    obj_name = "network"
+    network = {k: series(k) for k in (
+        "rx_bytes_per_sec", "tx_bytes_per_sec", "rx_packets_per_sec", "tx_packets_per_sec",
+        "rx_dropped_per_sec", "tx_dropped_per_sec", "rx_errors_per_sec", "tx_errors_per_sec",
+        "rx_drop_pct", "tx_drop_pct")}
+    obj_name = "disk"
+    disk = {k: series(k) for k in (
+        "read_bytes_per_sec", "write_bytes_per_sec", "read_ops_per_sec", "write_ops_per_sec",
+        "await_ms", "busy_pct", "queue_depth")}
 
     # GPU series: union of indices across the downsampled samples.
     gpu_idx = set()
@@ -398,6 +548,8 @@ def _build_snapshot():
         "samples": len(snap),
         "host_cpu": host_cpu,
         "host_mem": host_mem,
+        "network": network,
+        "disk": disk,
         "gpus": gpus,
         "groups": groups,
     }
@@ -422,6 +574,8 @@ def metrics_snapshot():
         "samples": 0,
         "host_cpu": [],
         "host_mem": [],
+        "network": {},
+        "disk": {},
         "gpus": {},
         "groups": {},
     }
@@ -457,6 +611,9 @@ def metrics_now():
         "ts": 0.0,
         "host_cpu": None,
         "host_mem": None,
+        "mem": {},
+        "network": {"interfaces": {}},
+        "disk": {},
         "gpus": {},
         "groups": {},
     }
@@ -474,6 +631,9 @@ def metrics_now():
             "ts": s.get("ts", 0.0),
             "host_cpu": s.get("host_cpu"),
             "host_mem": s.get("host_mem"),
+            "mem": dict(s.get("mem", {})),
+            "network": dict(s.get("network", {})),
+            "disk": dict(s.get("disk", {})),
             "gpus": dict(s.get("gpus", {})),
             "groups": dict(s.get("groups", {})),
         }
