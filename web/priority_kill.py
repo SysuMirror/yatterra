@@ -57,6 +57,11 @@ THRESH_HIGH = float(os.environ.get("PRIORITY_KILL_HIGH", "0.80"))
 THRESH_CRIT = float(os.environ.get("PRIORITY_KILL_CRIT", "0.92"))
 RECOVER_LOW = float(os.environ.get("PRIORITY_KILL_RECOVER_LOW", "0.40"))
 RECOVER_S = float(os.environ.get("PRIORITY_KILL_RECOVER_S", "30"))
+# Grace before a victim is restarted because its deploy record vanished: the
+# record is briefly absent while deploys.run() rewrites it, and we must not
+# drop the pending entry in that window.
+RECOVER_MISSING_GRACE_S = float(
+    os.environ.get("PRIORITY_KILL_RECOVER_MISSING_GRACE_S", "600"))
 COOLDOWN_S = float(os.environ.get("PRIORITY_KILL_COOLDOWN_S", "60"))
 STALE_S = float(os.environ.get("PRIORITY_KILL_STALE_S", "30"))
 PRESSURE_FILE = os.environ.get(
@@ -392,73 +397,100 @@ def do_evict(cands, st, dry):
     return len(stopped_now)
 
 
-def all_metrics_low(p):
-    for m in ("cpu", "gpu", "gpu_mem", "mem", "bw"):
+def metric_low(p, m):
+    """Is metric m relaxed below RECOVER_LOW?
+
+    For 'gpu' we look at SM utilisation only, NOT gpu_mem: a host running any
+    co-resident GPU workload sits at a permanent high gpu_mem baseline (0.7+),
+    so folding gpu_mem in would pin the gate shut forever. That was the bug
+    that left rag (and every other evicted program) stopped indefinitely.
+    """
+    if m == "gpu":
+        v = p.get("gpu")
+    else:
         v = p.get(m)
-        if isinstance(v, (int, float)) and v >= RECOVER_LOW:
-            return False
-    return True
+    if not isinstance(v, (int, float)):
+        return True  # missing metric can't block recovery
+    return v < RECOVER_LOW
+
+
+def victim_metrics_low(p, entry):
+    """True when every metric this victim was evicted for is relaxed."""
+    ms = entry.get("metrics") or ["cpu", "mem", "bw"]
+    return all(metric_low(p, m) for m in ms)
+
+
+def all_metrics_low(p):
+    """Host-wide relaxation check (used only for logging/back-compat)."""
+    return all(metric_low(p, m) for m in ("cpu", "gpu", "mem", "bw"))
 
 
 def do_recover(p, st, dry):
-    """If all metrics low for RECOVER_S, restart stopped programs in reverse."""
+    """Restart stopped programs once the metrics *they were evicted for* are
+    relaxed and have stayed relaxed for RECOVER_S.
+
+    Per-victim hysteresis (low_since stored on each entry) rather than a single
+    host-wide gate: a victim stopped for 'bw' must not be held hostage by
+    unrelated gpu/mem pressure, and vice versa.
+    """
     now = time.time()
-    if not all_metrics_low(p):
-        st["low_since"] = None
-        return 0
-    if st.get("low_since") is None:
-        st["low_since"] = now
-        return 0
-    if now - st["low_since"] < RECOVER_S:
-        return 0
     stopped = st.get("stopped", [])
     if not stopped:
+        st["low_since"] = None
         return 0
-    log(f"recovery: all metrics low for {RECOVER_S}s, restarting {len(stopped)}")
+
+    # host-wide view, for the log line only
+    st["low_since"] = st.get("low_since") or (now if all_metrics_low(p) else None)
+    if not all_metrics_low(p):
+        st["low_since"] = None
+
     recovered = 0
     for entry in reversed(list(stopped)):
         group, did = entry["group"], entry["deploy_id"]
         try:
-            # still low for this group? (host-wide low here)
-            if not all_metrics_low(p):
-                break
-            # still exists?
+            if not victim_metrics_low(p, entry):
+                entry.pop("low_since", None)
+                continue
+            if entry.get("low_since") is None:
+                entry["low_since"] = now
+                continue
+            if now - entry["low_since"] < RECOVER_S:
+                continue
             dep = deploys.get(group, did)
             if not dep:
-                log(f"recover skip {group}/{did}: record gone")
+                # Record briefly absent while deploys.run() rewrites it — only
+                # give up once it has been missing well past that window.
+                if now - float(entry.get("ts") or now) > RECOVER_MISSING_GRACE_S:
+                    log(f"recover skip {group}/{did}: record gone")
+                    entry["_drop"] = True
                 continue
             if is_program_running(group, did):
                 log(f"recover skip {group}/{dep['name']}: already running")
-                recovered += 1  # count as done; remove below
+                entry["_drop"] = True
+                recovered += 1
                 continue
             if dry:
-                log(f"[DRY] would start {group}/{dep['name']}")
+                log(f"[DRY] would start {group}/{dep['name']} "
+                    f"(metrics={entry.get('metrics')})")
                 recovered += 1
                 continue
             rc, msg = supervisorctl_start(group, did)
-            log(f"recover start {group}/{dep['name']} rc={rc} ({msg})")
+            log(f"recover start {group}/{dep['name']} "
+                f"metrics={entry.get('metrics')} rc={rc} ({msg})")
             if rc == 0:
+                entry["_drop"] = True
                 recovered += 1
                 st.setdefault("cooldown", {})[did] = now + COOLDOWN_S
         except Exception as e:
             log(f"recover error {group}/{did}: {e!r}")
-    if recovered:
-        # remove recovered entries (those whose deploy still exists / started)
-        ids_done = set()
-        # rebuild stopped without the recovered ones (last recovered entries)
-        remaining = []
-        # iterate original order, drop entries we recovered (match by id+ts)
-        # simpler: drop entries whose deploy is now running or gone
-        for entry in stopped:
-            did = entry["deploy_id"]
-            dep = deploys.get(entry["group"], did)
-            if not dep:
-                continue  # gone, drop
-            if is_program_running(entry["group"], did):
-                continue  # running, drop
-            remaining.append(entry)
-        st["stopped"] = remaining
-        st["low_since"] = None  # reset; will re-arm if still low
+
+    # drop entries we recovered / that no longer exist; keep the rest pending
+    remaining = []
+    for entry in stopped:
+        if entry.pop("_drop", False):
+            continue
+        remaining.append(entry)
+    st["stopped"] = remaining
     return recovered
 
 
@@ -476,7 +508,10 @@ def cycle(dry=False):
             f"top={top}")
     n_evict = do_evict(cands, st, dry)
     n_recov = do_recover(p, st, dry)
-    if n_evict or n_recov or cands:
+    # Persist whenever there is pending recovery bookkeeping: do_recover updates
+    # per-entry low_since every cycle, and those timestamps must survive the
+    # reload in the next cycle or the hysteresis timer never advances.
+    if n_evict or n_recov or cands or st.get("stopped"):
         save_state(st)
 
 

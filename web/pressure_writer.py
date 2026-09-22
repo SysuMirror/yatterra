@@ -24,7 +24,7 @@ Standalone
 Does NOT import yatterra core (groups/scheduler/...). Collects directly from
 /proc and nvidia-smi so it can't break the panel or the gpu_loop. Runs as
 root only because /mnt/sdb/shared is root-owned; the file it writes is
-world-readable so pods (uid 1001) can read it.
+world-readable so pods (uid 1000) can read it.
 
 Atomic writes: tmp file + os.replace, so apps never observe a half-written
 JSON. Never raises: a failed collector yields null for that metric.
@@ -174,9 +174,44 @@ def gpu_frac():
         return (None, None)
 
 
-def _net_bytes():
-    """Sum rx/tx bytes across non-loopback interfaces from /proc/net/dev."""
+def _uplink_ifaces():
+    """Interfaces that actually carry off-host traffic: the default-route
+    device(s).
+
+    Summing *every* non-lo interface double- or triple-counts pod traffic — a
+    packet crossing veth -> cni0 -> eno1 is counted once per hop, and overlay
+    (flannel.1) / tailscale0 add more. On this host that inflated bw ~2-3x and
+    caused spurious evictions (e.g. rag stopped with hit=['bw'] while the real
+    uplink was idle). Count the uplink only.
+
+    Falls back to physical NICs (/sys/class/net/<if>/device) if /proc/net/route
+    is unreadable, and to None (=> all non-lo) as a last resort.
+    """
+    ifaces = set()
     try:
+        with open("/proc/net/route") as f:
+            for line in f.readlines()[1:]:
+                cols = line.split()
+                # Iface Destination Gateway ... ; default route = 00000000
+                if len(cols) >= 2 and cols[1] == "00000000":
+                    ifaces.add(cols[0])
+    except Exception:
+        pass
+    if ifaces:
+        return ifaces
+    try:
+        for n in os.listdir("/sys/class/net"):
+            if n != "lo" and os.path.exists(f"/sys/class/net/{n}/device"):
+                ifaces.add(n)
+    except Exception:
+        pass
+    return ifaces or None
+
+
+def _net_bytes():
+    """Sum rx/tx bytes across the uplink interface(s) from /proc/net/dev."""
+    try:
+        ifaces = _uplink_ifaces()
         rx = tx = 0
         with open("/proc/net/dev") as f:
             for line in f:
@@ -185,6 +220,8 @@ def _net_bytes():
                 name, rest = line.split(":", 1)
                 name = name.strip()
                 if name == "lo":
+                    continue
+                if ifaces is not None and name not in ifaces:
                     continue
                 cols = rest.split()
                 rx += int(cols[0])
@@ -246,7 +283,7 @@ def write_once():
             json.dump(payload, f, separators=(",", ":"))
             f.write("\n")
         os.replace(tmp, OUT_FILE)
-        # world-readable so uid-1001 pods can read
+        # world-readable so uid-1000 pods can read
         try:
             os.chmod(OUT_FILE, 0o644)
         except Exception:
