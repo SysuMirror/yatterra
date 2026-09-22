@@ -89,60 +89,144 @@ function InfrastructureArc() {
   </div>
 }
 
-function StartingPointExplorer() {
+function StartingPointExplorer({ paused }: { paused: boolean }) {
   const [activeKey, setActiveKey] = useState(startingPoints[0]!.key)
   const active = startingPoints.find(item => item.key === activeKey) ?? startingPoints[0]!
   return (
     <div className="terra-explorer">
-      <div className="terra-explorer-top"><div><p className="terra-eyebrow">TRY THE IDEA</p><h3>你从哪里开始？</h3></div><span className="terra-explorer-status"><span /> SYSTEM READY</span></div>
+      <div className="terra-explorer-top"><div><p className="terra-eyebrow">TRY THE IDEA</p><h3>你从哪里开始？</h3><p className="terra-explorer-lede">不必先拥有一座机房，从你已经拥有的东西开始。</p></div><span className="terra-explorer-status"><span /> SYSTEM READY</span></div>
       <div className="terra-explorer-tabs" role="tablist" aria-label="选择基础设施起点">
         {startingPoints.map(item => <button key={item.key} type="button" role="tab" aria-selected={activeKey === item.key} className={activeKey === item.key ? 'is-active' : ''} onClick={() => setActiveKey(item.key)}>{item.label}<small>{item.eyebrow}</small></button>)}
       </div>
       <div className="terra-explorer-body">
         <div className="terra-explorer-copy"><h4>{active.title}</h4><p>{active.text}</p><div className="terra-explorer-nodes">{active.nodes.map((node, index) => <span key={node}><b style={{ backgroundColor: active.accent }} />{node}{index < active.nodes.length - 1 && <ArrowRight size={13} />}</span>)}</div></div>
-        <StartingPointDiagram kind={active.key} />
+        <StartingPointDiagram kind={active.key} paused={paused} />
       </div>
     </div>
   )
 }
 
-function GapIllustration() {
-  return <svg className="terra-gap-art" viewBox="0 0 430 190" fill="none" role="img" aria-label="云成本和闲置本地算力之间缺少基础设施层的示意图">
+function GapIllustration({ paused }: { paused: boolean }) {
+  const fabricRows = [
+    { label: '连接', color: '#67e8d0', text: '#a9d7ce' },
+    { label: '编排', color: '#8ab4ec', text: '#b7cbe8' },
+    { label: '运行', color: '#f6c889', text: '#f2d9b4' },
+  ]
+  // cubic M136 129 C170 20 234 20 268 91, sampled at t = 0 / .25 / .5 / .75 / 1
+  const packetX = [136, 166.2, 202, 237.8, 268]
+  const packetY = [129, 67.1, 42.5, 51.7, 91]
+  return <svg className="terra-gap-art" viewBox="0 0 430 190" fill="none" role="img" aria-label="左侧是昂贵的公有云与闲置的内网设备，中间缺少适配层，YatTerra 以连接、编排、运行补上这一层的示意图">
     <defs>
-      <linearGradient id="terra-gap-bridge" x1="92" y1="96" x2="338" y2="96" gradientUnits="userSpaceOnUse"><stop stopColor="#f6c889" stopOpacity=".15" /><stop offset=".48" stopColor="#9aebd2" /><stop offset="1" stopColor="#8ab4ec" stopOpacity=".3" /></linearGradient>
+      <linearGradient id="terra-gap-bridge" x1="136" y1="129" x2="268" y2="91" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#f6c889" stopOpacity=".7" />
+        <stop offset=".5" stopColor="#9aebd2" />
+        <stop offset="1" stopColor="#8ab4ec" stopOpacity=".85" />
+      </linearGradient>
+      <linearGradient id="terra-gap-cloud" x1="0" y1="0" x2="0" y2="1">
+        <stop stopColor="#2f2537" />
+        <stop offset="1" stopColor="#1b1723" />
+      </linearGradient>
+      <linearGradient id="terra-gap-device" x1="0" y1="0" x2="0" y2="1">
+        <stop stopColor="#12293a" />
+        <stop offset="1" stopColor="#0a1b26" />
+      </linearGradient>
+      <linearGradient id="terra-gap-fabric" x1="0" y1="0" x2="1" y2="1">
+        <stop stopColor="#123542" />
+        <stop offset="1" stopColor="#0b202c" />
+      </linearGradient>
+      <linearGradient id="terra-gap-void" x1="0" y1="28" x2="0" y2="154" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#08111a" stopOpacity=".9" />
+        <stop offset="1" stopColor="#08111a" stopOpacity=".15" />
+      </linearGradient>
+      <linearGradient id="terra-gap-sheen" x1="0" y1="16" x2="0" y2="86" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#ffffff" stopOpacity=".05" />
+        <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
+      </linearGradient>
+      <pattern id="terra-gap-grid" width="22" height="22" patternUnits="userSpaceOnUse">
+        <path d="M22 0H0V22" stroke="#8fa5b0" strokeOpacity=".06" />
+      </pattern>
+      <pattern id="terra-gap-grid-fine" width="11" height="11" patternUnits="userSpaceOnUse">
+        <path d="M11 0H0V11" stroke="#8fa5b0" strokeOpacity=".03" />
+      </pattern>
+      <radialGradient id="terra-gap-halo" cx="335" cy="80" r="96" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#9aebd2" stopOpacity=".16" />
+        <stop offset="1" stopColor="#9aebd2" stopOpacity="0" />
+      </radialGradient>
+      <filter id="terra-gap-shadow" x="-30%" y="-30%" width="160%" height="175%">
+        <feDropShadow dx="0" dy="3" stdDeviation="4" floodColor="#020a10" floodOpacity=".55" />
+      </filter>
     </defs>
-    <rect x="16" y="20" width="398" height="150" rx="18" fill="#0b1723" stroke="#5f7a87" strokeOpacity=".18" />
-    <path d="M42 95H388" stroke="#5f7a87" strokeOpacity=".14" />
-    <g transform="translate(38 42)">
-      <rect width="122" height="42" rx="8" fill="#2a2230" stroke="#f6c889" strokeOpacity=".5" />
-      <text x="18" y="17" fill="#f6d7ab" fontSize="10" letterSpacing="1.5">PUBLIC CLOUD</text>
-      <text x="18" y="32" fill="#f6c889" fontSize="16" fontWeight="600">￥￥￥</text>
-      <path d="M86 16h20m-20 8h14" stroke="#b79674" strokeOpacity=".65" />
-      <text x="0" y="67" fill="#8b7569" fontSize="10">账单随规模增长</text>
+
+    {/* stage */}
+    <rect x="14" y="16" width="402" height="158" rx="18" fill="#0b1723" stroke="#5f7a87" strokeOpacity=".18" />
+    <rect x="14" y="16" width="402" height="158" rx="18" fill="url(#terra-gap-grid-fine)" />
+    <rect x="14" y="16" width="402" height="158" rx="18" fill="url(#terra-gap-grid)" />
+    <rect x="14" y="16" width="402" height="158" rx="18" fill="url(#terra-gap-halo)" />
+    <rect x="14" y="16" width="402" height="158" rx="18" fill="url(#terra-gap-sheen)" />
+
+    {/* left-top · expensive public cloud */}
+    <g transform="translate(28 28)">
+      <rect width="108" height="54" rx="10" fill="url(#terra-gap-cloud)" stroke="#f6c889" strokeOpacity=".42" filter="url(#terra-gap-shadow)" />
+      <rect x=".5" y=".5" width="107" height="53" rx="9.5" stroke="#f6c889" strokeOpacity=".12" />
+      <text x="11" y="15" fill="#f6d7ab" fontSize="6.6" letterSpacing="1.3">PUBLIC CLOUD</text>
+      <text x="11" y="40" fill="#f6c889" fontSize="16" fontWeight="600">￥￥￥</text>
+      <path d="M74 44h30" stroke="#f6c889" strokeOpacity=".18" strokeLinecap="round" />
+      <rect x="75" y="34" width="5" height="10" rx="1.5" fill="#f6c889" fillOpacity=".26" />
+      <rect x="84" y="28" width="5" height="16" rx="1.5" fill="#f6c889" fillOpacity=".5" />
+      <rect x="93" y="21" width="5" height="23" rx="1.5" fill="#f6c889" fillOpacity=".78" />
+      <path d="M74 24l9-5 9-4 6-3" stroke="#f6c889" strokeOpacity=".34" strokeLinecap="round" strokeDasharray="2 3" />
     </g>
-    <g transform="translate(38 112)">
-      {[0, 1, 2].map(index => <g key={index} transform={`translate(${index * 44} 0)`}>
-        <rect width="34" height="30" rx="6" fill="#102433" stroke="#67e8d0" strokeOpacity=".52" />
-        <path d="M8 12h18M8 19h12" stroke="#67e8d0" strokeOpacity=".65" />
+    <text x="82" y="95" textAnchor="middle" fill="#8b7569" fontSize="8">账单随规模增长</text>
+
+    {/* left-bottom · idle in-network devices */}
+    <g transform="translate(28 104)">
+      <rect width="108" height="50" rx="10" fill="url(#terra-gap-device)" stroke="#67e8d0" strokeOpacity=".3" filter="url(#terra-gap-shadow)" />
+      <rect x=".5" y=".5" width="107" height="49" rx="9.5" stroke="#67e8d0" strokeOpacity=".1" />
+      {[0, 1, 2].map(index => <g key={index} transform={`translate(${9 + index * 32} 9)`}>
+        <rect width="26" height="26" rx="5" fill="#0d1f2b" stroke="#67e8d0" strokeOpacity={index === 1 ? '.16' : '.42'} />
+        <path d="M6 10h14M6 15h9" stroke="#67e8d0" strokeOpacity={index === 1 ? '.18' : '.5'} strokeLinecap="round" />
+        <circle cx="20" cy="20" r="1.7" fill="#67e8d0" className="terra-light" style={{ animationDelay: `${index * -.8}s` }} opacity={index === 1 ? .22 : undefined} />
       </g>)}
-      <text x="0" y="54" fill="#7ea09f" fontSize="10">内网里的真实设备</text>
+      <rect x="9" y="40" width="90" height="3" rx="1.5" fill="#67e8d0" fillOpacity=".09" />
+      <rect x="9" y="40" width="15" height="3" rx="1.5" fill="#67e8d0" fillOpacity=".42" />
     </g>
-    <g transform="translate(170 62)">
-      <rect width="90" height="66" rx="12" fill="#111f2a" stroke="#789198" strokeOpacity=".28" strokeDasharray="4 6" />
-      <path d="M24 33h42" stroke="#789198" strokeOpacity=".45" />
-      <path d="M43 21 49 33 43 45" stroke="#789198" strokeOpacity=".45" />
-      <path d="M34 48 58 18" stroke="#f6c889" strokeWidth="2" strokeLinecap="round" />
-      <text x="45" y="82" textAnchor="middle" fill="#778f99" fontSize="10">缺少适配层</text>
+    <text x="82" y="168" textAnchor="middle" fill="#7ea09f" fontSize="8">内网设备 · 闲置</text>
+
+    {/* middle · the missing layer */}
+    <rect x="152" y="28" width="100" height="126" rx="14" fill="url(#terra-gap-void)" stroke="#789198" strokeOpacity=".22" strokeDasharray="4 6" />
+    <path d="M202 40v100" stroke="#789198" strokeOpacity=".1" strokeDasharray="2 5" />
+    <g transform="translate(202 92)">
+      <circle cx="0" cy="0" r="15" fill="#0b1723" stroke="#789198" strokeOpacity=".26" />
+      <path d="M-6-6l12 12M-6 6l12-12" stroke="#f6c889" strokeWidth="1.6" strokeLinecap="round" strokeOpacity=".85" />
     </g>
-    <g transform="translate(280 54)">
-      <rect width="96" height="82" rx="14" fill="#102b37" stroke="#9aebd2" strokeOpacity=".62" />
-      <path d="M19 28h58M19 41h58M19 54h35" stroke="#9aebd2" strokeOpacity=".42" />
-      <circle cx="72" cy="54" r="4" fill="#9aebd2" className="terra-light" />
-      <text x="48" y="104" textAnchor="middle" fill="#a9d7ce" fontSize="10">连接 · 编排 · 运行</text>
+    <text x="202" y="126" textAnchor="middle" fill="#778f99" fontSize="8.5">缺少适配层</text>
+    <text x="202" y="140" textAnchor="middle" fill="#5c7480" fontSize="6.4" letterSpacing="1.1">NO ADAPTER</text>
+    <text x="202" y="168" textAnchor="middle" fill="#607984" fontSize="8" letterSpacing="1">THE MISSING MIDDLE</text>
+
+    {/* right · YatTerra fabric */}
+    <g transform="translate(268 28)">
+      <rect width="134" height="126" rx="14" fill="url(#terra-gap-fabric)" stroke="#9aebd2" strokeOpacity=".55" filter="url(#terra-gap-shadow)" />
+      <rect x="1" y="1" width="132" height="124" rx="13" stroke="#9aebd2" strokeOpacity=".1" />
+      <circle cx="14" cy="16" r="2.6" fill="#9aebd2" className="terra-light" />
+      <text x="22" y="19" fill="#a9d7ce" fontSize="6.6" letterSpacing="1.3">YATTERRA FABRIC</text>
+      <path d="M12 26h110" stroke="#9aebd2" strokeOpacity=".12" />
+      {fabricRows.map((row, index) => <g key={row.label} transform={`translate(12 ${34 + index * 30})`}>
+        <rect width="110" height="24" rx="7" fill="#0d2230" stroke={row.color} strokeOpacity=".3" />
+        <circle cx="12" cy="12" r="2.8" fill={row.color} fillOpacity=".85" className="terra-light" style={{ animationDelay: `${index * -.6}s` }} />
+        <text x="22" y="15" fill={row.text} fontSize="9">{row.label}</text>
+        <path d="M52 12h36" stroke={row.color} strokeOpacity=".26" strokeLinecap="round" />
+        <circle cx="94" cy="12" r="2.2" fill={row.color} className="terra-light" style={{ animationDelay: `${index * -.6 - .3}s` }} />
+      </g>)}
     </g>
-    <path d="M98 96C152 74 212 118 282 96" stroke="url(#terra-gap-bridge)" strokeWidth="2" strokeLinecap="round" />
-    <motion.circle r="4" fill="#9aebd2" animate={{ cx: [98, 190, 282], cy: [96, 105, 96], opacity: [0, 1, 0] }} transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }} />
-    <text x="215" y="30" textAnchor="middle" fill="#607984" fontSize="10" letterSpacing="2">THE MISSING MIDDLE</text>
+    <text x="335" y="168" textAnchor="middle" fill="#a9d7ce" fontSize="8.5" letterSpacing="1.4">连接 · 编排 · 运行</text>
+
+    {/* the bridge over the gap */}
+    <path d="M136 129C170 20 234 20 268 91" stroke="#9aebd2" strokeOpacity=".07" strokeWidth="10" strokeLinecap="round" />
+    <path d="M136 129C170 20 234 20 268 91" stroke="url(#terra-gap-bridge)" strokeWidth="1.8" strokeLinecap="round" />
+    <circle cx="136" cy="129" r="3.4" fill="#0b1723" stroke="#f6c889" strokeOpacity=".8" />
+    <circle cx="268" cy="91" r="3.4" fill="#0b1723" stroke="#8ab4ec" strokeOpacity=".8" />
+    <motion.circle r="3.4" fill="#9aebd2" initial={false} animate={paused ? { cx: 202, cy: 42.5, opacity: .4 } : { cx: packetX, cy: packetY, opacity: [0, 1, 1, 1, 0] }} transition={paused ? { duration: .2 } : { duration: 3.6, repeat: Infinity, ease: 'easeInOut' }} />
+    <motion.circle r="2.2" fill="#f6c889" initial={false} animate={paused ? { cx: 166.2, cy: 67.1, opacity: .3 } : { cx: packetX, cy: packetY, opacity: [0, .9, .9, .9, 0] }} transition={paused ? { duration: .2 } : { duration: 3.6, repeat: Infinity, ease: 'easeInOut', delay: 1.8 }} />
   </svg>
 }
 
@@ -175,7 +259,7 @@ export default function Landing() {
             <div className="terra-hero-copy">
               <Reveal><div className="terra-eyebrow"><span className="terra-status-dot" /> BUILT FOR THE REAL WORLD</div></Reveal>
               <Reveal delay={.06}><h1>更高级的生产力，<br /><span className="terra-heading-accent">应该属于每一个人。</span></h1></Reveal>
-              <Reveal delay={.12}><p className="terra-hero-description">技术突破创造新的能力，基础设施让更多人用得上它。今天，模型越来越容易获取；让自己的 AI 应用持续运行，仍需要连接、算力与运维。</p></Reveal>
+              <Reveal delay={.12}><p className="terra-hero-description">每一代基础设施，都把曾经只属于少数人的能力交还给日常生活。AI 已经可以被调用，下一步是让更多人拥有把它变成作品、并让作品持续运行的条件。</p></Reveal>
               <Reveal delay={.18}><div className="terra-actions"><Link to="/login" className="terra-button terra-button-primary">进入 YatTerra <ArrowRight size={17} /></Link><a href="#thesis" className="terra-button terra-button-secondary">理解这件事 <ArrowDown size={16} /></a></div></Reveal>
               <Reveal delay={.24}><div className="terra-promises"><span><Check size={14} />普惠性的技术基础设施</span><span><Check size={14} />公有云与私有云之间</span></div></Reveal>
             </div>
@@ -186,15 +270,15 @@ export default function Landing() {
 
         <section id="thesis" className="terra-section terra-section-tinted terra-thesis-section">
           <div className="terra-container">
-            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">00 — THE LONG ARC</p><h2>世界一直在做同一件事：<br /><span>把生产力带到日常生活。</span></h2></div><p>从动力到能源，再到计算，普及的关键不只是发明本身，更是把能力组织成可接入、可使用的基础设施。</p></div></Reveal>
+            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">00 — THE LONG ARC</p><h2>每一次普及，<br /><span>都始于一层新的基础设施。</span></h2></div><p>蒸汽动力改变生产，电网改变能源，网络与云改变计算。它们做的不是替人创造，而是让创造不必先获得一座工厂、一张电网或一间机房。</p></div></Reveal>
             <Reveal><InfrastructureArc /></Reveal>
-            <Reveal><div className="terra-thesis-note"><span className="terra-thesis-mark">→</span><p>下一步，让分散的算力成为可用的基础设施。<strong>YatTerra 连接设备、组织节点、承载应用，让更多创造者拥有持续运行 AI 的环境。</strong></p></div></Reveal>
+            <Reveal><div className="terra-thesis-note"><span className="terra-thesis-mark">→</span><p>AI 的问题不再只是“能不能用”，而是“谁能把它变成自己的东西”。<strong>YatTerra 连接设备、组织节点、承载应用，让创造拥有持续运行的地方。</strong></p></div></Reveal>
           </div>
         </section>
 
         <section className="terra-section terra-explorer-section">
           <div className="terra-container">
-            <Reveal><StartingPointExplorer /></Reveal>
+            <Reveal><StartingPointExplorer paused={paused || Boolean(reduce)} /></Reveal>
           </div>
         </section>
 
@@ -202,7 +286,7 @@ export default function Landing() {
           <div className="terra-container">
             <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">01 — THE MISSING LAYER</p><h2>AI 正在走向每一个人，<br /><span>基础设施却没有跟上。</span></h2></div><p>传统公有云主要服务企业、政府、医院和研究机构，解决的是“非计算机专业客户如何不必考虑运维”。但 AI 时代的创新正在不可逆地碎片化、个人化。</p></div></Reveal>
             <div className="terra-constraint-grid">{constraints.map((item, index) => <Reveal key={item.title} delay={index * .06}><article className="terra-constraint"><div className="terra-constraint-heading"><item.icon size={23} /><span>{item.label}</span></div><h3>{item.title}</h3><p>{item.description}</p><div className="terra-constraint-path">{item.detail}</div></article></Reveal>)}</div>
-            <Reveal><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><GapIllustration /><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p></div></Reveal>
+            <Reveal><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><GapIllustration paused={paused || Boolean(reduce)} /><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p></div></Reveal>
           </div>
         </section>
 
