@@ -13,12 +13,27 @@ export interface Pod {
   created_at: string
 }
 
+export interface AppLogFile {
+  name: string
+  size: number
+  mtime: string
+  symlink: boolean
+  source?: string
+}
+
+export interface AppLogContent {
+  file: AppLogFile
+  content: string
+}
+
 export interface PodDetail extends Pod {
   role: string
   password: string
   ssh_public: number
   web_public: number
   env: Record<string, string>
+  internal_ports: number[]
+  internal_host: string
   credentials: { db: any[]; minio: any[] }
   deploys: any[]
 }
@@ -56,11 +71,10 @@ export const podsApi = {
   events: (name: string) => api.get(`/pods/${name}/events`),
 
   logs: (name: string, tail = 200) => api.get<string>(`/pods/${name}/logs?tail=${tail}`),
-  appLogs: (name: string, file?: string, tail?: number) => {
-    const sp = new URLSearchParams()
-    if (file) sp.set('file', file)
-    if (tail) sp.set('tail', String(tail))
-    return api.get(`/pods/${name}/app-logs?${sp}`)
+  appLogFiles: (name: string) => api.get<{ files: AppLogFile[] }>(`/pods/${encodeURIComponent(name)}/app-logs`),
+  appLogContent: (name: string, file: string, tail = 200) => {
+    const sp = new URLSearchParams({ file, tail: String(tail) })
+    return api.get<string>(`/pods/${encodeURIComponent(name)}/app-logs?${sp}`)
   },
 
   files: (name: string, path = '/') => api.get(`/pods/${name}/files?path=${encodeURIComponent(path)}`),

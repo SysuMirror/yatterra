@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Core logic for the platform groups: state, manifests, frpc, kubectl."""
 import users
-import users
 import json, os, secrets, string, subprocess, textwrap, shutil, time, threading
 import audit
 import req_estimate
@@ -39,8 +38,6 @@ DEFAULT_CPU_CPU = "2"
 DEFAULT_CPU_MEM = "4Gi"
 DEFAULT_GPU_CPU = "4"
 DEFAULT_GPU_MEM = "16Gi"
-EPHEMERAL = "20Gi"
-
 # per-group persistent home (survives rollout restart). hostPath on the big disk;
 # size is a recorded soft cap (local-path/ext4 don't hard-enforce -> advisory).
 GROUP_DATA_ROOT = siteconf.GROUP_DATA_ROOT
@@ -56,14 +53,27 @@ mkdir -p /run/sshd
 if [ -n "$CLOUD_PASSWORD" ]; then echo "cloud:${CLOUD_PASSWORD}" | chpasswd; fi
 if [ ! -e /home/cloud/.bashrc ]; then
   cp -a /etc/skel/. /home/cloud/ 2>/dev/null || true
-  chown -R 1001:1001 /home/cloud 2>/dev/null || true
+  chown -R cloud:cloud /home/cloud 2>/dev/null || true
 fi
 su -l cloud -c "mkdir -p ~/deploy/programs ~/deploy/logs ~/logs"
 if [ ! -x /home/cloud/.local/bin/supervisord ]; then
   su -l cloud -c "pip install --user --break-system-packages -q supervisor" >/tmp/sup_install.log 2>&1 || true
 fi
+# Is supervisord already running? The pidfile lives on the persistent hostPath,
+# so it survives pod recreation and its PID may collide with an unrelated
+# process in the new PID namespace — `kill -0 $pid` alone is NOT proof, and a
+# stale hit silently skips the start (that is how rag came back with no
+# supervisord after a pod rebuild). Verify the PID's actual cmdline via
+# /proc/<pid>/cmdline (NOT pgrep -f: the init script's own command line
+# contains the pattern text, so pgrep would always match PID 1).
+SUP_RUNNING=0
 SUP_PID=$(cat /home/cloud/deploy/supervisord.pid 2>/dev/null || true)
-if [ -e /home/cloud/deploy/supervisord.conf ] && [ -x /home/cloud/.local/bin/supervisord ] && { [ -z "$SUP_PID" ] || ! kill -0 "$SUP_PID" 2>/dev/null; }; then
+if [ -n "$SUP_PID" ] && [ -r "/proc/$SUP_PID/cmdline" ] && tr '\\0' ' ' < "/proc/$SUP_PID/cmdline" | grep -q "bin/supervisord"; then
+  SUP_RUNNING=1
+else
+  rm -f /home/cloud/deploy/supervisord.pid /home/cloud/deploy/supervisor.sock 2>/dev/null || true
+fi
+if [ "$SUP_RUNNING" = "0" ] && [ -e /home/cloud/deploy/supervisord.conf ] && [ -x /home/cloud/.local/bin/supervisord ]; then
   su -l cloud -c "~/.local/bin/supervisord -c ~/deploy/supervisord.conf" >>/home/cloud/deploy/supervisord.boot.log 2>&1 &
   sleep 1
 fi
@@ -234,11 +244,19 @@ def deployment_yaml(g):
     is_gpu = g["type"] == "gpu"
     cpu = g["cpu"]; mem = g["mem"]
     # limits = user-set cap; requests = EWMA estimate from actual usage
-    req_cpu, req_mem = req_estimate.request_for(g)
+    req_cpu, req_mem, req_storage = req_estimate.request_for(g)
     env_lines = [
         f'        - name: CLOUD_PASSWORD\n          value: "{g["password"]}"',
         '        - name: LOG_DIR\n          value: "/home/cloud/logs"',
     ]
+    # cluster-only service ports, exposed to the app as a sorted CSV so it can
+    # advertise itself (e.g. to sse-agent) without hardcoding. Changes take
+    # effect on the next Pod restart; the Service itself updates immediately.
+    _iports = normalize_internal_ports(g)
+    env_lines.append(
+        '        - name: INTERNAL_PORTS\n          value: '
+        + json.dumps(",".join(map(str, _iports)))
+    )
     runtime_class = ""
     if is_gpu:
         # Pod sees only its assigned GPUs (g["gpus"]); falls back to all if
@@ -320,10 +338,11 @@ spec:
           limits:
             cpu: "{cpu}"
             memory: "{mem}"
-            ephemeral-storage: "{EPHEMERAL}"
+            ephemeral-storage: "{g['storage']}"
           requests:
             cpu: "{req_cpu}"
             memory: "{req_mem}"
+            ephemeral-storage: "{req_storage}"
         securityContext:
           privileged: false
         volumeMounts:
@@ -344,6 +363,65 @@ spec:
           type: DirectoryOrCreate
 {mps_volumes}
 """
+
+
+# --- internal (cluster-only) service ports -----------------------------------
+# Ports a group wants reachable from other Pods inside the cluster. Declared on
+# the group's Service with no nodePort, so they are NOT exposed publicly. The
+# list is stored unordered on the group (g["internal_ports"]) and normalised to
+# a sorted, de-duplicated list whenever it is read or written.
+INTERNAL_PORT_MIN = 1
+INTERNAL_PORT_MAX = 65535
+# 22/8080 are already published by the base Service; 31000-32767 is the k3s
+# NodePort range and must stay free for the ssh/web nodePorts.
+INTERNAL_PORT_RESERVED = {22, 8080}
+
+
+def normalize_internal_ports(g):
+    """Return the group's internal ports as a sorted, de-duplicated int list.
+    Tolerates strings/None and silently drops values that are not usable."""
+    out = set()
+    for v in (g.get("internal_ports") or []):
+        try:
+            p = int(str(v).strip())
+        except (TypeError, ValueError):
+            continue
+        if not (INTERNAL_PORT_MIN <= p <= INTERNAL_PORT_MAX):
+            continue
+        if p in INTERNAL_PORT_RESERVED or 31000 <= p <= 32767:
+            continue
+        out.add(p)
+    return sorted(out)
+
+
+def _check_internal_port(p):
+    try:
+        p = int(str(p).strip())
+    except (TypeError, ValueError):
+        raise ValueError("端口必须是整数")
+    if not (INTERNAL_PORT_MIN <= p <= INTERNAL_PORT_MAX):
+        raise ValueError(f"端口需在 {INTERNAL_PORT_MIN}-{INTERNAL_PORT_MAX} 之间")
+    if p in INTERNAL_PORT_RESERVED:
+        raise ValueError(f"端口 {p} 已被 ssh/web 占用,不能作为内网端口")
+    if 31000 <= p <= 32767:
+        raise ValueError(f"端口 {p} 属于 NodePort 区间(31000-32767),请换一个")
+    return p
+
+
+def set_internal_ports(name, ports):
+    """Replace a group's internal-port list. Rewrites the Service only — no Pod
+    restart, so a running service keeps its state. Returns the sorted list."""
+    state = load_state()
+    if name not in state["groups"]:
+        raise ValueError(f"组 {name} 不存在")
+    g = state["groups"][name]
+    clean = sorted({_check_internal_port(p) for p in (ports or [])})
+    g["internal_ports"] = clean
+    apply_group(g)
+    save_state(state)
+    audit.record("internal_ports_set",
+                 detail=f"{name} ports={','.join(map(str, clean))}")
+    return clean
 
 
 def service_yaml(g):
@@ -372,6 +450,46 @@ spec:
 """
 
 
+def internal_service_name(name):
+    return f"group-{name}-internal"
+
+
+def internal_service_yaml(g):
+    """A second, ClusterIP-only Service carrying the group's internal ports.
+
+    It must be a SEPARATE Service: a NodePort Service auto-allocates a nodePort
+    for every port that does not name one, so adding ports to the main Service
+    would silently publish them on the host/LAN. ClusterIP has no such
+    allocation — these ports are reachable only from inside the cluster, at
+    group-<name>-internal.<ns>.svc.cluster.local.
+    """
+    name = g["name"]
+    ports = normalize_internal_ports(g)
+    if not ports:
+        return ""  # nothing declared -> no Service (keeps the cluster tidy)
+    body = ""
+    for p in ports:
+        body += (f"  - name: in-{p}\n"
+                 f"    port: {p}\n"
+                 f"    targetPort: {p}\n"
+                 f"    protocol: TCP\n")
+    return f"""apiVersion: v1
+kind: Service
+metadata:
+  name: {internal_service_name(name)}
+  namespace: {NS}
+  labels:
+    app: group-{name}
+    managed-by: yatterra
+    role: internal
+spec:
+  type: ClusterIP
+  selector:
+    app: group-{name}
+  ports:
+{body}"""
+
+
 def write_manifest(g):
     os.makedirs(MANIFEST_DIR, exist_ok=True)
     path = os.path.join(MANIFEST_DIR, f"group-{g['name']}.yaml")
@@ -379,16 +497,27 @@ def write_manifest(g):
         f.write(deployment_yaml(g))
         f.write("---\n")
         f.write(service_yaml(g))
+        internal = internal_service_yaml(g)
+        if internal:
+            f.write("---\n")
+            f.write(internal)
     return path
 
 
 def apply_group(g):
     path = write_manifest(g)
     kubectl("apply", "-f", path)
+    # If the internal-port list is now empty the manifest no longer contains the
+    # internal Service, and `apply` never deletes objects — remove it explicitly.
+    if not normalize_internal_ports(g):
+        kubectl("delete", "service", internal_service_name(g["name"]),
+                "--ignore-not-found=true", check=False)
 
 
 def delete_group_k8s(name):
     kubectl("delete", "deployment,service", f"group-{name}", "--ignore-not-found=true", check=False)
+    kubectl("delete", "service", internal_service_name(name),
+            "--ignore-not-found=true", check=False)
 
 
 # --- frpc ---
@@ -614,7 +743,11 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
     # pod mounts it (kubelet DirectoryOrCreate would make it root-only).
     try:
         os.makedirs(f"{GROUP_DATA_ROOT}/{name}/home", exist_ok=True)
-        os.chown(f"{GROUP_DATA_ROOT}/{name}/home", 1001, 1001)
+        # chown to the container login user's uid/gid (siteconf.CLOUD_UID), NOT a
+        # hardcoded number: the image builds `cloud` with whatever uid build.sh
+        # assigns, and a mismatch leaves the hostPath unwritable for cloud.
+        os.chown(f"{GROUP_DATA_ROOT}/{name}/home",
+                 siteconf.CLOUD_UID, siteconf.CLOUD_UID)
     except OSError:
         pass
     apply_group(g)
@@ -709,16 +842,22 @@ def resize_group(name, cpu, mem, storage=None):
     if name not in state["groups"]:
         raise ValueError(f"组 {name} 不存在")
     g = state["groups"][name]
-    changed = False
-    if cpu is not None and cpu != g["cpu"]:
-        g["cpu"] = cpu; changed = True
+    restart_needed = False
+    manifest_changed = False
+    if cpu is not None and str(cpu) != str(g["cpu"]):
+        g["cpu"] = cpu; restart_needed = True; manifest_changed = True
     if mem is not None and _norm_mem(mem) != g["mem"]:
-        g["mem"] = _norm_mem(mem); changed = True
+        g["mem"] = _norm_mem(mem); restart_needed = True; manifest_changed = True
     if storage is not None and _norm_storage(storage) != g.get("storage"):
-        g["storage"] = _norm_storage(storage); changed = True
-    if changed:
+        g["storage"] = _norm_storage(storage); manifest_changed = True
+    if restart_needed:
         apply_group(g)
         kubectl("rollout", "restart", f"deployment/group-{name}")
+    elif manifest_changed:
+        # Ephemeral-storage is not supported by Kubernetes in-place pod resize.
+        # Persist the desired storage limit/request into the manifest and state,
+        # but avoid restarting a healthy pod just for a storage-only edit.
+        write_manifest(g)
     save_state(state)
     audit.record("resize_group", detail=f"{name} cpu={g['cpu']} mem={g['mem']} storage={g.get('storage')}")
     return g
@@ -727,7 +866,7 @@ def resize_group(name, cpu, mem, storage=None):
 # --- per-pod environment variables (admin-managed) ---
 import re as _re
 _ENV_KEY_RE = _re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ENV_RESERVED = {"CLOUD_PASSWORD", "NVIDIA_VISIBLE_DEVICES"}
+ENV_RESERVED = {"CLOUD_PASSWORD", "NVIDIA_VISIBLE_DEVICES", "INTERNAL_PORTS"}
 
 
 def _check_env_key(key):
@@ -849,9 +988,12 @@ def approve_pending(name, username, approved):
 
 def invite_member(name, username):
     """Owner directly invites an existing user as member."""
-    username = (username or "").strip()
-    if not username or not users.get_user(username):
+    if not isinstance(username, str) or not 1 <= len(username.strip()) <= 64:
         raise ValueError("用户不存在")
+    user = users.get_user(username.strip())
+    if not user:
+        raise ValueError("用户不存在")
+    username = user["username"]
     state = load_state()
     if name not in state["groups"]:
         raise ValueError(f"组 {name} 不存在")
@@ -882,9 +1024,12 @@ def remove_member(name, username):
 
 def add_owner(name, username):
     """Owner promotes an existing user (or member) to co-owner."""
-    username = (username or "").strip()
-    if not username or not users.get_user(username):
+    if not isinstance(username, str) or not 1 <= len(username.strip()) <= 64:
         raise ValueError("用户不存在")
+    user = users.get_user(username.strip())
+    if not user:
+        raise ValueError("用户不存在")
+    username = user["username"]
     state = load_state()
     if name not in state["groups"]:
         raise ValueError(f"组 {name} 不存在")

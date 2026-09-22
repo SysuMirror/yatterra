@@ -5,11 +5,13 @@ REST API for pod/group management. Token-authed, JSON in/out.
 Mounted at /api/pods via Flask Blueprint.
 Re-uses auth helpers (api_auth, api_pod, _actor, _body) from the api package.
 """
-import os, subprocess, time, shlex, codecs, select
+import os, subprocess, time, shlex, codecs, select, base64, json
+from importlib import import_module
 from flask import Blueprint, request, jsonify, g, Response
 
 import siteconf
-import users, groups, lifecycle, audit, deploys
+users = import_module("users")
+import groups, lifecycle, audit, deploys
 import minio_svc as minio_mod
 import db_svc as db_mod
 import cpu_stats, gpu_stats, metrics
@@ -432,6 +434,8 @@ def get_pod(name):
         "ssh_public": pod.get("ssh_public", 0),
         "web_public": pod.get("web_public", 0),
         "env": env,
+        "internal_ports": groups.normalize_internal_ports(pod),
+        "internal_host": f"{groups.internal_service_name(name)}.{groups.NS}.svc.cluster.local",
         "lifecycle": lc,
         "credentials": {"databases": grp_db, "minio": grp_mk},
         "deploys": [{"id": d["id"], "name": d.get("name"), "repo": d.get("repo"),
@@ -699,56 +703,61 @@ def stream_logs(name):
 # ═══════════════════════════════════════════════════════════════
 #  App logs (list / read / SSE stream)
 # ═══════════════════════════════════════════════════════════════
+_APP_LOG_SCRIPT = r"""import json, pathlib, sys
+base = pathlib.Path('/home/cloud/logs')
+mode = sys.argv[1]
+if mode == 'list':
+    files = [] if not base.exists() else [
+        {'name': path.name, 'size': path.stat().st_size, 'mtime': path.stat().st_mtime,
+         'symlink': path.is_symlink(), 'source': str(path)}
+        for path in sorted(base.iterdir(), key=lambda item: item.name)
+        if path.name.endswith('.log') and path.is_file()]
+    print(json.dumps({'files': files}, ensure_ascii=False))
+    raise SystemExit(0)
+if mode != 'read' or len(sys.argv) != 4:
+    print('invalid log request', file=sys.stderr); raise SystemExit(2)
+name = sys.argv[2]
+try: tail = int(sys.argv[3])
+except ValueError:
+    print('tail must be an integer', file=sys.stderr); raise SystemExit(2)
+if not name or pathlib.PurePosixPath(name).name != name or not name.endswith('.log'):
+    print('invalid log filename', file=sys.stderr); raise SystemExit(2)
+path = base / name
+if not path.is_file():
+    print('log file not found', file=sys.stderr); raise SystemExit(3)
+from collections import deque
+with path.open('r', encoding='utf-8', errors='replace', newline='') as handle:
+    lines = deque(handle, maxlen=tail)
+sys.stdout.write(''.join(lines))
+"""
+
+def _run_app_log_command(name, mode, filename=None, tail=None):
+    encoded = base64.b64encode(_APP_LOG_SCRIPT.encode()).decode()
+    command = "python3 -c " + shlex.quote("import base64,sys; code=base64.b64decode(sys.argv.pop(1)); exec(compile(code, 'app_logs', 'exec'), {})")
+    command += " " + shlex.quote(encoded) + " " + shlex.quote(mode)
+    if filename is not None: command += " " + shlex.quote(filename) + " " + shlex.quote(str(tail))
+    return deploys._exec(name, command, timeout=15)
+
 @pods_bp.route("/<name>/app-logs", methods=["GET"])
 @api_pod("member")
 def get_app_logs(name):
-    pod_name = deploys.resolve_pod(name)
-    if not pod_name:
-        return jsonify({"error": "Pod 未运行"}), 404
-
-    filename = request.args.get("file", "").strip()
+    if not deploys.resolve_pod(name): return jsonify({"error": "Pod 未运行"}), 404
+    filename = request.args.get("file", "")
     if filename:
-        if ".." in filename or "/" in filename or not filename.endswith(".log"):
+        try: tail_n = int(request.args.get("tail", "200"))
+        except (ValueError, TypeError): return jsonify({"error": "tail 必须是 1 到 2000 的整数"}), 400
+        if not 1 <= tail_n <= 2000: return jsonify({"error": "tail 必须是 1 到 2000 的整数"}), 400
+        if ".." in filename or "/" in filename or "\\" in filename or not filename.endswith(".log"):
             return jsonify({"error": "非法文件名"}), 400
-        try:
-            tail_n = int(request.args.get("tail", "200"))
-        except (ValueError, TypeError):
-            tail_n = 200
-        cmd = (f"tail -n {tail_n} /home/cloud/logs/{shlex.quote(filename)} "
-               "2>/dev/null || echo '(文件不存在)'")
-        try:
-            rc, out, err = deploys._exec(name, cmd, timeout=15)
-            return Response((out + err).strip(), mimetype="text/plain")
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    else:
-        cmd = "ls -la /home/cloud/logs/*.log 2>/dev/null || echo '__EMPTY__'"
-        try:
-            rc, out, err = deploys._exec(name, cmd, timeout=15)
-            text = (out + err).strip()
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-        if "__EMPTY__" in text or rc != 0:
-            return jsonify({"files": []})
-        files = []
-        for line in text.splitlines():
-            parts = line.split()
-            if len(parts) < 9:
-                continue
-            fname = parts[-1]
-            if "/" in fname:
-                fname = fname.rsplit("/", 1)[-1]
-            if not fname.endswith(".log"):
-                continue
-            try:
-                size = int(parts[4])
-            except (ValueError, IndexError):
-                size = 0
-            mtime = " ".join(parts[5:8])
-            is_symlink = parts[0].startswith("l")
-            files.append({"name": fname, "size": size, "mtime": mtime,
-                          "symlink": is_symlink})
-        return jsonify({"files": files})
+        try: rc, out, err = _run_app_log_command(name, "read", filename, tail_n)
+        except Exception as exc: return jsonify({"error": str(exc)}), 500
+        if rc != 0: return jsonify({"error": (err or out).strip() or "读取日志失败"}), (404 if rc == 3 else 502)
+        return Response(out, mimetype="text/plain")
+    try: rc, out, err = _run_app_log_command(name, "list")
+    except Exception as exc: return jsonify({"error": str(exc)}), 500
+    if rc != 0: return jsonify({"error": (err or out).strip() or "列出日志失败"}), 502
+    try: return jsonify(json.loads(out))
+    except (TypeError, ValueError): return jsonify({"error": "日志列表响应无效"}), 502
 
 
 @pods_bp.route("/<name>/app-logs/stream", methods=["GET"])
@@ -1010,6 +1019,37 @@ def list_env(name):
     return jsonify({"env": pod.get("env", {})})
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Internal (cluster-only) service ports
+#  Declared on the group's Service with no nodePort, so only Pods inside the
+#  cluster can reach them. Editing does NOT restart the Pod.
+# ═══════════════════════════════════════════════════════════════
+@pods_bp.route("/<name>/internal-ports", methods=["GET"])
+@api_pod("member")
+def list_internal_ports(name):
+    pod = g.api_pod
+    return jsonify({"ports": groups.normalize_internal_ports(pod)})
+
+
+@pods_bp.route("/<name>/internal-ports", methods=["POST"])
+@api_pod("owner")
+def set_internal_ports(name):
+    b = _body()
+    ports = b.get("ports")
+    if ports is None:
+        return jsonify({"error": "缺少 ports"}), 400
+    if isinstance(ports, str):
+        ports = [x for x in ports.replace(",", " ").split() if x.strip()]
+    try:
+        clean = groups.set_internal_ports(name, ports)
+        audit.record("api_internal_ports_set",
+                     detail=f"{name} ports={','.join(map(str, clean))}",
+                     actor=_actor())
+        return jsonify({"ok": True, "ports": clean})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @pods_bp.route("/<name>/env", methods=["POST"])
 @api_pod("owner")
 def set_env(name):
@@ -1043,20 +1083,25 @@ def delete_env(name, key):
 @pods_bp.route("/<name>/members/candidates", methods=["GET"])
 @api_pod("owner")
 def member_candidates(name):
-    """Return limited username prefix matches not already attached to this Pod."""
-    prefix = (request.args.get("q", "") or "").strip()
-    if len(prefix) < 2:
+    """Owner-only username discovery for invitations or promotions."""
+    prefix = request.args.get("q", "").strip()
+    if len(prefix) > 64:
+        return jsonify({"error": "搜索词最多 64 个字符"}), 400
+    mode = request.args.get("mode", "invite")
+    if mode not in {"invite", "owner"}:
+        return jsonify({"error": "invalid mode"}), 400
+    if not prefix:
         return jsonify({"items": []})
     try:
         limit = min(max(int(request.args.get("limit", 10)), 1), 20)
     except (TypeError, ValueError):
         limit = 10
     pod = g.api_pod
-    excluded = set(pod.get("owners", [])) | set(pod.get("members", []))
-    excluded |= {str(p.get("username", "")) for p in pod.get("pending", []) if isinstance(p, dict)}
-    items = [u for u in users.search_users_prefix(prefix, limit=limit * 2)
-             if u.get("username") not in excluded][:limit]
-    return jsonify({"items": items})
+    excluded = set(pod.get("owners", []))
+    if mode == "invite":
+        excluded.update(pod.get("members", []))
+        excluded.update(p.get("username", "") for p in pod.get("pending", []) if isinstance(p, dict))
+    return jsonify({"items": users.search_users_prefix(prefix, limit=limit, excluded=excluded)})
 
 
 @pods_bp.route("/<name>/members", methods=["GET"])
@@ -1074,7 +1119,7 @@ def list_members(name):
 @api_pod("owner")
 def invite_member(name):
     b = _body()
-    username = (b.get("username", "") or "").strip()
+    username = b.get("username", "")
     if not username:
         return jsonify({"error": "缺少 username"}), 400
     try:
