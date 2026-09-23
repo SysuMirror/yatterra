@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, LayoutGrid, Rows3, Box, AlertTriangle, Bot, Power, RotateCw, Trash2 } from 'lucide-react'
+import { Plus, LayoutGrid, Rows3, Box, AlertTriangle, Bot, Power, RotateCw, Trash2, Check } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PodCard } from '@/components/domain/PodCard'
 import { MetricCard } from '@/components/domain/MetricCard'
@@ -358,20 +358,58 @@ function ActionBtn({ icon, label, variant, onClick }: {
   )
 }
 
+/** Fixed resource presets per pod type (matches backend groups.py defaults). */
+const POD_TYPES = {
+  cpu: { label: 'CPU', cpu: 2, mem: 4, hint: '2 核 / 4 GB' },
+  gpu: { label: 'GPU', cpu: 4, mem: 16, hint: '4 核 / 16 GB' },
+} as const
+
+type PodType = keyof typeof POD_TYPES
+
 function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState('')
-  const [cpu, setCpu] = useState('2')
-  const [mem, setMem] = useState('4')
-  const [gpus, setGpus] = useState('0')
-  const [storage, setStorage] = useState('20')
+  const [type, setType] = useState<PodType>('cpu')
+  const [selectedGpus, setSelectedGpus] = useState<number[]>([])
+  const [cpu, setCpu] = useState(String(POD_TYPES.cpu.cpu))
+  const [mem, setMem] = useState(String(POD_TYPES.cpu.mem))
+  const [storage, setStorage] = useState('5')
   const [loading, setLoading] = useState(false)
   const toast = useToastStore((s) => s.add)
   const navigate = useNavigate()
 
+  // Only fetch the GPU list once the dialog is opened (and only for GPU type).
+  const { data: gpuData } = useQuery<any>({
+    queryKey: ['infra-gpu'],
+    queryFn: () => api.get('/infra/gpu'),
+    enabled: open && type === 'gpu',
+    staleTime: 10_000,
+  })
+  const gpuList: any[] = gpuData?.gpus ?? []
+
+  const switchType = (t: PodType) => {
+    setType(t)
+    // Reset cpu/mem to the preset of the new type (user can still edit after).
+    setCpu(String(POD_TYPES[t].cpu))
+    setMem(String(POD_TYPES[t].mem))
+    if (t === 'cpu') setSelectedGpus([])
+  }
+  const toggleGpu = (idx: number) =>
+    setSelectedGpus((prev) => (prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx].sort((a, b) => a - b)))
+
+  const spec = POD_TYPES[type]
+  const canCreate = !!name.trim() && (type === 'cpu' || selectedGpus.length > 0)
+
   const handleCreate = async () => {
     setLoading(true)
     try {
-      const res = await api.post<{ name?: string }>('/pods', { name, cpu: +cpu, mem: +mem, gpus: +gpus, storage: +storage })
+      const payload = {
+        name,
+        cpu: +cpu || spec.cpu,
+        mem: +mem || spec.mem,
+        gpus: type === 'gpu' ? selectedGpus.join(',') : 0,
+        storage: +storage || 5,
+      }
+      const res = await api.post<{ name?: string }>('/pods', payload)
       const finalName = res?.name || name
       toast({ type: 'success', message: `Pod ${finalName} 创建成功` })
       onClose()
@@ -390,18 +428,87 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
           <Input label="名称" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-pod" hint="小写字母、数字、连字符；大写自动转小写，下划线自动转连字符" />
           <div className="mt-1"><AiFormHelper type="pod" partial={name} onApply={setName} /></div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+        {/* 类型：CPU / GPU */}
+        <div>
+          <label className="block text-xs font-semibold text-ink-2 mb-1.5">类型</label>
+          <div className="grid grid-cols-2 gap-2">
+            {(Object.keys(POD_TYPES) as PodType[]).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => switchType(t)}
+                className={cn(
+                  'px-3 py-2.5 rounded-[10px] text-sm text-left border-[0.5px] transition-all duration-100',
+                  type === t
+                    ? 'border-accent bg-accent-light text-accent-dark font-semibold shadow-[0_0_0_3px_rgba(10,132,255,0.12)]'
+                    : 'border-black/8 bg-white/62 text-ink-2 hover:bg-white/85',
+                )}
+              >
+                <span className="block">{POD_TYPES[t].label}</span>
+                <span className="block text-[11px] font-normal text-muted mt-0.5">{POD_TYPES[t].hint}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* GPU 选择（多选） */}
+        {type === 'gpu' && (
+          <div>
+            <label className="block text-xs font-semibold text-ink-2 mb-1.5">
+              GPU 选择 <span className="font-normal text-muted">（可多选）</span>
+            </label>
+            {gpuList.length === 0 ? (
+              <p className="text-xs text-muted">未检测到可用 GPU</p>
+            ) : (
+              <div className="grid grid-cols-1 gap-2">
+                {gpuList.map((gpu: any) => {
+                  const idx = gpu.index as number
+                  const on = selectedGpus.includes(idx)
+                  const users: string[] = gpu.groups ?? []
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => toggleGpu(idx)}
+                      className={cn(
+                        'flex items-center gap-3 px-3 py-2 rounded-[10px] text-sm text-left border-[0.5px] transition-all duration-100',
+                        on
+                          ? 'border-accent bg-accent-light shadow-[0_0_0_3px_rgba(10,132,255,0.12)]'
+                          : 'border-black/8 bg-white/62 hover:bg-white/85',
+                      )}
+                    >
+                      <span className={cn(
+                        'w-4 h-4 rounded-[5px] border flex items-center justify-center flex-shrink-0',
+                        on ? 'bg-accent border-accent text-white' : 'border-black/20',
+                      )}>
+                        {on && <Check size={12} strokeWidth={3} />}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="font-medium">GPU #{idx}</span>
+                        <span className="text-muted ml-1.5 text-xs">{gpu.name}</span>
+                      </span>
+                      <span className="text-[11px] text-muted flex-shrink-0">
+                        {users.length > 0 ? `占用 ${users.length}` : '空闲'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 规格（可编辑，按类型预填）+ 存储 */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Input label="CPU (核)" type="number" value={cpu} onChange={(e) => setCpu(e.target.value)} />
           <Input label="内存 (GB)" type="number" value={mem} onChange={(e) => setMem(e.target.value)} />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Input label="GPU" type="number" value={gpus} onChange={(e) => setGpus(e.target.value)} />
           <Input label="存储 (GB)" type="number" value={storage} onChange={(e) => setStorage(e.target.value)} />
         </div>
-        <div className="mt-1"><AiFormHelper type="pod" partial={`${cpu}核/${mem}GB/${gpus}/${storage}GB`} context="CPU核/内存GB/GPU/存储GB" onApply={(v) => { const p = v.split(/[\/\s]+/).filter(Boolean); if (p.length >= 4) { setCpu((p[0] ?? '').replace(/\D/g, '')); setMem((p[1] ?? '').replace(/\D/g, '')); setGpus((p[2] ?? '').replace(/\D/g, '')); setStorage((p[3] ?? '').replace(/\D/g, '')); } }} /></div>
+
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>取消</Button>
-          <Button onClick={handleCreate} loading={loading} disabled={!name.trim()}>创建</Button>
+          <Button onClick={handleCreate} loading={loading} disabled={!canCreate}>创建</Button>
         </div>
       </div>
     </Dialog>

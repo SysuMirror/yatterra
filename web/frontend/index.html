@@ -20,9 +20,26 @@
     <title>YatTerra</title>
   </head>
   <body>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('yatterra_theme');
+          var mode = saved === 'light' || saved === 'dark' || saved === 'system' ? saved : 'system';
+          var resolved = mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : mode === 'dark' ? 'dark' : 'light';
+          var root = document.documentElement;
+          root.dataset.themeMode = mode;
+          root.dataset.theme = resolved;
+          root.classList.toggle('theme-dark', resolved === 'dark');
+          root.classList.toggle('theme-light', resolved === 'light');
+          root.style.colorScheme = resolved;
+        } catch (e) {}
+      })();
+    </script>
     <div id="root">
-      <div id="boot-msg" style="padding:40px;font-family:system-ui;color:#86868b">
-        Loading SPA…
+      <div id="boot-msg" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;font-family:system-ui,-apple-system,'PingFang SC',sans-serif;color:#8fa5b0;background:#0b1723">
+        <span style="width:26px;height:26px;border:2px solid #2b4653;border-top-color:#9aebd2;border-radius:50%;animation:boot-spin .8s linear infinite"></span>
+        <span style="font-size:13px;letter-spacing:.4px">正在载入 YatTerra…</span>
+        <style>@keyframes boot-spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){#boot-msg span:first-child{animation:none}}</style>
       </div>
     </div>
     <script>

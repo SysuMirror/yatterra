@@ -1,53 +1,13 @@
 import { create } from 'zustand'
-
-interface AuthState {
-  user: string | null
-  role: string
-  perms: Set<string>
-  isLoggedIn: boolean
-  login: (user: string, role: string, perms: string[]) => void
-  logout: () => void
-  hydrate: () => void
-}
-
-/**
- * Persist auth UI state for instant re-hydration.
- * localStorage: survives tab close / browser restart (the real auth is still
- * the httpOnly session cookie — this only caches user/role/perms for render).
- */
+export interface AuthProfile { userId: string | null; username: string | null; displayName: string | null; avatarUrl: string | null; displaySource: string | null }
+interface AuthState extends AuthProfile { user: string | null; role: string; perms: Set<string>; isLoggedIn: boolean; login: (user: string | null, role: string, perms: string[], profile?: Partial<AuthProfile>) => void; logout: () => void; hydrate: () => void }
 const STORAGE_KEY = 'sseinfra_auth'
-
-function saveToStorage(state: { user: string | null; role: string; perms: string[]; isLoggedIn: boolean }) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* quota */ }
-}
-
-function loadFromStorage(): { user: string | null; role: string; perms: string[]; isLoggedIn: boolean } | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    return JSON.parse(raw)
-  } catch { return null }
-}
-
-export const useAuthStore = create<AuthState>((set, get) => ({
-  user: null,
-  role: '',
-  perms: new Set(),
-  isLoggedIn: false,
-  login: (user, role, perms) => {
-    const state = { user, role, perms, isLoggedIn: true }
-    saveToStorage(state)
-    set({ user, role, perms: new Set(perms), isLoggedIn: true })
-  },
-  logout: () => {
-    try { localStorage.removeItem(STORAGE_KEY) } catch { /* */ }
-    set({ user: null, role: '', perms: new Set(), isLoggedIn: false })
-  },
-  /** Re-hydrate from sessionStorage on app boot. */
-  hydrate: () => {
-    const saved = loadFromStorage()
-    if (saved && saved.isLoggedIn) {
-      set({ user: saved.user, role: saved.role, perms: new Set(saved.perms), isLoggedIn: true })
-    }
-  },
+type Stored = Partial<AuthProfile> & { user?: string | null; role: string; perms: string[]; isLoggedIn: boolean }
+const save = (v: Stored) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(v)) } catch {} }
+const load = (): Stored | null => { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null } catch { return null } }
+export const useAuthStore = create<AuthState>((set) => ({
+  user: null, userId: null, username: null, displayName: null, avatarUrl: null, displaySource: null, role: '', perms: new Set(), isLoggedIn: false,
+  login: (user, role, perms, profile = {}) => { const username = profile.username ?? user; const v = { user: username, userId: profile.userId ?? null, username, displayName: profile.displayName ?? username, avatarUrl: profile.avatarUrl ?? null, displaySource: profile.displaySource ?? null, role, perms, isLoggedIn: true }; save(v); set({ ...v, perms: new Set(perms) }) },
+  logout: () => { try { localStorage.removeItem(STORAGE_KEY) } catch {}; set({ user: null, userId: null, username: null, displayName: null, avatarUrl: null, displaySource: null, role: '', perms: new Set(), isLoggedIn: false }) },
+  hydrate: () => { const v = load(); if (v?.isLoggedIn) set({ user: v.user ?? v.username ?? null, userId: v.userId ?? null, username: v.username ?? v.user ?? null, displayName: v.displayName ?? v.username ?? v.user ?? null, avatarUrl: v.avatarUrl ?? null, displaySource: v.displaySource ?? null, role: v.role ?? '', perms: new Set(v.perms || []), isLoggedIn: true }) },
 }))

@@ -1,21 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Bell, Menu, LogOut, User, ChevronRight } from 'lucide-react'
+import { Bell, Menu, LogOut, User, ChevronRight, HelpCircle } from 'lucide-react'
 import { useSidebarStore } from '@/stores/sidebar'
 import { useAuthStore } from '@/stores/auth'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 import { Dialog } from '@/components/ui/Dialog'
 import { authApi } from '@/api/auth'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 import { haptic } from '@/lib/haptic'
+import { ThemePicker } from '@/components/ui/ThemePicker'
 
 export default function TopBar() {
   const { toggle, setMobileOpen } = useSidebarStore()
-  const { user, role, logout } = useAuthStore()
+  const { user, username, displayName, avatarUrl, role, logout } = useAuthStore()
   const isDesktop = useIsDesktop()
   const navigate = useNavigate()
+  const { pathname } = useLocation()
+  const hasGuide = pathname === '/' || pathname === '/pods' || pathname === '/docs' || /^\/pods\/[^/]+$/.test(pathname)
   const [notifOpen, setNotifOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [failedAvatar, setFailedAvatar] = useState<string | null>(null)
   const notifRef = useRef<HTMLButtonElement>(null)
   const avatarRef = useRef<HTMLButtonElement>(null)
   // Store position in a ref so the dropdown reads it synchronously on mount
@@ -86,7 +90,7 @@ export default function TopBar() {
     return () => document.removeEventListener('click', handleClick)
   }, [notifOpen, profileOpen, isDesktop])
 
-  const initial = (user || '?').trim().charAt(0).toUpperCase() || '?'
+  const shownName = displayName || username || user || '?'; const initial = shownName.trim().charAt(0).toUpperCase() || '?'
 
   const handleLogout = async () => {
     try {
@@ -122,10 +126,23 @@ export default function TopBar() {
 
         <div className="flex items-center gap-2 ml-2 sm:ml-3">
           <div className="w-2 h-2 rounded-full bg-accent shadow-[0_0_8px_rgba(10,132,255,0.5)]" />
-          <span className="text-white font-bold text-sm tracking-tight">sseinfra</span>
+          <span className="text-white font-bold text-sm tracking-tight">YatTerra</span>
         </div>
 
         <div className="flex min-w-0 items-center gap-1.5 ml-auto">
+          {/* Page onboarding guide */}
+          <button
+            type="button"
+            data-onboarding-ui
+            data-onboarding-launcher
+            aria-label={hasGuide ? '打开新手指引' : '打开入门文档'}
+            title={hasGuide ? '新手指引' : '入门文档'}
+            onClick={() => { haptic('light'); hasGuide ? window.dispatchEvent(new CustomEvent('yatterra:onboarding-toggle')) : navigate('/docs') }}
+            className="flex items-center justify-center w-10 h-10 rounded-lg text-white/50 hover:bg-white/10 hover:text-white/90 active:bg-white/15 active:scale-95 transition-all duration-100"
+          >
+            <HelpCircle size={20} />
+          </button>
+
           {/* Notification bell */}
           <button
             ref={notifRef}
@@ -140,11 +157,13 @@ export default function TopBar() {
           <button
             ref={avatarRef}
             onClick={() => { haptic('light'); openProfile() }}
-            className="flex items-center justify-center w-10 h-10 rounded-full bg-white/12 border-[0.5px] border-white/15 hover:bg-white/18 active:bg-white/22 active:scale-95 transition-all duration-100"
-            title={user || undefined}
+            className="relative flex shrink-0 items-center justify-center w-11 h-11 overflow-hidden rounded-full bg-white/12 border-[0.5px] border-white/15 hover:bg-white/18 active:bg-white/22 active:scale-95 transition-all duration-100"
+            title={shownName || undefined}
             aria-label="用户菜单"
           >
-            <span className="text-white/80 text-xs font-bold">{initial}</span>
+            {avatarUrl && failedAvatar !== avatarUrl
+              ? <img key={avatarUrl} src={avatarUrl} alt="" className="absolute inset-0 h-full w-full object-cover" onError={() => setFailedAvatar(avatarUrl)} />
+              : <span className="text-white/80 text-xs font-bold">{initial}</span>}
           </button>
         </div>
       </header>
@@ -162,15 +181,18 @@ export default function TopBar() {
           <div className="space-y-1 -mx-4 -mt-2">
             <div className="px-5 py-4 border-b border-black/[0.06]">
               <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-full bg-accent/10 flex items-center justify-center">
-                  <span className="text-accent text-sm font-bold">{initial}</span>
+                <div className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-accent/10">
+                  {avatarUrl && failedAvatar !== avatarUrl
+                    ? <img key={avatarUrl} src={avatarUrl} alt="" className="absolute inset-0 h-full w-full object-cover" onError={() => setFailedAvatar(avatarUrl)} />
+                    : <span className="text-accent text-sm font-bold">{initial}</span>}
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-ink">{user || '—'}</p>
+                  <p className="text-sm font-semibold text-ink">{shownName || '—'}</p>
                   <p className="text-xs text-muted">{role || 'user'}</p>
                 </div>
               </div>
             </div>
+            <div className="px-4 py-3"><ThemePicker /></div>
             <button
               onClick={() => { haptic('light'); setProfileOpen(false); navigate('/profile') }}
               className="w-full flex items-center gap-3 px-5 py-3.5 text-sm text-ink-2 hover:bg-black/[0.03] active:bg-black/[0.06] active:scale-[0.98] transition-all text-left"
@@ -216,14 +238,15 @@ export default function TopBar() {
           {isDesktop && profileOpen && (
             <div
               id="profile-dropdown"
-              className="absolute w-56 rounded-xl bg-white shadow-2 border border-black/[0.06] overflow-hidden"
+              className="absolute w-72 rounded-xl bg-surface-0 shadow-2 border border-black/[0.06] overflow-hidden"
               style={{ top: menuPosRef.current.top, right: menuPosRef.current.right, pointerEvents: 'auto' }}
             >
               <div className="px-4 py-3 border-b border-black/[0.06]">
-                <p className="text-sm font-semibold text-ink truncate">{user || '—'}</p>
+                <p className="text-sm font-semibold text-ink truncate">{shownName || '—'}</p>
                 <p className="text-xs text-muted mt-0.5">{role || 'user'}</p>
               </div>
               <div className="py-1">
+                <div className="px-3 py-2"><ThemePicker /></div>
                 <button
                   onClick={() => { haptic('light'); setProfileOpen(false); navigate('/profile') }}
                   className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-ink-2 hover:bg-black/[0.03] active:bg-black/[0.06] active:scale-[0.98] transition-all text-left"

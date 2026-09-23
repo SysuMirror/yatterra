@@ -19,7 +19,7 @@ Pod access levels:
   username in pod["members"] → "member"
   else → None
 """
-import json, os, subprocess, hashlib, hmac, secrets, threading
+import json, os, subprocess, hashlib, hmac, secrets, threading, uuid, re
 from queue import Queue, Empty, Full
 import pymysql
 
@@ -172,6 +172,35 @@ def _ensure_init():
                         INDEX idx_username (username)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """)
+                # Versioned additive identity migration. Keep username during the
+                # compatibility window, but resolve principals through user_id.
+                for table, columns in {
+                    "users": {
+                        "user_id": "CHAR(36) NULL UNIQUE",
+                        "display_name": "VARCHAR(128) NULL",
+                        "avatar_url": "VARCHAR(512) NULL",
+                        "display_source": "VARCHAR(32) NULL",
+                        "display_updated_at": "TIMESTAMP NULL",
+                        "status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
+                    },
+                    "api_tokens": {"user_id": "CHAR(36) NULL"},
+                    "oauth_identities": {"user_id": "CHAR(36) NULL", "updated_at": "TIMESTAMP NULL"},
+                }.items():
+                    for column, definition in columns.items():
+                        cur.execute("SELECT COUNT(*) AS n FROM information_schema.columns "
+                                    "WHERE table_schema=DATABASE() AND table_name=%s AND column_name=%s",
+                                    (table, column))
+                        if not cur.fetchone()["n"]:
+                            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                cur.execute("SELECT username FROM users WHERE user_id IS NULL")
+                for row in cur.fetchall():
+                    cur.execute("UPDATE users SET user_id=%s, display_name=COALESCE(display_name, %s) "
+                                "WHERE username=%s AND user_id IS NULL",
+                                (str(uuid.uuid4()), row["username"], row["username"]))
+                cur.execute("UPDATE api_tokens t JOIN users u ON u.username=t.username "
+                            "SET t.user_id=u.user_id WHERE t.user_id IS NULL")
+                cur.execute("UPDATE oauth_identities i JOIN users u ON u.username=i.username "
+                            "SET i.user_id=u.user_id WHERE i.user_id IS NULL")
                 # one-time migration from old JSON file
                 cur.execute("SELECT COUNT(*) AS n FROM users")
                 if cur.fetchone()["n"] == 0 and os.path.exists(OLD_USERS_FILE):
@@ -189,8 +218,9 @@ def _ensure_init():
                             if not pw or "$" not in pw:
                                 pw = _hash_pw(secrets.token_urlsafe(24))
                             cur.execute(
-                                "INSERT IGNORE INTO users (username,password,role) "
-                                "VALUES (%s,%s,%s)", (uname, pw, role))
+                                "INSERT IGNORE INTO users (username,password,role,user_id,display_name) "
+                                "VALUES (%s,%s,%s,%s,%s)",
+                                (uname, pw, role, str(uuid.uuid4()), uname))
                         cn.commit()
                     except Exception:
                         pass
@@ -333,69 +363,71 @@ def list_users():
     _ensure_init()
     with _conn() as cn:
         with cn.cursor() as cur:
-            cur.execute("SELECT username, role FROM users ORDER BY username")
-            return [{"username": r["username"], "role": r["role"]} for r in cur.fetchall()]
+            cur.execute("SELECT user_id, username, role, display_name, avatar_url, display_source, status FROM users ORDER BY username")
+            return [dict(r) for r in cur.fetchall()]
 
 
 def authenticate(username, password):
     _ensure_init()
     with _conn() as cn:
         with cn.cursor() as cur:
-            cur.execute("SELECT username, password, role FROM users WHERE username=%s",
+            cur.execute("SELECT user_id, username, password, role, display_name, avatar_url, display_source FROM users WHERE username=%s",
                         (username,))
             r = cur.fetchone()
     if r and _verify_pw(password, r["password"]):
-        return {"username": r["username"], "role": r["role"]}
+        return {"user_id": r["user_id"], "username": r["username"], "role": r["role"],
+                "display_name": r.get("display_name") or r["username"],
+                "avatar_url": r.get("avatar_url") or "", "display_source": r.get("display_source") or "", "status": r.get("status") or "active"}
     return None
 
 
-def search_users_prefix(prefix, limit=10):
-    """Return a small, stable username-only prefix search result."""
-    _ensure_init()
-    prefix = (prefix or "").strip()
+def search_users_prefix(prefix, limit=10, excluded=()):
+    """Prefix search over display name, legacy username, and OAuth name."""
+    if not isinstance(prefix, str):
+        return []
+    prefix = prefix.strip()
+    if len(prefix) < 2 or len(prefix) > 64:
+        return []
     try:
         limit = max(1, min(int(limit), 20))
     except (TypeError, ValueError):
         limit = 10
-    if len(prefix) < 2:
-        return []
-    with _conn() as cn:
-        with cn.cursor() as cur:
-            cur.execute(
-                "SELECT username FROM users WHERE username LIKE %s ORDER BY username ASC LIMIT %s",
-                (prefix + "%", limit),
-            )
-            return [{"username": r["username"]} for r in cur.fetchall()]
-
-
-def search_users_prefix(prefix, limit=10):
-    """Return a small, stable username-only prefix search result."""
+    pattern = prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+    excluded = sorted({str(x) for x in excluded if x})
+    sql = ("SELECT DISTINCT u.user_id, u.username, "
+           "COALESCE(NULLIF(u.display_name,''), u.username) AS display_name, "
+           "COALESCE(u.avatar_url,'') AS avatar_url "
+           "FROM users u LEFT JOIN oauth_identities i ON i.user_id=u.user_id "
+           "WHERE CONCAT_WS(' ', u.username, u.display_name, i.provider_name) LIKE %s ESCAPE '!'")
+    params = [pattern]
+    if excluded:
+        sql += " AND u.username NOT IN (" + ",".join(["%s"] * len(excluded)) + ")"
+        params.extend(excluded)
+    sql += " ORDER BY display_name ASC, u.username ASC LIMIT %s"
+    params.append(limit)
     _ensure_init()
-    prefix = (prefix or "").strip()
-    try:
-        limit = max(1, min(int(limit), 20))
-    except (TypeError, ValueError):
-        limit = 10
-    if len(prefix) < 2:
-        return []
     with _conn() as cn:
         with cn.cursor() as cur:
-            cur.execute(
-                "SELECT username FROM users WHERE username LIKE %s ORDER BY username ASC LIMIT %s",
-                (prefix + "%", limit),
-            )
-            return [{"username": r["username"]} for r in cur.fetchall()]
-
+            cur.execute(sql, tuple(params))
+            result = []
+            for row in cur.fetchall():
+                item = {"username": row["username"]}
+                if row.get("user_id") is not None:
+                    item.update({"user_id": row["user_id"], "display_name": row.get("display_name") or row["username"], "avatar_url": row.get("avatar_url") or ""})
+                result.append(item)
+            return result
 
 def get_user(username):
     _ensure_init()
     with _conn() as cn:
         with cn.cursor() as cur:
-            cur.execute("SELECT username, role FROM users WHERE username=%s",
+            cur.execute("SELECT user_id, username, role, display_name, avatar_url, display_source, status FROM users WHERE username=%s",
                         (username,))
             r = cur.fetchone()
     if r:
-        return {"username": r["username"], "role": r["role"]}
+        return {"user_id": r["user_id"], "username": r["username"], "role": r["role"],
+                "display_name": r.get("display_name") or r["username"],
+                "avatar_url": r.get("avatar_url") or "", "display_source": r.get("display_source") or "", "status": r.get("status") or "active"}
     return None
 
 
@@ -411,8 +443,8 @@ def create_user(username, password, role="user"):
         with _conn() as cn:
             with cn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO users (username, password, role) VALUES (%s,%s,%s)",
-                    (username, _hash_pw(password), role))
+                    "INSERT INTO users (username, password, role, user_id, display_name) VALUES (%s,%s,%s,%s,%s)",
+                    (username, _hash_pw(password), role, str(uuid.uuid4()), username))
             cn.commit()
     except pymysql.err.IntegrityError:
         return False, "用户名已存在"
@@ -461,8 +493,8 @@ def create_token(username, name=""):
     with _conn() as cn:
         with cn.cursor() as cur:
             cur.execute(
-                "INSERT INTO api_tokens (id, token_hash, username, name) "
-                "VALUES (%s,%s,%s,%s)", (tid, token_hash, username, name))
+                "INSERT INTO api_tokens (id, token_hash, username, user_id, name) "
+                "SELECT %s,%s,username,user_id,%s FROM users WHERE username=%s", (tid, token_hash, name, username))
         cn.commit()
     return token
 
@@ -476,8 +508,8 @@ def verify_token(token):
     with _conn() as cn:
         with cn.cursor() as cur:
             cur.execute(
-                "SELECT t.username, u.role FROM api_tokens t "
-                "JOIN users u ON u.username = t.username "
+                "SELECT t.user_id, t.username, u.role, u.display_name, u.avatar_url, u.display_source FROM api_tokens t "
+                "JOIN users u ON u.user_id = t.user_id "
                 "WHERE t.token_hash = %s", (token_hash,))
             r = cur.fetchone()
             if r:
@@ -485,7 +517,9 @@ def verify_token(token):
                     "UPDATE api_tokens SET last_used_at = NOW() "
                     "WHERE token_hash = %s", (token_hash,))
                 cn.commit()
-                return {"username": r["username"], "role": r["role"]}
+                return {"user_id": r["user_id"], "username": r["username"], "role": r["role"],
+                        "display_name": r.get("display_name") or r["username"],
+                        "avatar_url": r.get("avatar_url") or "", "display_source": r.get("display_source") or "", "status": r.get("status") or "active"}
     return None
 
 
@@ -551,6 +585,9 @@ def bind_identity(username, provider, provider_uid,
     Returns (True, None) on success, (False, error_msg) on failure."""
     _ensure_init()
     provider_uid = str(provider_uid)
+    target = get_user(username)
+    if not target:
+        return False, "用户不存在"
     # check if already bound to a different user
     existing = find_user_by_identity(provider, provider_uid)
     if existing:
@@ -561,13 +598,29 @@ def bind_identity(username, provider, provider_uid,
         with cn.cursor() as cur:
             cur.execute(
                 "INSERT INTO oauth_identities "
-                "(username, provider, provider_uid, provider_name, "
+                "(username, user_id, provider, provider_uid, provider_name, "
                 "provider_email, provider_avatar) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (username, provider, provider_uid, provider_name,
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (username, target.get("user_id"), provider, provider_uid, provider_name,
                  provider_email, provider_avatar))
         cn.commit()
     return True, None
+
+
+def sync_oauth_profile(username, provider, provider_uid, provider_name="", provider_email="", provider_avatar=""):
+    """Refresh exact OAuth identity metadata and the current display projection."""
+    _ensure_init()
+    name = re.sub(r"[\x00-\x1f\x7f]", "", str(provider_name or "")).strip()[:128]
+    avatar = str(provider_avatar or "").strip()[:512]
+    if avatar and not avatar.startswith("https://"):
+        avatar = ""
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            cur.execute("UPDATE oauth_identities SET username=%s, user_id=(SELECT user_id FROM users WHERE username=%s), provider_name=%s, provider_email=%s, provider_avatar=%s, updated_at=NOW() WHERE provider=%s AND provider_uid=%s",
+                        (username, username, name, str(provider_email or "")[:128], avatar, provider, str(provider_uid)))
+            cur.execute("UPDATE users SET display_name=%s, avatar_url=%s, display_source=%s, display_updated_at=NOW() WHERE username=%s",
+                        (name or username, avatar, provider, username))
+        cn.commit()
 
 
 def unbind_identity(username, identity_id):
@@ -582,3 +635,34 @@ def unbind_identity(username, identity_id):
         cn.commit()
     return deleted > 0
 
+
+
+def revoke_all_tokens(username):
+    _ensure_init()
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            cur.execute("DELETE FROM api_tokens WHERE username=%s", (username,))
+            count = cur.rowcount
+        cn.commit()
+    return count
+
+
+def set_display_name(username, display_name):
+    _ensure_init()
+    clean = re.sub(r"[\x00-\x1f\x7f]", "", str(display_name or "")).strip()[:128]
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            cur.execute("UPDATE users SET display_name=%s, display_source='local', display_updated_at=NOW() WHERE username=%s", (clean or username, username))
+            changed = cur.rowcount
+        cn.commit()
+    return changed > 0
+
+
+def set_user_status(username, active):
+    _ensure_init()
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            cur.execute("UPDATE users SET status=%s WHERE username=%s", ("active" if active else "suspended", username))
+            changed = cur.rowcount
+        cn.commit()
+    return changed > 0

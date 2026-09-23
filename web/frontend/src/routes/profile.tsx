@@ -16,6 +16,7 @@ import { useToastStore } from '@/stores/toast'
 import { checkForUpdate } from '@/lib/sw-update'
 import { isPushSupported, getSubscriptionState, subscribePush, unsubscribePush, type PushState } from '@/lib/push'
 import { usePwaInstall } from '@/lib/pwa-install'
+import { ThemePicker } from '@/components/ui/ThemePicker'
 
 const PROVIDER_COLORS: Record<string, string> = {
   ssemarket: '#0a84ff',
@@ -209,6 +210,12 @@ export default function Profile() {
             )
           })}
         </div>
+      </Card>
+
+      <Card padding="lg" className="mb-6">
+        <h2 className="text-sm font-semibold">外观主题</h2>
+        <p className="mb-3 mt-1 text-xs text-muted">选择白天、黑夜，或自动跟随浏览器。偏好保存在当前浏览器。</p>
+        <div className="max-w-sm"><ThemePicker /></div>
       </Card>
 
       {/* Password */}

@@ -39,9 +39,12 @@ kubectl -n clouds rollout restart deploy/group-<name>
 
 ## 坑
 
-- 用户必须是 **`cloud`**，uid 1001。平台代码（`groups.py` 的 hostPath chown、
+- 用户必须是 **`cloud`**，uid **1000**（`build.sh` 的 `useradd -u 1000`，与
+  `siteconf.CLOUD_UID` 默认值一致）。平台代码（`groups.py` 的 hostPath chown、
   `agent.py` 的 `su -l cloud`、SSH 凭证）全都硬编码这个名字。名字/uid 可通过
   `YATTERRA_CLOUD_USER` / `YATTERRA_CLOUD_UID` 覆盖，但镜像里也得同步改。
+  **uid 不一致的后果**：hostPath `/home/cloud` 被 chown 成镜像里不存在的 uid，
+  容器内 cloud 无法写入，supervisord/sshd 起不来，Web 终端 exec 直接失败。
 - 密码环境变量是 **`CLOUD_PASSWORD`**（由 `groups.py` 注入，名可经 `YATTERRA_PASSWORD_ENV` 覆盖）。
 - `entrypoint.sh` 里 `set -e` + 前台 `sshd -D`：sshd 挂了容器就退出，
   这正是 Pod 自愈依赖的信号。

@@ -201,16 +201,20 @@ export const PageAiAssistant = forwardRef<PageAiAssistantHandle, PageAiAssistant
     }
   }
 
-  const hints = PAGE_HINTS[page] || PAGE_HINTS.dashboard
-
-  if (!aiAllowed) return null
-
+  // NOTE: must stay above the `if (!aiAllowed) return null` guard below.
+  // A hook after a conditional return changes the hook count when `aiAllowed`
+  // flips (perms hydrate/refresh), which makes React throw
+  // "Rendered more hooks than during the previous render".
   useImperativeHandle(ref, () => ({
     send(text: string) {
       setOpen(true)
       handleSend(text)
     }
   }))
+
+  const hints = PAGE_HINTS[page] || PAGE_HINTS.dashboard
+
+  if (!aiAllowed) return null
 
   return (
     <>

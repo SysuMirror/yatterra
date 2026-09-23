@@ -32,7 +32,7 @@ const navGroups: NavGroup[] = [
   {
     label: '',
     items: [
-      { to: '/', icon: <LayoutDashboard size={18} />, label: '概览', perm: 'group.view' },
+      { to: '/console', icon: <LayoutDashboard size={18} />, label: '概览', perm: 'group.view' },
       { to: '/pods', icon: <Box size={18} />, label: 'Pod', perm: 'group.view' },
     ],
   },
@@ -103,18 +103,18 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
             </div>
           )}
           {group.items.map((item) => {
-            const isActive = item.to === '/'
-              ? location.pathname === '/'
+            const isActive = item.to === '/console'
+              ? location.pathname === '/console'
               : location.pathname.startsWith(item.to)
             return (
               <NavLink
                 key={item.to}
                 to={item.to}
                 data-onboarding-nav={item.to}
-                data-assistant-control={`nav-${item.to === '/' ? 'home' : item.to.slice(1).replace(/\//g, '-')}`}
+                data-assistant-control={`nav-${item.to === '/console' ? 'home' : item.to.slice(1).replace(/\//g, '-')}`}
                 data-assistant-label={item.label}
                 data-assistant-actions="navigate inspect"
-                end={item.to === '/'}
+                end={item.to === '/console'}
                 onClick={() => { haptic('light'); onNavigate?.() }}
                 title={collapsed ? item.label : undefined}
                 className={({ isActive: active }) =>
@@ -169,7 +169,7 @@ export default function Sidebar() {
       <motion.aside
         className="hidden md:flex h-full z-[var(--z-chrome)] flex-col flex-shrink-0 overflow-y-auto overflow-x-hidden"
         style={{
-          background: 'rgba(255, 255, 255, 0.96)',
+          background: 'var(--surface-1)',
           backdropFilter: 'blur(var(--blur-sm)) saturate(160%)',
           WebkitBackdropFilter: 'blur(var(--blur-sm)) saturate(160%)',
           borderRight: '1px solid var(--line)',
@@ -268,7 +268,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
             role="dialog"
             aria-modal
             aria-label="导航菜单"
-            className="absolute left-0 top-0 bottom-0 flex flex-col max-w-[85vw] bg-[#fafafb]"
+            className="absolute left-0 top-0 bottom-0 flex flex-col max-w-[85vw] bg-surface-1"
             style={{
               x,
               width: DRAWER_W,
@@ -283,7 +283,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
             {...motionBind(bind())}
           >
             <div className="flex items-center justify-between h-12 px-4 border-b border-black/[0.08] flex-shrink-0">
-              <span className="text-sm font-bold tracking-tight">sseinfra</span>
+              <span className="text-sm font-bold tracking-tight">YatTerra</span>
               <button
                 onClick={() => { haptic('light'); onClose() }}
                 aria-label="关闭菜单"

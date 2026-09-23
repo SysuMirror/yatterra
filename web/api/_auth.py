@@ -3,8 +3,9 @@
 Supports both Bearer token (API clients) and session (browser AJAX) auth.
 """
 import functools
+from importlib import import_module
 from flask import request, jsonify, g, session
-import users
+users = import_module("users")
 
 
 def _resolve_user():

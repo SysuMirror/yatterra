@@ -12,6 +12,7 @@ import { setAppBadge, clearAppBadge } from './lib/badge'
 
 // ── Lazy-loaded pages (code splitting) ──
 const Login = lazy(() => import('./routes/login'))
+const Landing = lazy(() => import('./routes/landing'))
 const Dashboard = lazy(() => import('./routes/index'))
 const PodList = lazy(() => import('./routes/pods/index'))
 const PodDetail = lazy(() => import('./routes/pods/$name'))
@@ -56,7 +57,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   const { data, isError } = useQuery({
     queryKey: ['auth-check'],
-    queryFn: () => api.get<{ is_logged_in: boolean; user: string; role: string; perms: string[] }>('/auth/me'),
+    queryFn: () => api.get<{ is_logged_in: boolean; user: string; user_id?: string | null; username?: string | null; display_name?: string | null; avatar_url?: string | null; display_source?: string | null; role: string; perms: string[] }>('/auth/me'),
     staleTime: 300_000,       // 5 min — don't re-check on every navigation
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,  // only re-check on network reconnect
@@ -88,7 +89,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
       // Always sync — cached localStorage perms may be stale (e.g. role
       // changed server-side); otherwise revoked perms keep rendering pages
       // that then 403 on every API call.
-      login(data.user, data.role, data.perms || [])
+      login(data.user, data.role || 'user', data.perms || [], { userId: data.user_id, username: data.username, displayName: data.display_name, avatarUrl: data.avatar_url, displaySource: data.display_source })
     } else {
       logout()
       clearAppBadge()
@@ -152,13 +153,14 @@ export default function App() {
       <Routes>
         {/* Auth routes (no sidebar) */}
         <Route element={<AuthLayout />}>
+          <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
         </Route>
 
         {/* Main app routes — single AuthGuard at layout level */}
         <Route element={<MainLayout />}>
           <Route element={<AuthGuard><Suspense fallback={<PageLoader />}><Outlet /></Suspense></AuthGuard>}>
-            <Route index element={<RequirePerm perms={['group.view']}><Dashboard /></RequirePerm>} />
+            <Route path="/console" element={<RequirePerm perms={['group.view']}><Dashboard /></RequirePerm>} />
             <Route path="/pods" element={<RequirePerm perms={['group.view']}><PodList /></RequirePerm>} />
             <Route path="/pods/:name" element={<RequirePerm perms={['group.view']}><PodDetail /></RequirePerm>} />
             <Route path="/infra" element={<RequirePerm perms={['infra.host', 'infra.storage', 'infra.db', 'infra.scheduler', 'infra.proxy']}><InfraOverview /></RequirePerm>} />

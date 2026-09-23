@@ -43,7 +43,11 @@ export function TerminalPane({ podName, running, className }: TerminalPaneProps)
   const [nonce, setNonce] = useState(0)
   const [aiTip, setAiTip] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
-  const outputRef = useRef('')
+  // NOTE: must be declared here, above the `if (!running) return` guard below.
+  // A hook after a conditional return changes the hook count when `running`
+  // flips (Stopped → Running), which makes React throw
+  // "Rendered more hooks than during the previous render".
+  const [aiInput, setAiInput] = useState('')
 
   useEffect(() => {
     if (!running) return
@@ -135,8 +139,6 @@ export function TerminalPane({ podName, running, className }: TerminalPaneProps)
       </div>
     )
   }
-
-  const [aiInput, setAiInput] = useState('')
 
   const handleAiAsk = async () => {
     const q = aiInput.trim()

@@ -13,7 +13,7 @@ export default function NotFound() {
         <Button variant="secondary" size="sm" onClick={() => navigate(-1)}>
           <ArrowLeft size={14} /> 返回
         </Button>
-        <Button size="sm" onClick={() => navigate('/')}>
+        <Button size="sm" onClick={() => navigate('/console')}>
           <Home size={14} /> 首页
         </Button>
       </div>

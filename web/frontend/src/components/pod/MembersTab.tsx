@@ -4,10 +4,11 @@ import { UserPlus, Check, X, Trash2, Plus, Crown, Users } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
-import { Input } from '@/components/ui/Input'
 import { Dialog } from '@/components/ui/Dialog'
 import { api } from '@/api/client'
+import { Input } from '@/components/ui/Input'
 import { AiFormHelper } from '@/components/domain/AiFormHelper'
+import { UserCombobox } from '@/components/pod/UserCombobox'
 import { useToastStore } from '@/stores/toast'
 
 export function MembersTab({ podName, canManage }: { podName: string; canManage: boolean }) {
@@ -33,8 +34,8 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
   })
 
   const approve = useMutation({
-    mutationFn: (u: string) => api.post(`/pods/${podName}/members/approve`, { username: u, approved: true }),
-    onSuccess: (_d, u) => { toast({ type: 'success', message: `已通过 ${u} 的加入申请` }); invalidate() },
+    mutationFn: ({ username, approved }: { username: string; approved: boolean }) => api.post(`/pods/${podName}/members/approve`, { username, approved }),
+    onSuccess: (_d, { username, approved }) => { toast({ type: 'success', message: approved ? `已通过 ${username} 的加入申请` : `已拒绝 ${username} 的加入申请` }); invalidate() },
     onError: (e: any) => toast({ type: 'error', message: e?.message }),
   })
 
@@ -71,14 +72,14 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
                 <li key={u} className="flex items-center gap-3 flex-wrap">
                   <span className="text-sm font-medium">{u}</span>
                   {reason && <span className="text-xs text-muted flex-1 min-w-0 truncate" title={reason}>“{reason}”</span>}
-                  <div className="flex items-center gap-1 ml-auto">
-                    <Button variant="secondary" size="sm" onClick={() => approve.mutate(u)} loading={approve.isPending && approve.variables === u}>
+                  {canManage && <div className="flex items-center gap-1 ml-auto">
+                    <Button variant="secondary" size="sm" disabled={approve.isPending} onClick={() => approve.mutate({ username: u, approved: true })} loading={approve.isPending && approve.variables?.username === u}>
                       <Check size={13} className="text-ok" /> 通过
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => { if (confirm(`拒绝 ${u} 的申请？`)) remove.mutate({ kind: 'member', u }) }}>
+                    <Button variant="ghost" size="sm" disabled={approve.isPending} onClick={() => { if (confirm(`拒绝 ${u} 的申请？`)) approve.mutate({ username: u, approved: false }) }}>
                       <X size={13} />
                     </Button>
-                  </div>
+                  </div>}
                 </li>
               )
             })}
@@ -115,14 +116,13 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
         </ul>
       </Card>
 
-      <Dialog open={addOwnerOpen} onClose={() => setAddOwnerOpen(false)} title="添加负责人">
+      <Dialog open={addOwnerOpen} onClose={() => { if (!addOwner.isPending) { setAddOwnerOpen(false); setOwnerName('') } }} title="添加负责人">
         <div className="space-y-4">
           <div>
-            <Input label="用户名" value={ownerName} onChange={e => setOwnerName(e.target.value)} placeholder="username" />
-            <div className="mt-1"><AiFormHelper type="general" partial={ownerName} context="用户名" onApply={setOwnerName} /></div>
+            <UserCombobox podName={podName} label="用户名" value={ownerName} onChange={setOwnerName} mode="owner" disabled={addOwner.isPending} />
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={() => setAddOwnerOpen(false)}>取消</Button>
+            <Button variant="secondary" disabled={addOwner.isPending} onClick={() => { setAddOwnerOpen(false); setOwnerName('') }}>取消</Button>
             <Button disabled={!ownerName.trim()} loading={addOwner.isPending} onClick={() => addOwner.mutate()}>确认</Button>
           </div>
         </div>
@@ -160,8 +160,7 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2"><UserPlus size={14} /> 邀请成员</h3>
           <div className="space-y-3 max-w-md">
             <div>
-              <Input label="用户名" value={inviteName} onChange={(e) => setInviteName(e.target.value)} placeholder="username" />
-              <div className="mt-1"><AiFormHelper type="general" partial={inviteName} context="为 Pod 邀请成员，输入用户名" onApply={setInviteName} /></div>
+              <UserCombobox podName={podName} label="用户名" value={inviteName} onChange={setInviteName} disabled={invite.isPending} />
             </div>
             <div>
               <Input label="备注（可选）" value={inviteReason} onChange={(e) => setInviteReason(e.target.value)} placeholder="加入理由" />

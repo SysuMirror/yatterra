@@ -16,6 +16,7 @@ const FilesTab = lazy(() => import('@/components/pod/FilesTab').then(m => ({ def
 const SettingsTab = lazy(() => import('@/components/pod/SettingsTab').then(m => ({ default: m.SettingsTab })))
 const MembersTab = lazy(() => import('@/components/pod/MembersTab').then(m => ({ default: m.MembersTab })))
 const DeploysTab = lazy(() => import('@/components/pod/DeploysTab').then(m => ({ default: m.DeploysTab })))
+const AppLogsTab = lazy(() => import('@/components/pod/AppLogsTab').then(m => ({ default: m.AppLogsTab })))
 import { CredentialCard } from '@/components/domain/CredentialCard'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { LogViewer } from '@/components/domain/LogViewer'
@@ -142,7 +143,7 @@ export default function PodDetail() {
           <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-xl font-bold tracking-tight font-mono break-all">{name}</h1>
             <Badge variant={statusVariant as any} dot>{podStatusLabel(status)}</Badge>
-            <DocHint section="pods" item={1} label="Pod 文档" />
+            <DocHint section="pods" item={4} label="新手部署文档" onboardingTarget="page-docs" />
           </div>
           <p className="text-sm text-muted mt-0.5 truncate">
             {pod?.owners?.[0] && `所有者: ${pod.owners[0]}`}{pod?.my_role && ` · 角色: ${pod.my_role === 'owner' ? '负责人' : pod.my_role}`}
@@ -599,28 +600,6 @@ function ConnCard({ pod }: { pod?: any }) {
             <CodeChip code={cfg} />
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function AppLogsTab({ podName }: { podName: string }) {
-  const { data, isLoading, isFetching } = useQuery<any>({
-    queryKey: ['app-logs', podName],
-    queryFn: () => api.get(`/pods/${podName}/app-logs?tail=200`),
-    refetchInterval: 10_000,
-  })
-  const lines: string[] = Array.isArray(data) ? data : (data?.logs ?? data?.lines ?? (typeof data === 'string' ? data.split('\n') : []))
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold">应用日志</h2>
-        {isFetching && !isLoading && <RotateCw size={13} className="animate-spin text-muted" />}
-      </div>
-      <div className="rounded-xl p-4 font-mono text-xs leading-5 bg-[#1d1d1f] text-[#f5f5f7] max-h-[min(480px,70vh)] min-h-[200px] overflow-y-auto overflow-x-auto">
-        {isLoading ? <span className="text-white/40">加载中…</span> :
-         lines.length ? lines.map((l, i) => <div key={i} className="whitespace-pre-wrap break-all">{l}</div>) :
-         <div className="flex items-center gap-2 py-4"><ScrollText size={16} className="text-white/40" /><span className="text-white/40">暂无应用日志</span></div>}
       </div>
     </div>
   )

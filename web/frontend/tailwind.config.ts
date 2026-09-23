@@ -5,8 +5,8 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: { DEFAULT: '#1d1d1f', 2: '#424245' },
-        muted: '#86868b',
+        ink: { DEFAULT: 'var(--ink)', 2: 'var(--ink-soft)' },
+        muted: 'var(--muted-foreground)',
         accent: {
           DEFAULT: '#0a84ff',
           dark: '#0071e3',
@@ -16,11 +16,11 @@ export default {
         warn: { DEFAULT: '#ff9f0a', bg: 'rgba(255,159,10,.10)' },
         bad: { DEFAULT: '#ff453a', bg: 'rgba(255,69,58,.10)' },
         surface: {
-          0: '#ffffff',
-          1: 'rgba(255,255,255,.78)',
-          2: 'rgba(255,255,255,.55)',
-          3: 'rgba(255,255,255,.35)',
-          4: 'rgba(24,24,26,.78)',
+          0: 'var(--surface-0)',
+          1: 'var(--surface-1)',
+          2: 'var(--surface-2)',
+          3: 'var(--surface-3)',
+          4: 'var(--surface-4)',
         },
       },
       borderRadius: {

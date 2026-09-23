@@ -122,7 +122,13 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><Rocket size={15} /> 部署</h3>
+        <div>
+          <h3 className="text-sm font-semibold flex items-center gap-2"><Rocket size={15} /> 部署</h3>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+            <a href="/docs?lesson=deploy" className="text-accent hover:underline">部署教程</a>
+            <a href="/docs?lesson=webhook" className="text-accent hover:underline">Webhook 说明</a>
+          </div>
+        </div>
         {canManage && <Button data-onboarding-target="deploy-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建部署</Button>}
       </div>
 
@@ -130,6 +136,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
       {canManage && deploys.length === 0 && (
         <div className="space-y-2">
           <p className="text-xs text-muted">快速开始 — 选择模板一键部署：</p>
+          <p className="text-xs text-muted/80">模板会立即创建并运行；自定义部署会先保存，之后用部署卡片的「启动」运行。</p>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
             {TEMPLATES.map((tpl) => (
               <button
@@ -186,6 +193,8 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
             </div>
           )}
 
+          <p className="text-xs text-muted">常驻服务会自动重启；一次性脚本可能在 supervisor 启动时执行一次。按任务选择模式。</p>
+
           {/* Row 4: Mode + Kind + GPU/VRAM */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Select label="类型" value={dMode} onChange={(v) => setDMode(v as 'service' | 'oneshot')} options={[{ value: 'service', label: '常驻服务' }, { value: 'oneshot', label: '一次性脚本' }]} />
@@ -206,7 +215,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
               <Input data-onboarding-target="deploy-token" label="私有库 token" type="password" value={dToken} onChange={e => setDToken(e.target.value)} placeholder="公开库留空" />
             )}
             <div>
-              <Input label="健康检查路径" value={dHealth} onChange={e => setDHealth(e.target.value)} placeholder="/health 留空跳过" />
+              <Input label="健康检查路径（可选）" value={dHealth} onChange={e => setDHealth(e.target.value)} placeholder="/health 留空跳过" />
               <div className="mt-1"><AiFormHelper type="general" partial={dHealth} context="健康检查 URL 路径" onApply={setDHealth} /></div>
             </div>
             <div>
@@ -215,11 +224,14 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
             </div>
           </div>
 
+          <p className="text-xs text-muted">健康检查留空即可跳过；填写后仅在检查失败等条件满足时参与条件回滚。</p>
+
           {/* Row 6: Auto-deploy (repo only) */}
           {isRepo && (
             <div className="flex items-center gap-2">
               <Switch checked={dAutoDeploy} onChange={setDAutoDeploy} />
               <span className="text-sm text-ink-2">push 自动部署</span>
+              <span className="text-xs text-muted">需明确分支；仅切换分支不会完成 Webhook 切换，还需管理员配置回调。</span>
             </div>
           )}
 

@@ -3,6 +3,7 @@
 Agent listing, execution, streaming, session management.
 """
 import secrets, json, time
+from importlib import import_module
 from flask import Blueprint, request, jsonify, Response, g
 from middleware.error_handler import ApiError, not_found, bad_request
 
@@ -10,7 +11,7 @@ import agent
 import agent_runs
 import agent_conf
 import browser_assistant
-import users
+users = import_module("users")
 import groups
 import audit
 

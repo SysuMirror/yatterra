@@ -8,12 +8,13 @@ description: 跑或扩展 YatTerra 后端测试时使用。
 ## 跑测试
 
 ```bash
-cd /srv/yatterra/web
-PYTHONPATH=/srv/yatterra/web python3 -m unittest discover -s tests -v
+# 在项目根目录运行
+python3 -m unittest discover -s web/tests -v
 ```
 
-`PYTHONPATH` 是**必需**的：`web/` 下的模块是扁平的（`import fleet_monitor`），
-不在任何包里。`tests/` 也没有 `__init__.py`，所以别用 `tests.test_fleet` 这种写法。
+无需设置 `PYTHONPATH`：测试通过 `Path(__file__).resolve().parents[1]`
+把 `web/` 加入模块搜索路径，兼容根目录 discovery、单文件运行和不同加载顺序。
+在 `web/` 中也可运行 `python3 -m unittest discover -s tests -v`。
 
 ## 加测试
 

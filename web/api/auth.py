@@ -14,11 +14,12 @@ Imports:
 import secrets
 import time
 import logging
+from importlib import import_module
 
 from flask import Blueprint, request, session, jsonify, redirect
 
 import oauth2_login
-import users
+users = import_module("users")
 import audit
 from middleware.error_handler import ApiError, unauthorized, bad_request, forbidden
 from middleware.csrf import generate_csrf_token, require_csrf
@@ -83,8 +84,14 @@ def _me_response():
     logged_in = bool(session.get("logged_in"))
     if not logged_in:
         return {"user": None, "perms": [], "role": None, "is_logged_in": False}
+    u = _session_user_obj() or {}
     return {
-        "user": session.get("user"),
+        "user": u.get("username") or session.get("user"),
+        "user_id": u.get("user_id"),
+        "username": u.get("username") or session.get("user"),
+        "display_name": u.get("display_name") or session.get("oauth_name") or u.get("username") or session.get("user"),
+        "avatar_url": u.get("avatar_url") or session.get("oauth_avatar") or "",
+        "display_source": u.get("display_source") or session.get("oauth_provider") or "",
         "perms": _user_perms_list(),
         "role": session.get("role"),
         "is_logged_in": True,
@@ -299,6 +306,8 @@ def callback_ssemarket():
                 existing = users.get_user(username)
             # auto-bind so future logins recognize this identity
             users.bind_identity(username, "ssemarket", user_id, name, email, avatar)
+        users.sync_oauth_profile(username, "ssemarket", user_id, name, email, avatar)
+        existing = users.get_user(username)
 
         # log in
         ip = request.remote_addr or "unknown"
@@ -309,7 +318,7 @@ def callback_ssemarket():
         session["oauth_avatar"] = avatar
         audit.record("login_oauth", detail=f"ssemarket:{username}({name}) ip={ip}")
 
-        return redirect("/")
+        return redirect("/console")
 
     except Exception as e:
         log.exception("ssemarket OAuth2 callback error")
@@ -392,6 +401,8 @@ def callback_unisso():
                 existing = users.get_user(username)
             # auto-bind so future logins recognize this identity
             users.bind_identity(username, "unisso", user_id, name, email, avatar)
+        users.sync_oauth_profile(username, "unisso", user_id, name, email, avatar)
+        existing = users.get_user(username)
 
         # log in
         ip = request.remote_addr or "unknown"
@@ -402,7 +413,7 @@ def callback_unisso():
         session["oauth_avatar"] = avatar
         audit.record("login_oauth", detail=f"unisso:{username}({name}) ip={ip}")
 
-        return redirect("/")
+        return redirect("/console")
 
     except Exception as e:
         log.exception("unisso OAuth2 callback error")

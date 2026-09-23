@@ -66,7 +66,7 @@ function CenteredDialog({ open, onClose, title, description, width = 'max-w-lg',
           <motion.div
             className={cn('relative w-full max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl p-6', width, className)}
             style={{
-              background: 'rgba(255,255,255,0.88)',
+              background: 'var(--surface-1)',
               backdropFilter: 'blur(40px) saturate(180%)',
               WebkitBackdropFilter: 'blur(40px) saturate(180%)',
               border: '0.5px solid rgba(255,255,255,0.5)',
@@ -178,7 +178,7 @@ function BottomSheet({ open, onClose, title, description, children, className }:
             style={{
               y,
               paddingBottom: 'var(--sab)',
-              background: 'rgba(255,255,255,0.92)',
+              background: 'var(--surface-1)',
               backdropFilter: 'blur(40px) saturate(180%)',
               WebkitBackdropFilter: 'blur(40px) saturate(180%)',
               border: '0.5px solid rgba(255,255,255,0.5)',

@@ -3,9 +3,10 @@
 User profile, password change, OAuth bind/unbind.
 """
 from flask import Blueprint, request, jsonify, g, session
+from importlib import import_module
 from middleware.error_handler import ApiError, bad_request, unauthorized
 
-import users as users_mod
+users_mod = import_module("users")
 import oauth2_login
 import audit
 

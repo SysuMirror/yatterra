@@ -1,4 +1,4 @@
-"""Run: PYTHONPATH=web python3 -m unittest discover -s web/tests -v."""
+"""Run: python3 -m unittest discover -s web/tests -v."""
 import importlib.util
 import json
 from pathlib import Path
@@ -8,6 +8,9 @@ import tempfile
 import types
 import unittest
 from unittest.mock import patch
+
+# Resolve flat web modules independently of cwd and discovery order.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fleet_monitor as fleet
 import fleet_probe as probe

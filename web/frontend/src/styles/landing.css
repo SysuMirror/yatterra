@@ -6,13 +6,10 @@
   --terra-muted: #8fa5b0;
   --terra-mint: #9aebd2;
   --terra-ease-out: cubic-bezier(.23, 1, .32, 1);
-  height: 100vh;
-  height: 100dvh;
-  min-height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: clip;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
+  overflow-y: visible;
   touch-action: pan-y;
   pointer-events: auto;
   color: var(--terra-ink);
@@ -159,7 +156,6 @@
   .terra-button-secondary:hover { border-color: #9aebd266; background: #142833; }
   .terra-layer:hover { background: #9aebd20a; }
   .terra-motion-toggle:hover { color: var(--terra-ink); }
-  .terra-explorer-tabs button:hover { color: var(--terra-ink); border-color: #9aebd226; transform: translateY(-2px); }
 }
 
 @media (min-width: 1600px) { .terra-hero-layout { gap: 70px; } }
@@ -173,8 +169,6 @@
   .terra-section-intro { gap: 40px; }
   .terra-constraint, .terra-choice { padding: 24px; }
   .terra-scenario-copy { padding: 22px; }
-  .terra-gap-callout { grid-template-columns: .9fr 1.1fr; }
-  .terra-gap-callout > p { grid-column: 1 / -1; max-width: 680px; }
 }
 
 @media (max-width: 850px) {
@@ -292,10 +286,9 @@
 .terra-thesis-mark { color: var(--terra-mint); font-family: 'SFMono-Regular', Consolas, monospace; font-size: 22px; line-height: 1.2; }
 .terra-thesis-note p { margin: 0; color: #9fb3ba; font-size: 16px; line-height: 1.9; }
 .terra-thesis-note strong { color: var(--terra-ink); font-weight: 600; }
-.terra-gap-callout { display: grid; grid-template-columns: .74fr 1.04fr .86fr; align-items: center; gap: 28px; margin-top: 42px; padding: 26px 30px; border: 1px solid rgba(246, 200, 137, .2); border-radius: 16px; background: linear-gradient(100deg, rgba(246, 200, 137, .08), rgba(103, 232, 208, .04)); }
+.terra-gap-callout { display: grid; grid-template-columns: .8fr 1.2fr; align-items: center; gap: 36px; margin-top: 42px; padding: 28px 32px; border: 1px solid rgba(246, 200, 137, .2); border-radius: 16px; background: linear-gradient(100deg, rgba(246, 200, 137, .08), rgba(103, 232, 208, .04)); }
 .terra-gap-callout h3 { margin: 12px 0 0; color: var(--terra-ink); font-size: clamp(22px, 2.5vw, 32px); font-weight: 600; letter-spacing: -1.2px; }
 .terra-gap-callout p { margin: 0; color: #a1b1b7; font-size: 14px; line-height: 1.9; }
-.terra-gap-art { display: block; width: 100%; min-width: 260px; overflow: hidden; }
 
 @media (max-width: 800px) {
   .terra-history-art { margin-top: 30px; padding: 17px 12px 13px; border-radius: 13px; }
@@ -305,7 +298,6 @@
   .terra-thesis-note p { font-size: 13px; line-height: 1.75; }
   .terra-gap-callout { grid-template-columns: 1fr; gap: 17px; margin-top: 30px; padding: 22px; }
   .terra-gap-callout p { font-size: 13px; }
-  .terra-gap-art { min-width: 0; max-width: 430px; margin-inline: auto; }
 }
 
 .terra-explorer-section { padding-top: 16px; }
@@ -314,11 +306,11 @@
 .terra-explorer-top, .terra-explorer-tabs, .terra-explorer-body { position: relative; z-index: 1; }
 .terra-explorer-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .terra-explorer-top h3 { margin: 10px 0 0; color: var(--terra-ink); font-size: clamp(24px, 3vw, 38px); font-weight: 600; letter-spacing: -1.4px; }
-.terra-explorer-lede { max-width: 480px; margin: 10px 0 0; color: #78939d; font-size: 13px; line-height: 1.7; }
 .terra-explorer-status { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid #9aebd226; border-radius: 999px; color: #87ada5; font-family: monospace; font-size: 9px; letter-spacing: 1.3px; white-space: nowrap; }
 .terra-explorer-status span { width: 6px; height: 6px; border-radius: 50%; background: var(--terra-mint); box-shadow: 0 0 12px var(--terra-mint); }
 .terra-explorer-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 28px; }
 .terra-explorer-tabs button { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-height: 70px; padding: 15px 16px; border: 1px solid transparent; border-radius: 10px; color: #8fa5b0; text-align: left; background: rgba(255,255,255,.025); transition: border-color 180ms ease, background 180ms ease, color 180ms ease, transform 180ms ease; }
+.terra-explorer-tabs button:hover { color: var(--terra-ink); border-color: #9aebd226; transform: translateY(-2px); }
 .terra-explorer-tabs button.is-active { color: var(--terra-ink); border-color: #9aebd255; background: rgba(154,235,210,.08); box-shadow: inset 0 0 0 1px rgba(154,235,210,.06); }
 .terra-explorer-tabs small { color: #607984; font-family: monospace; font-size: 8px; letter-spacing: 1.1px; }
 .terra-explorer-body { display: grid; grid-template-columns: .8fr 1.2fr; align-items: center; gap: 30px; margin-top: 24px; padding: 24px; border-top: 1px solid rgba(138,172,188,.12); }
@@ -330,16 +322,10 @@
 .terra-explorer-nodes svg { color: #68828d; }
 .terra-explorer-art { width: 100%; min-height: 190px; overflow: visible; }
 
-@media (min-width: 801px) and (max-width: 1100px) {
-  .terra-gap-callout { grid-template-columns: .9fr 1.1fr; }
-  .terra-gap-callout > p { grid-column: 1 / -1; max-width: 680px; }
-}
-
 @media (max-width: 800px) {
   .terra-explorer-section { padding-top: 0; }
   .terra-explorer { padding: 21px; border-radius: 14px; }
   .terra-explorer-top h3 { font-size: 25px; }
-  .terra-explorer-lede { font-size: 12px; }
   .terra-explorer-status { font-size: 7px; letter-spacing: .7px; }
   .terra-explorer-tabs { gap: 5px; margin-top: 21px; }
   .terra-explorer-tabs button { min-height: 62px; padding: 11px 10px; font-size: 11px; }

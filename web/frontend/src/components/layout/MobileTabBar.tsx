@@ -24,14 +24,8 @@ export function MobileTabBar() {
 
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-[var(--z-chrome)] md:hidden"
-      style={{
-        paddingBottom: 'var(--sab)',
-        background: 'rgba(250, 250, 251, 0.92)',
-        backdropFilter: 'blur(20px) saturate(160%)',
-        WebkitBackdropFilter: 'blur(20px) saturate(160%)',
-        borderTop: '0.5px solid rgba(0, 0, 0, 0.08)',
-      }}
+      className="mobile-tabbar fixed bottom-0 left-0 right-0 z-[var(--z-chrome)] md:hidden"
+      style={{ paddingBottom: 'var(--sab)' }}
     >
       <div className="flex items-center justify-around h-14">
         {tabs.map((tab) => {

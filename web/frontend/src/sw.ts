@@ -17,17 +17,17 @@ import { clientsClaim } from 'workbox-core'
 precacheAndRoute(self.__WB_MANIFEST)
 cleanupOutdatedCaches()
 
-// Keep a new worker waiting until the user explicitly accepts the update.
-// This prevents a background tab from being refreshed while a form is open.
 clientsClaim()
+self.addEventListener('install', (event) => {
+  event.waitUntil(self.skipWaiting())
+})
+
 self.addEventListener('activate', (event) => {
-  // Remove the previous broad API cache, which could contain personalized
-  // infrastructure responses from an older service-worker version.
-  event.waitUntil(Promise.all([
-    caches.delete('api-cache'),
-    caches.delete('navigation-pages'),
-    caches.delete('static-assets'),
-  ]))
+  event.waitUntil((async () => {
+    const cacheNames = await caches.keys()
+    await Promise.all(cacheNames.map((name) => caches.delete(name)))
+    await self.clients.claim()
+  })())
 })
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting()

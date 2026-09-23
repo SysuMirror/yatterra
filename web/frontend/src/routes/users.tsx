@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { User, Plus, Trash2, Key, Copy, RefreshCw } from 'lucide-react'
+import { User, Plus, Trash2, Key, Copy, Search, ShieldCheck } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -19,7 +19,6 @@ import { useAuth } from '@/hooks/useAuth'
 const roleOptions = [
   { value: 'super', label: '超级管理员' },
   { value: 'admin', label: '管理员' },
-  { value: 'owner', label: 'Owner' },
   { value: 'user', label: '普通用户' },
   { value: 'guest', label: '访客' },
 ]
@@ -38,13 +37,14 @@ export default function Users() {
   const [tokenOpen, setTokenOpen] = useState(false)
   const [tokenDesc, setTokenDesc] = useState('')
   const [createdToken, setCreatedToken] = useState('')
+  const [search, setSearch] = useState('')
 
   const canManage = hasPerm('admin.users')
 
   const { data, isLoading } = useQuery<{ current: string; users: any[] }>({
     enabled: canManage,
-    queryKey: ['users'],
-    queryFn: () => api.get<any>('/users').then(d => ({ current: d.current ?? '', users: d.users ?? d })),
+    queryKey: ['users', search],
+    queryFn: () => api.get<any>(`/users${search.trim() ? `?q=${encodeURIComponent(search.trim())}` : ''}`).then(d => ({ current: d.current ?? '', users: d.users ?? d })),
   })
 
   const current = data?.current ?? ''
@@ -120,18 +120,24 @@ export default function Users() {
         />
       )}
 
-      {canManage && <Card padding="none">
+      {canManage && <>
+        <div className="mb-4 flex items-center gap-2 max-w-xl">
+          <Search size={16} className="text-muted" />
+          <Input aria-label="搜索用户" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索昵称、用户名或 OAuth 身份…" />
+        </div>
+        <Card padding="none">
         <DataTable
           columns={[
             { key: 'username', title: '用户名', sortable: true, render: (r: any) => {
               const name = r.username || r.user
+              const shown = r.display_name || name
               const isCurrent = name === current
               return (
                 <div className="flex items-center gap-2">
                   <div className={`w-7 h-7 rounded-full flex items-center justify-center ${isCurrent ? 'bg-ok-bg' : 'bg-accent-light'}`}>
                     <User size={14} className={isCurrent ? 'text-ok' : 'text-accent'} />
                   </div>
-                  <span className="font-medium">{name}</span>
+                  <span className="min-w-0"><span className="font-medium block truncate">{shown}</span>{shown !== name && <span className="text-xs text-muted block truncate">{name}</span>}</span>
                   {isCurrent && <Badge variant="ok" className="text-[10px] px-1.5 py-0">你</Badge>}
                 </div>
               )
@@ -160,10 +166,10 @@ export default function Users() {
             }},
           ]}
           data={users}
-          keyFn={(r: any) => r.username || r.user}
+          keyFn={(r: any) => r.user_id || r.username || r.user}
           empty={<p className="text-sm text-muted text-center py-8">暂无用户</p>}
         />
-      </Card>}
+      </Card></>}
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="创建用户">
@@ -240,7 +246,7 @@ export default function Users() {
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="secondary" onClick={() => setTokenOpen(false)}>取消</Button>
-                <Button onClick={() => tokenCreateMut.mutate({ description: tokenDesc })} disabled={!tokenDesc}>创建</Button>
+                <Button onClick={() => tokenCreateMut.mutate({ name: tokenDesc })} disabled={!tokenDesc}>创建</Button>
               </div>
             </>
           ) : (

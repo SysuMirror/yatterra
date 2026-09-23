@@ -4,14 +4,16 @@ requests **in-place** via the /resize subresource (k8s ≥1.33).  No restarts.
 
 Every POLL_S seconds:
   1. Sample ``kubectl top pod`` → actual CPU/mem per group.
-  2. Update EWMA per group.
-  3. For each group with a Running pod: compute the EWMA-derived target
+  2. Sample each group's persistent home usage from the hostPath.
+  3. Update EWMA per group.
+  4. For each group with a Running pod: compute the EWMA-derived target
      request.  If it differs from the pod's current request by > DRIFT_PCT,
      patch the pod in-place (``kubectl patch pod --subresource resize``).
      The kubelet updates cgroups live; the scheduler sees the new value.
      The Deployment template is NOT touched (that would trigger a rollout) —
      it gets the EWMA-based request on the next user resize/restart via
-     ``deployment_yaml``/``request_for``.
+     ``deployment_yaml``/``request_for``.  Storage requests are template-only
+     because Kubernetes cannot resize ephemeral-storage in place.
 
 Logs to /opt/yatterra/req_loop.log.  Never raises out of the main loop.
 """
@@ -61,6 +63,21 @@ def _parse_mem_gi(s):
         return 0.0
 
 
+def _du_gi(path):
+    """Return apparent disk usage for a group home, or zero on failure."""
+    try:
+        total = 0
+        for root, dirs, files in os.walk(path):
+            for entry in files:
+                try:
+                    total += os.stat(os.path.join(root, entry), follow_symlinks=False).st_blocks * 512
+                except OSError:
+                    pass
+        return total / (1024 ** 3)
+    except OSError:
+        return 0.0
+
+
 def _kubectl(*args, timeout=15):
     try:
         r = subprocess.run(["kubectl", "-n", NS] + list(args),
@@ -82,6 +99,18 @@ def sample_usage():
         if name:
             out[name] = (_parse_cpu(r.get("cpu", "0")), _parse_mem_gi(r.get("mem", "0")))
     return out
+
+
+def sample_storage_usage(gmap):
+    """Return {group_name: persistent-home usage in Gi}.
+
+    The group home is a hostPath on the large data disk, so this is separate
+    from the container writable layer represented by ephemeral-storage.
+    """
+    return {
+        name: _du_gi(os.path.join(groups.GROUP_DATA_ROOT, name, "home"))
+        for name in gmap
+    }
 
 
 def get_pod_name(name):
@@ -121,15 +150,16 @@ def reconcile(name, g, sample, now):
     """Maybe in-place resize the pod's request. Returns True if resized."""
     limit_cpu = _parse_cpu(g.get("cpu", "1"))
     limit_mem = _parse_mem_gi(g.get("mem", "1Gi"))
-    scpu, smem = sample
-    e = req_estimate.update_ewma(name, scpu, smem)
+    scpu, smem, sstorage = sample
+    e = req_estimate.update_ewma(name, scpu, smem, sstorage)
     samples = e.get("samples", 0)
     if samples < MIN_SAMPLES:
         return False
 
     # target from EWMA
-    t_cpu_str, t_mem_str, t_cpu, t_mem = req_estimate.reconcile_target(
-        name, limit_cpu, limit_mem)
+    t_cpu_str, t_mem_str, _t_storage_str, t_cpu, t_mem, t_storage = req_estimate.reconcile_target(
+        name, limit_cpu, limit_mem,
+        req_estimate.parse_storage_gi(g.get("storage", "1Gi")))
 
     # find running pod
     pod = get_pod_name(name)
@@ -140,11 +170,14 @@ def reconcile(name, g, sample, now):
     if not cur_cpu_str:
         return False
     cur_cpu = _parse_cpu(cur_cpu_str)
-    if cur_cpu <= 0:
+    cur_mem = _parse_mem_gi(cur_mem_str)
+    if cur_cpu <= 0 or cur_mem <= 0:
         return False
 
     # drift check
-    if abs(t_cpu - cur_cpu) / cur_cpu < DRIFT_PCT / 100.0:
+    cpu_drift = abs(t_cpu - cur_cpu) / cur_cpu
+    mem_drift = abs(t_mem - cur_mem) / cur_mem
+    if max(cpu_drift, mem_drift) < DRIFT_PCT / 100.0:
         return False
 
     # cooldown
@@ -159,7 +192,8 @@ def reconcile(name, g, sample, now):
         direction = "lower" if t_cpu < cur_cpu else "raise"
         log(f"resize {name}: {direction} {cur_cpu_str}->{t_cpu_str} cpu, "
             f"{cur_mem_str}->{t_mem_str} mem (ewma={e.get('cpu_ewma',0):.2f}cpu "
-            f"{e.get('mem_ewma',0):.2f}Gi) — in-place, no restart")
+            f"{e.get('mem_ewma',0):.2f}Gi; storage={e.get('storage_ewma',0):.2f}Gi "
+            f"→ next template {req_estimate.fmt_storage_gi(t_storage)}) — in-place, no restart")
         return True
     else:
         log(f"resize {name}: FAILED {err[:120]}")
@@ -175,9 +209,11 @@ def main():
             state = groups.load_state()
             gmap = state.get("groups", {}) or {}
             usage = sample_usage()
+            storage_usage = sample_storage_usage(gmap)
             for name, g in gmap.items():
                 try:
-                    sample = usage.get(name, (0.0, 0.0))
+                    cpu_mem = usage.get(name, (0.0, 0.0))
+                    sample = (*cpu_mem, storage_usage.get(name, 0.0))
                     reconcile(name, g, sample, now)
                 except Exception as ex:
                     log(f"per-group error {name}: {ex!r}")

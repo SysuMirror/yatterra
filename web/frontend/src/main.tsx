@@ -14,9 +14,12 @@ import App from './App'
 import { ToastContainer } from '@/components/ui/Toast'
 import { NetworkStatusBanner } from '@/components/ui/NetworkStatusBanner'
 import { SWUpdateNotifier } from '@/components/ui/SWUpdateNotifier'
+import { initTheme } from '@/stores/theme'
 import '@/lib/pwa-install'
 import './styles/globals.css'
 import './styles/animations.css'
+
+initTheme()
 
 onlineManager.setEventListener((setOnline) => {
   const onOnline = () => setOnline(true)

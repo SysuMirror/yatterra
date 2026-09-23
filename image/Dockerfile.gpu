@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       nodejs npm git curl wget vim tmux htop man-db ca-certificates locales \
       && rm -rf /var/lib/apt/lists/*
 RUN locale-gen en_US.UTF-8
-RUN useradd -m -u 1001 -s /bin/bash -G sudo cloud \
+RUN useradd -m -u 1000 -s /bin/bash -G sudo cloud \
     && echo 'cloud ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/cloud \
     && chmod 0440 /etc/sudoers.d/cloud
 RUN mkdir -p /run/sshd && ssh-keygen -A

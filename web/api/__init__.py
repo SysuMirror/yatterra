@@ -5,8 +5,10 @@ Mounted at /api/v1 via Flask Blueprint.  Auth via Authorization: Bearer <token>.
 Permissions reuse the same has_perm / can_pod system as the web UI.
 """
 import functools
+from importlib import import_module
 from flask import Blueprint, request, jsonify, g
-import users, groups, lifecycle, audit, host_health, deploys
+users = import_module("users")
+import groups, lifecycle, audit, host_health, deploys
 import minio_svc as minio_mod
 import db_svc as db_mod
 
@@ -452,6 +454,16 @@ def api_host_health():
     return jsonify(host_health.host_health())
 
 
+@api_bp.route("/audit", methods=["GET"])
+@api_auth("ops.audit")
+def api_audit_list_legacy():
+    try:
+        limit = min(max(int(request.args.get("limit", 100)), 1), 1000)
+    except (TypeError, ValueError):
+        limit = 100
+    return jsonify({"entries": audit.audit_entries(limit=limit)})
+
+
 @api_bp.route("/tokens", methods=["GET"])
 @api_auth()
 def api_tokens_list():
@@ -486,6 +498,9 @@ from .llm import llm_bp  # noqa: E402
 from .threat_map import threat_map_bp  # noqa: E402
 from .push import push_bp  # noqa: E402
 from .ai import ai_bp  # noqa: E402
+
+users = import_module("users")
+audit = import_module("audit")
 
 
 # ── Blueprint registration helper ─────────────────────────────

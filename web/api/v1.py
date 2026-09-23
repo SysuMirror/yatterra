@@ -5,8 +5,10 @@ Mounted at /api/v1 via Flask Blueprint.  Auth via Authorization: Bearer <token>.
 Permissions reuse the same has_perm / can_pod system as the web UI.
 """
 import functools
+from importlib import import_module
 from flask import Blueprint, request, jsonify, g
-import users, groups, lifecycle, audit, host_health, deploys
+users = import_module("users")
+import groups, lifecycle, audit, host_health, deploys
 import minio_svc as minio_mod
 import db_svc as db_mod
 

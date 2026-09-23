@@ -71,6 +71,7 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [health, setHealth] = useState<'checking' | 'ok' | 'error'>('checking')
   const navigate = useNavigate()
   const { login } = useAuthStore()
   const [searchParams] = useSearchParams()
@@ -83,6 +84,25 @@ export default function Login() {
       setError(detail ? `${base}: ${detail}` : base)
     }
   }, [searchParams])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let cancelled = false
+    // /health is unauthenticated and lives outside /api, so probe it directly.
+    fetch('/health', { signal: controller.signal, credentials: 'same-origin' })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (cancelled) return
+        setHealth(data?.health === 'ok' ? 'ok' : 'error')
+      })
+      .catch(() => {
+        if (!cancelled) setHealth('error')
+      })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -165,8 +185,18 @@ export default function Login() {
           </div>
 
           <div className="flex items-center gap-3 text-xs text-slate-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_12px_#6ee7b7]" />
-            所有系统运行正常
+            <span
+              className={
+                health === 'ok'
+                  ? 'h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_12px_#6ee7b7]'
+                  : health === 'error'
+                    ? 'h-1.5 w-1.5 rounded-full bg-amber-300 shadow-[0_0_12px_#fcd34d]'
+                    : 'h-1.5 w-1.5 animate-pulse rounded-full bg-slate-400'
+              }
+            />
+            <span className={health === 'error' ? 'text-amber-200/90' : undefined}>
+              {health === 'checking' ? '检查中…' : health === 'ok' ? '所有系统运行正常' : '部分服务异常'}
+            </span>
             <span className="mx-1 text-slate-700">/</span>
             <span>安全连接 · 私有部署</span>
           </div>
@@ -187,8 +217,8 @@ export default function Login() {
             <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-200/20 bg-cyan-300/[.08]">
               <LockKeyhole size={20} className="text-cyan-200" />
             </div>
-            <h2 className="text-[28px] font-semibold">欢迎回来</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">登录 YatTerra 控制台，继续管理你的基础设施。</p>
+            <h2 className="text-[28px] font-semibold">登录 YatTerra</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">登录控制台，开始管理你的集群、模型与工作负载。</p>
           </div>
 
           {error && (
@@ -224,6 +254,14 @@ export default function Login() {
             </motion.button>
           </form>
 
+          <motion.button type="button" onClick={handleGuestLogin} disabled={loading} className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/[.1] bg-white/[.035] text-sm font-medium text-slate-300 transition duration-200 hover:bg-white/[.08] hover:text-white disabled:cursor-wait disabled:opacity-55" whileTap={{ scale: .975 }}>
+            <Fingerprint size={16} className="text-slate-400" />
+            先看看，不注册
+          </motion.button>
+          <p className="mt-2.5 text-center text-xs leading-5 text-slate-500">以游客身份进入控制台，无需账号。</p>
+
+          <p className="mt-4 text-center text-xs leading-5 text-slate-500">还没有账号？请联系管理员开通，或先用游客身份体验。</p>
+
           <div className="my-6 flex items-center gap-3 text-[11px] text-slate-600">
             <span className="h-px flex-1 bg-white/[.09]" />
             其他登录方式
@@ -240,17 +278,6 @@ export default function Login() {
               <ArrowUpRight size={15} className="text-slate-500" />
             </motion.a>
           </div>
-
-          <div className="my-6 flex items-center gap-3 text-[11px] text-slate-600">
-            <span className="h-px flex-1 bg-white/[.09]" />
-            或者
-            <span className="h-px flex-1 bg-white/[.09]" />
-          </div>
-
-          <motion.button type="button" onClick={handleGuestLogin} disabled={loading} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/[.1] bg-white/[.035] text-sm font-medium text-slate-300 transition duration-200 hover:bg-white/[.08] hover:text-white disabled:cursor-wait disabled:opacity-55" whileTap={{ scale: .975 }}>
-            <Fingerprint size={16} className="text-slate-400" />
-            游客访问
-          </motion.button>
 
           <Link to="/" className="mt-5 flex items-center justify-center gap-1.5 text-xs text-slate-500 transition-colors hover:text-cyan-200">
             <ArrowLeft size={14} />

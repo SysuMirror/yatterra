@@ -4,6 +4,7 @@ Host health, remote hosts, metrics, storage (MinIO), databases, proxy mappings.
 """
 import json as _json
 import subprocess as _sp
+from importlib import import_module
 from flask import Blueprint, request, jsonify, g
 from middleware.error_handler import ApiError, not_found, bad_request
 
@@ -14,11 +15,10 @@ import gpu_stats
 import minio_svc as minio_mod
 import db_svc as db_mod
 import proxy_map
-import users
+users = import_module("users")
 import audit
 
 from api._auth import require_auth, require_pod, current_username, current_user_obj
-import users
 
 infra_bp = Blueprint("api_infra", __name__, url_prefix="/api/infra")
 
@@ -367,7 +367,7 @@ def _is_proxy_admin(user):
 def _user_pod_names(user):
     """Names of pods the user is owner or member of."""
     import groups as groups_mod
-    import users as users_mod
+    users_mod = import_module("users")
     try:
         pods = groups_mod.load_state()["groups"]
     except Exception:

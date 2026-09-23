@@ -9,6 +9,6 @@ export const usersApi = {
 
 export const profileApi = {
   get: () => api.get('/profile'),
-  changePassword: (oldPw: string, newPw: string) => api.post('/profile/password', { old: oldPw, new: newPw }),
+  changePassword: (oldPw: string, newPw: string) => api.post('/profile/password', { current_password: oldPw, new_password: newPw }),
   unbind: (identityId: string) => api.post('/profile/unbind', { id: identityId }),
 }

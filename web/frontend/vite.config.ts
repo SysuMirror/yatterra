@@ -98,16 +98,23 @@ export default defineConfig({
         drop_debugger: true,
       },
     },
-    // Disable modulepreload entirely — heavy vendor chunks (charts 495KiB,
+    // Disable modulepreload entirely — heavy vendor chunks (charts 411KiB,
     // xterm 332KiB, codemirror 546KiB) should only load on demand via
     // dynamic import, not be eagerly preloaded on every page.
-    modulePreload: false,
+    modulePreload: { polyfill: false },
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
-            // Core React — loaded on every page
-            if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/react-router/'))
+            // react-dom must NOT share a chunk name with react/react-router.
+            // rolldown hoists the shared React runtime into whichever chunk
+            // it merges them into, which dragged the whole recharts subtree
+            // (549KiB) into the eagerly-loaded graph. Keeping react-dom in
+            // its own chunk keeps react + react-dom eager (~184KiB) and
+            // leaves recharts reachable only through React.lazy().
+            if (id.includes('/react-dom/'))
+              return 'reactdom'
+            if (id.includes('/react/') || id.includes('/react-router/'))
               return 'vendor-react'
             if (id.includes('@tanstack/react-query'))
               return 'vendor-tanstack'

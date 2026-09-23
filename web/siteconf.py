@@ -139,6 +139,6 @@ HARNESSES_PUBLIC_DIR = _env("YATTERRA_HARNESSES_PUBLIC_DIR",
 # Container name inside the pod, and the unprivileged login user inside it.
 GROUP_CONTAINER = _env("YATTERRA_GROUP_CONTAINER", "ubuntu")
 CLOUD_USER = _env("YATTERRA_CLOUD_USER", "cloud")
-CLOUD_UID = _int("YATTERRA_CLOUD_UID", 1001)
+CLOUD_UID = _int("YATTERRA_CLOUD_UID", 1000)
 # Env var the container entrypoint reads to set the login password.
 PASSWORD_ENV = _env("YATTERRA_PASSWORD_ENV", "CLOUD_PASSWORD")

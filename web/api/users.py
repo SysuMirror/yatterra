@@ -3,9 +3,10 @@
 User CRUD for admin management.
 """
 from flask import Blueprint, request, jsonify, g, session
+from importlib import import_module
 from middleware.error_handler import ApiError, bad_request, not_found, forbidden
 
-import users as users_mod
+users_mod = import_module("users")
 import audit
 
 from api._auth import require_auth, current_username, current_user_obj
@@ -28,7 +29,7 @@ def tokens_list():
 def tokens_create():
     """Create a new API token for the current user."""
     body = request.get_json(silent=True) or {}
-    token = users_mod.create_token(current_username(), body.get("name", ""))
+    token = users_mod.create_token(current_username(), body.get("name", body.get("description", "")))
     return jsonify({"token": token}), 201
 
 
@@ -45,9 +46,16 @@ def tokens_delete(tid):
 @require_auth("admin.users")
 def users_list():
     """List all users."""
+    query = (request.args.get("q", "") or "").strip()
+    users = users_mod.list_users()
+    if query:
+        folded = query.casefold()
+        users = [u for u in users if folded in str(u.get("display_name", "")).casefold()
+                 or folded in str(u.get("username", "")).casefold()]
     return jsonify({
-        "users": users_mod.list_users(),
+        "users": users[:100],
         "current": current_username(),
+        "total": len(users),
     })
 
 
@@ -102,6 +110,16 @@ def users_update(username):
         users_mod.set_role(username, role)
         audit.record("api_user_role", detail=f"{username} -> {role}",
                      actor=current_username() or "unknown")
+
+    if "display_name" in body:
+        display = str(body.get("display_name") or "").strip()[:128]
+        users_mod.set_display_name(username, display)
+        audit.record("api_user_profile", detail=f"{username} display_name", actor=current_username() or "unknown")
+    if "status" in body:
+        if body["status"] not in {"active", "suspended"}:
+            raise bad_request("Invalid user status")
+        users_mod.set_user_status(username, body["status"] == "active")
+        audit.record("api_user_status", detail=f"{username} -> {body['status']}", actor=current_username() or "unknown")
 
     # Password update
     if "password" in body:

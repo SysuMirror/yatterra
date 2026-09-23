@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import {
   BookOpen, Terminal, Database, Globe, Bot, Folder, Shield, Code,
   Server, HardDrive, Key, Users, Activity, ChevronRight, ArrowRight,
@@ -12,6 +12,7 @@ import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { cn } from '@/lib/cn'
 import { useAuth } from '@/hooks/useAuth'
 import { DOMAIN } from '@/lib/site'
+import LearningPath from '@/components/docs/LearningPath'
 
 /* ------------------------------------------------------------------ */
 /*  Data                                                               */
@@ -208,43 +209,68 @@ const sections: DocSection[] = [
         title: '新手部署步骤',
         content: (
           <>
-            {P('下面是一条从 Pod 到应用的最短路径，所有主机、端口和凭证都以当前页面显示的值为准。')}
+            {P('下面是一条从 Pod 到应用的最短路径。主机、端口、凭证和可用按钮都以当前页面实际显示的值为准。')}
+            {H4('1. 本地 SSH 连接（可选）')}
             {UL(
-              <>在「连接」标签页查看分配的 SSH 命令、密码和 Web 地址；不要自行拼接未显示的端点</>,
-              <>在「设置」的环境变量区域添加应用需要的变量。环境变量变更按页面提示需要重启后生效；不要暴露凭证或 Token</>,
-              <>在「部署」中选择仓库或本地 deploy.sh，填写健康检查路径（如应用实际提供），然后提交</>,
-              <>应用应监听 0.0.0.0:8080；平台会注入 PORT=8080。根目录的 deploy.sh 应可执行</>,
-              <>部署脚本以前台方式运行主进程（使用 exec；不要用 nohup 把进程放到后台），并在脚本中安装所需依赖</>,
-              <>创建后用部署卡片的启动、停止和部署日志确认部署；「日志」看容器 stdout/stderr，「应用日志」看服务输出</>,
+              <>打开 Pod 详情的「连接」标签页，复制平台显示的完整 SSH 命令，并按页面提示输入密码；不要自行拼接主机、端口或用户</>,
+              <>如果用 VS Code Remote-SSH，在本机 {CODE('~/.ssh/config')} 新建一个 Host，把页面显示的 {CODE('HostName')}、{CODE('Port')}、{CODE('User')} 原样填入，再在 Remote-SSH 中选择这个 Host</>,
+              <>未显示 SSH 信息时，不要猜测公网端点；改用页面提供的浏览器终端或「文件」标签页</>,
             )}
-            {H4('高级：主动回报部署状态')}
-            {P(<>需要主动回报状态时，可使用页面/运行环境提供的 {CODE('REPORT_URL')}、{CODE('REPORT_TOKEN')} 和 {CODE('DEPLOY_ID')}。这些变量属于高级用法，Token 不要写入仓库、脚本、截图或日志。</>)}
-            {P('市场与云端日志如何映射到这些日志标签页目前未验证；请不要据此推断来源或编写额外端点。')}
-            {H4('可复制的最小 Python 示例')}
-            {PRE(`import os
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+            {H4('2. 准备一个最小应用')}
+            {P(<>把下面内容保存为仓库根目录的 {CODE('app.py')}。它读取平台注入的 {CODE('PORT')} 和自定义的 {CODE('APP_GREETING')}，监听 {CODE('0.0.0.0')}，提供 {CODE('/health')} 健康检查，并把请求日志同时写到 stdout 和 {CODE('$LOG_DIR/app.log')}。</>)}
+            {PRE(`import json
+import logging
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-port = int(os.environ.get('PORT', '8080'))
-server = ThreadingHTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-server.serve_forever()`)}
-            {H4('根目录 deploy.sh 示例')}
+PORT = int(os.environ.get('PORT', '8080'))
+GREETING = os.environ.get('APP_GREETING', 'hello from my Pod')
+LOG_DIR = os.environ.get('LOG_DIR', '/home/cloud/logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', handlers=[
+    logging.StreamHandler(), logging.FileHandler(os.path.join(LOG_DIR, 'app.log')),
+])
+log = logging.getLogger(__name__)
+
+class Handler(BaseHTTPRequestHandler):
+    def send_json(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == '/health': self.send_json(200, {'ok': True})
+        elif self.path == '/': self.send_json(200, {'message': GREETING})
+        else: self.send_json(404, {'error': 'not found'})
+
+    def log_message(self, fmt, *args):
+        log.info('%s - %s', self.address_string(), fmt % args)
+
+log.info('starting on 0.0.0.0:%s', PORT)
+ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()`)}
+            {H4('3. 用 deploy.sh 启动前台进程')}
+            {P(<>把下面内容保存为仓库根目录的 {CODE('deploy.sh')}。部署服务会在 Pod 中执行它；{CODE('exec')} 让 Python 成为前台主进程，supervisord 才能正确收集退出状态并按服务模式自动拉起。不要使用 {CODE('nohup')}、{CODE('&')} 或自行 daemonize。</>)}
             {PRE(`#!/usr/bin/env bash
 set -euo pipefail
-python -m pip install -r requirements.txt
+cd "$(dirname "$0")"
+if [[ -f requirements.txt ]]; then
+  python -m pip install -r requirements.txt
+fi
 exec python app.py`)}
-            {P(<>保存为根目录的 {CODE('deploy.sh')} 并确保可执行：{CODE('chmod +x deploy.sh')}。脚本不要使用 {CODE('nohup')} 或把主进程放到后台。</>)}
-            {H4('SSH 与 VS Code')}
+            {P(<>提交前在仓库根目录执行 {CODE('chmod +x deploy.sh')} 并提交可执行权限。平台会注入 {CODE('PORT=8080')} 和 {CODE('LOG_DIR=/home/cloud/logs')}；应用应监听 {CODE('0.0.0.0:$PORT')}，不要只监听 {CODE('127.0.0.1')}。</>)}
+            {H4('4. 在平台配置、部署和验证')}
             {UL(
-              <>在「连接」标签页复制平台显示的 SSH 命令和密码；不要改写其中的主机或端口</>,
-              <>若使用 SSH Config，把页面显示的 HostName、Port、User 原样填入本地 {CODE('~/.ssh/config')}，再在 VS Code Remote-SSH 中选择该 Host</>,
-              <>未显示 SSH 信息时不要自行猜测端点；可改用页面提供的浏览器终端或文件标签页</>,
+              <>在 Pod「设置」的环境变量区域添加 {CODE('APP_GREETING')} 等应用变量；保存会触发 Pod rollout；等待 Pod 就绪后，重新运行 Deploy 以重新生成部署环境并传给新进程，不要把密码或 Token 写进仓库</>,
+              <>在「部署」中选择仓库（或 Pod 内 {CODE('/home/cloud/')}、{CODE('/shared/')} 下的可执行本地脚本），填写实际存在的健康检查路径 {CODE('/health')}，然后提交并启动</>,
+              <>看部署状态和部署日志确认 clone、脚本启动及健康检查；应用正常后，用页面提供的 Web 地址访问根路径和 {CODE('/health')}</>,
             )}
-            {H4('应用日志持久化')}
-            {PRE(`import logging, os
-log_dir = os.environ.get('LOG_DIR', '/tmp')
-os.makedirs(log_dir, exist_ok=True)
-logging.basicConfig(filename=os.path.join(log_dir, 'app.log'), level=logging.INFO)`)}
-            {P(<>高级主动回报使用平台提供的 {CODE('REPORT_URL')}、{CODE('REPORT_TOKEN')} 和 {CODE('DEPLOY_ID')}；不要把 Token 写入代码、仓库或日志。市场与云端日志映射目前未验证，请勿推断额外端点。</>)}
+            {H4('日志在哪里')}
+            {P(<>「日志」是 Pod 容器的 stdout/stderr；部署进程的启动输出通常也会出现在部署日志。应用若使用上例的 {CODE('FileHandler')}，{CODE('/home/cloud/logs/app.log')} 会出现在「应用日志」，平台按该目录收集以 {CODE('*.log')} 结尾的文件。两者是不同来源；写文件不会替代 stdout，异常时应先分别查看。</>)}
+            {H4('高级：应用状态回报（可选）')}
+            {P(<>部署服务为每个部署注入 {CODE('DEPLOY_ID')}、{CODE('REPORT_URL')} 和 {CODE('REPORT_TOKEN')}。它们用于应用向平台回报状态：向 {CODE('REPORT_URL')} 发起 POST，JSON 至少包含 {CODE('deploy_id')} 和 {CODE('state')}，可选 {CODE('metrics')}、{CODE('message')}，并在 {CODE('X-Report-Token')} 请求头放入 {CODE('REPORT_TOKEN')}。不要打印或提交 Token。这是平台内部部署回报接口；本指南不宣称它与任何外部市场或第三方日志系统有额外集成。</>)}
           </>
         ),
       },
@@ -1101,10 +1127,10 @@ export default function Docs() {
   // scattered across the app). Opens the section + item and scrolls to it.
   useEffect(() => {
     const sid = searchParams.get('s')
-    if (!sid) return
+    if (!sid) { setActiveSection(null); setActiveItem(null); return }
     const idx = Number(searchParams.get('i') ?? '0')
     const section = visibleSections.find(s => s.id === sid)
-    if (!section) return
+    if (!section) { setActiveSection(null); setActiveItem(null); return }
     const key = `${sid}-${Number.isFinite(idx) ? idx : 0}`
     setActiveSection(sid)
     setActiveItem(key)
@@ -1123,10 +1149,24 @@ export default function Docs() {
     const willOpen = activeItem !== key
     toggleItem(key)
     if (willOpen) {
-      setSearchParams({ s: sectionId, i: String(itemIdx) }, { replace: true })
+      setSearchParams({ s: sectionId, i: String(itemIdx) }, { replace: false })
     } else {
-      setSearchParams({}, { replace: true })
+      setSearchParams({ view: 'reference' }, { replace: false })
     }
+  }
+
+  const lessonId = searchParams.get('lesson')
+  // A lesson query selects the new guided path. Legacy /docs?s=...&i=...
+  // links intentionally continue through the accordion below unchanged.
+  if (lessonId || (!searchParams.has('s') && !searchParams.has('i') && !searchParams.has('view'))) {
+    return (
+      <>
+        <PageHeader title="文档" description="从创建 Pod 到发布应用的学习路径">
+          <PageAiAssistant page="docs" context="13 节学习路径；参考文档与管理员导航保留" />
+        </PageHeader>
+        <LearningPath lessonId={lessonId ?? 'concepts'} canViewStaffDocs={canViewStaffDocs} />
+      </>
+    )
   }
 
   return (
@@ -1135,8 +1175,10 @@ export default function Docs() {
         <PageAiAssistant page="docs" context={`文档目录: ${visibleSections.length} 个章节\n${visibleSections.map(s => `  ${s.title}: ${s.items.map(i => i.title).join(', ')}`).join('\n')}`} />
       </PageHeader>
 
+      <nav aria-label="文档导航" className="mb-4 flex gap-4 text-sm text-accent"><Link to="/docs?lesson=concepts">学习路径</Link><Link to="/docs?view=reference">功能参考</Link>{canViewStaffDocs && <Link to="/docs?view=admin">管理员参考</Link>}</nav>
+      {searchParams.get("view") === "admin" && !canViewStaffDocs && <p role="status" className="mb-4 text-sm text-muted">管理员参考需要 infra.* / ops.* 或超级权限；请使用功能参考或学习路径。</p>}
       <div className="space-y-3">
-        {visibleSections.map((section) => (
+        {visibleSections.filter(section => searchParams.get('view') !== 'admin' || section.staffOnly).map((section) => (
           <Card key={section.id} padding="none">
             {/* Section header */}
             <button

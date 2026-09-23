@@ -426,6 +426,8 @@ def oauth_callback_ssemarket():
                 existing = users.get_user(username)
             # auto-bind so future logins recognize this identity
             users.bind_identity(username, "ssemarket", user_id, name, email, avatar)
+        users.sync_oauth_profile(username, "ssemarket", user_id, name, email, avatar)
+        existing = users.get_user(username)
 
         # log in
         ip = request.remote_addr or "unknown"
@@ -441,7 +443,7 @@ def oauth_callback_ssemarket():
         session["oauth_avatar"] = avatar
         session.permanent = True
         audit.record("login_oauth", detail=f"ssemarket:{username}({name}) ip={ip}")
-        return redirect("/")
+        return redirect("/console")
     except Exception as e:
         log = __import__("logging").getLogger("oauth2")
         log.exception("ssemarket OAuth2 callback error")
@@ -507,6 +509,8 @@ def oauth_callback_unisso():
                 existing = users.get_user(username)
             # auto-bind so future logins recognize this identity
             users.bind_identity(username, "unisso", user_id, name, email, avatar)
+        users.sync_oauth_profile(username, "unisso", user_id, name, email, avatar)
+        existing = users.get_user(username)
 
         # log in
         ip = request.remote_addr or "unknown"
@@ -522,7 +526,7 @@ def oauth_callback_unisso():
         session["oauth_avatar"] = avatar
         session.permanent = True
         audit.record("login_oauth", detail=f"unisso:{username}({name}) ip={ip}")
-        return redirect("/")
+        return redirect("/console")
     except Exception as e:
         log = __import__("logging").getLogger("oauth2")
         log.exception("unisso OAuth2 callback error")
