@@ -21,9 +21,11 @@ const lessonHref = (lesson: string) => `/docs?lesson=${encodeURIComponent(lesson
 // A short, task-based path. Targets are real controls; optional items disappear when
 // the current account or resource has no such capability.
 const guides: Record<string, Step[]> = {
-  '/': [
-    step('goto-/pods', '先找到 Pod', 'Pod 是你的开发环境。先打开 Pod 页面，查看已有环境或创建一个新的。', false, undefined, undefined, 'concepts'),
-    step('page-docs', '需要时查文档', '文档按任务组织；遇到权限、空列表或加载失败时，先看页面提示，不要猜测命令。', true, undefined, undefined, 'troubleshooting'),
+  '/console': [
+    step('goto-/pods', '先找到 Pod', 'Pod 是你的开发环境。点击 Pod 卡片进入管理页面，查看已有环境或创建一个新的。', false, undefined, undefined, 'concepts'),
+    step('goto-/infra', '查看基础设施', '基础设施页面展示主机、存储、数据库和代理映射的状态。从这里快速跳转到各管理子页面。', false, undefined, undefined, 'infra'),
+    step('goto-/dev/harness', '探索开发工具', '开发工具提供 Harness 测试、MCP 管理和 LLM 配置。需要相关权限才能访问。', true, undefined, undefined, 'dev'),
+    step('goto-/threat-map', '了解安全态势', '威胁地图展示实时的安全攻击事件。有 ops.threat 权限的用户可查看。', true, undefined, undefined, 'security'),
   ],
   '/pods': [
     step('pods-create', '选择并创建 Pod', 'Pod 是你的开发环境。填写名称和资源规格后提交；GPU、内存和存储按实际工作负载选择，创建结果会进入 Pod 详情。', false, 'pods-created', undefined, 'pod'),
@@ -44,9 +46,78 @@ const guides: Record<string, Step[]> = {
     docs('部署失败或服务异常时，先按恢复清单定位问题；健康检查是可选的，只有配置时才会参与条件回滚。', 'recovery'),
     docs('Webhook 自动部署需要显式选择分支；切换分支本身不会完成切换，还需要管理员配置回调。全局 secret 不会在指引中展示。', 'webhook'),
   ],
+  '/infra': [
+    step('goto-/infra/host', '查看主机监控', '主机页面显示各节点的 CPU、内存、负载和 GPU 状态。快速了解集群整体健康度。', false, undefined, undefined, 'infra'),
+    step('goto-/infra/storage', '管理对象存储', '存储页面管理 MinIO 桶和访问密钥。创建桶、生成端点密钥、管理共享策略。', false, undefined, undefined, 'storage'),
+    step('goto-/infra/databases', '管理数据库凭证', '数据库页面管理 MySQL 等数据服务的连接凭证。先创建凭证，再复制连接串到你的应用中使用。', false, undefined, undefined, 'database'),
+    step('goto-/infra/fleet', '查看集群图表', '集群页面展示所有主机的历史指标图表，包括 CPU、内存、负载和 GPU 详细数据。', true, undefined, undefined, 'infra'),
+    step('goto-/infra/proxy', '管理代理映射', '代理页面管理公网到内网服务的端口映射。添加映射后即可通过公网地址访问内网服务。', true, undefined, undefined, 'proxy'),
+  ],
+  '/infra/host': [
+    step('goto-/infra/fleet', '查看主机详情', '主机监控页面。切换到「集群」页面查看详细的历史指标图表。', false, undefined, undefined, 'infra'),
+  ],
+  '/infra/gpu': [
+    step('goto-/infra/fleet', '查看 GPU 详情', 'GPU 监控页面。切换到「集群」页面查看每块 GPU 的利用率、显存和温度曲线。', false, undefined, undefined, 'infra'),
+  ],
+  '/infra/fleet': [
+    step('fleet-view', '切换图表/表格', '在图表视图和表格视图之间切换。图表更直观，表格适合精确数值对比。', false, undefined, undefined, 'infra'),
+    step('fleet-host', '选择查看的主机', '点击卡片切换要查看的主机。选中的主机高亮显示，下方区域展示其详细指标。', false, undefined, undefined, 'infra'),
+    step('fleet-range', '调整时间范围', '选择历史数据的时间范围。范围越短数据越精细，范围越长越能观察趋势。', true, undefined, undefined, 'infra'),
+  ],
+  '/infra/storage': [
+    step('storage-create', '创建存储桶', '点击「创建桶」新建 MinIO 桶。桶用于存放文件和数据，创建后需要生成访问密钥才能使用。', false, undefined, undefined, 'storage'),
+    step('storage-endpoint', '查看端点信息', '页面显示 MinIO 的访问端点和连接方式。应用通过这些信息连接到存储服务。', false, undefined, undefined, 'storage'),
+    step('storage-key', '管理访问密钥', '为特定桶生成访问密钥（Access Key / Secret Key）。密钥只显示一次，创建后请立即保存。', true, undefined, undefined, 'storage'),
+  ],
+  '/infra/databases': [
+    step('db-create', '创建数据库凭证', '点击「创建凭证」生成新的数据库连接凭证。凭证包含用户名、密码和连接地址。', false, undefined, undefined, 'database'),
+    step('db-copy', '复制连接串', '创建凭证后点击「复制连接串」将完整的数据库连接信息复制到剪贴板，粘贴到你的应用配置中。', false, undefined, undefined, 'database'),
+  ],
+  '/infra/proxy': [
+    step('proxy-create', '添加代理映射', '点击「添加映射」将内网服务端口映射到公网。填写目标内网地址和端口，系统分配公网入口。', false, undefined, undefined, 'proxy'),
+  ],
+  '/dev': [
+    step('goto-/dev/harness', '使用测试工具', 'Harness 提供命令行和交互式测试环境。可以运行脚本、测试 API 和调试服务。', false, undefined, undefined, 'dev'),
+    step('goto-/dev/mcp', '管理 MCP 服务', 'MCP 管理页面查看和配置已连接的 Model Context Protocol 服务。添加新服务或测试现有连接。', true, undefined, undefined, 'dev'),
+    step('goto-/dev/llm', '配置 LLM 模型', 'LLM 页面管理可用的语言模型端点。添加模型提供方、配置 API key 和测试连通性。', true, undefined, undefined, 'dev'),
+  ],
+  '/dev/harness': [
+    step('harness-sessions', '查看会话列表', '会话列表显示所有已创建或正在运行的测试会话。点击可查看详情或重新连接。', false, undefined, undefined, 'dev'),
+    step('harness-session', '新建会话', '点击「新建会话」启动一个新的测试环境。填写名称和配置参数后提交。', false, undefined, undefined, 'dev'),
+  ],
+  '/dev/mcp': [
+    step('mcp-add', '添加 MCP 服务', '点击「添加」注册新的 MCP 服务。填写服务名称、端点和认证信息。', false, undefined, undefined, 'dev'),
+    step('mcp-test', '测试 MCP 连接', '添加后点击「测试」验证 MCP 服务是否可达。测试结果会显示连接状态和响应时间。', true, undefined, undefined, 'dev'),
+  ],
+  '/dev/llm': [
+    step('llm-add', '添加 LLM 端点', '点击「添加」配置新的 LLM 模型端点。填写提供商、模型名称和 API key。', false, undefined, undefined, 'dev'),
+    step('llm-test', '测试 LLM 连接', '添加后点击「测试」验证 LLM 端点是否可用。测试会发送简单请求并检查响应。', true, undefined, undefined, 'dev'),
+  ],
+  '/ops': [
+    step('goto-/ops/audit', '查看审计日志', '审计日志记录所有关键操作。用于追踪谁在什么时间做了什么变更。', false, undefined, undefined, 'ops'),
+    step('goto-/ops/shared', '管理共享空间', '共享存储页面管理团队共享的文件和目录。可以创建目录、上传文件和设置权限。', true, undefined, undefined, 'ops'),
+  ],
+  '/ops/audit': [
+    step('audit-export', '导出审计日志', '点击「导出」将当前筛选条件下的审计日志导出为 CSV 文件，便于离线分析和归档。', false, undefined, undefined, 'ops'),
+  ],
+  '/ops/shared': [
+    step('shared-mkdir', '新建目录', '点击「新目录」在共享空间中创建文件夹，用于组织和管理团队文件。', false, undefined, undefined, 'ops'),
+    step('shared-upload', '上传文件', '点击「上传」将本地文件上传到共享空间。上传的文件对团队内有权限的成员可见。', false, undefined, undefined, 'ops'),
+  ],
+  '/users': [
+    step('users-create', '创建用户', '点击「创建用户」添加新用户到平台。填写用户名、初始密码和角色后提交。', false, undefined, undefined, 'admin'),
+    step('users-token', '管理 API Token', '点击「管理 Token」查看或撤销已有 API 令牌。Token 用于程序化访问平台 API。', true, undefined, undefined, 'admin'),
+  ],
+  '/profile': [
+    step('profile-password', '修改密码', '点击「修改」更新你的登录密码。修改后下次登录请使用新密码。', false, undefined, undefined, 'concepts'),
+    step('profile-update', '检查更新', '点击「检查更新」查看平台是否有新版本可用。有更新时会显示版本号和更新内容。', true, undefined, undefined, 'concepts'),
+  ],
   '/docs': [
     step('docs-section', '按任务打开文档', '展开快速开始、Pod、连接与部署章节，优先阅读与你当前页面对应的条目。', false, undefined, undefined, 'concepts'),
-    step('docs-item', '核对页面实际能力', '文档不会承诺未在界面中暴露的连接、市场或云端操作；看到“未提供/未验证”时请按页面提示处理。', true, undefined, undefined, 'troubleshooting'),
+    step('docs-item', '核对页面实际能力', '文档不会承诺未在界面中暴露的连接、市场或云端操作；看到"未提供/未验证"时请按页面提示处理。', true, undefined, undefined, 'troubleshooting'),
+  ],
+  '/threat-map': [
+    step('goto-/ops/audit', '安全态势总览', '威胁地图展示实时攻击事件。配合审计日志可以全面了解平台安全状况。', false, undefined, undefined, 'security'),
   ],
 }
 

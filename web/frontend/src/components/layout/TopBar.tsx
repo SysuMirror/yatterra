@@ -16,7 +16,7 @@ export default function TopBar() {
   const isDesktop = useIsDesktop()
   const navigate = useNavigate()
   const { pathname } = useLocation()
-  const hasGuide = pathname === '/' || pathname === '/pods' || pathname === '/docs' || /^\/pods\/[^/]+$/.test(pathname)
+  const hasGuide = true
   const [notifOpen, setNotifOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [failedAvatar, setFailedAvatar] = useState<string | null>(null)
