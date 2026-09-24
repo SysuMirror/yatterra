@@ -26,20 +26,47 @@
 .terra-landing button:disabled { cursor: default; }
 .terra-landing :is(a, button):focus-visible { outline: 2px solid var(--terra-mint); outline-offset: 5px; }
 .terra-container { width: min(1320px, calc(100% - 96px)); margin-inline: auto; }
-.terra-landing .terra-main { height: auto; overflow: visible; scroll-padding-top: 100px; }
+.terra-landing .terra-main { height: auto; overflow: visible; scroll-padding-top: 100px; position: relative; z-index: 1; }
+.terra-landing > .terra-footer { position: relative; z-index: 1; }
 .terra-landing :is(a, button) { position: relative; z-index: 1; touch-action: manipulation; }
 .terra-skip { position: fixed; top: 10px; left: 20px; z-index: 120; padding: 10px 20px; background: var(--terra-mint); color: var(--terra-bg); transform: translateY(-160%); }
 .terra-skip:focus { transform: translateY(0); }
-.terra-header { position: sticky; top: 0; z-index: 50; border-bottom: 1px solid var(--terra-border); background: rgba(8, 15, 24, .92); backdrop-filter: blur(16px); }
+
+/* ── Dynamic background layer (aurora + particles + cursor spotlight) ── */
+.terra-bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.terra-bg-aurora { position: absolute; inset: 0; }
+.terra-orb { position: absolute; border-radius: 50%; will-change: transform; animation: terra-orb-drift 30s ease-in-out infinite; }
+.terra-orb-a { top: -14vw; left: -10vw; width: 52vw; height: 52vw; background: radial-gradient(circle at 40% 40%, rgba(103, 232, 208, .17), rgba(103, 232, 208, 0) 62%); }
+.terra-orb-b { top: 6vh; right: -16vw; width: 56vw; height: 56vw; background: radial-gradient(circle at 55% 45%, rgba(138, 180, 236, .15), rgba(138, 180, 236, 0) 62%); animation-duration: 38s; animation-delay: -9s; }
+.terra-orb-c { bottom: -18vw; left: 22vw; width: 48vw; height: 48vw; background: radial-gradient(circle at 50% 50%, rgba(196, 181, 253, .13), rgba(196, 181, 253, 0) 64%); animation-duration: 44s; animation-delay: -18s; }
+.terra-orb-d { top: 46vh; left: 6vw; width: 34vw; height: 34vw; background: radial-gradient(circle at 50% 50%, rgba(246, 200, 137, .1), rgba(246, 200, 137, 0) 66%); animation-duration: 34s; animation-delay: -4s; }
+@keyframes terra-orb-drift {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(5vw, -4vh, 0) scale(1.1); }
+  66% { transform: translate3d(-4vw, 3vh, 0) scale(.94); }
+  100% { transform: translate3d(2vw, 6vh, 0) scale(1.05); }
+}
+.terra-bg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.terra-bg-spot { position: absolute; top: 0; left: 0; width: 680px; height: 680px; border-radius: 50%; background: radial-gradient(circle, rgba(154, 235, 210, .075), rgba(138, 180, 236, .035) 42%, transparent 68%); opacity: 0; transition: opacity .7s ease; will-change: transform; }
+.terra-bg-noise { position: absolute; inset: 0; opacity: .4; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.045'/%3E%3C/svg%3E"); }
+@media (hover: none), (pointer: coarse) { .terra-bg-spot { display: none; } }
+
+/* Scroll progress line */
+.terra-scroll-progress { position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 60; transform-origin: 0 50%; background: linear-gradient(90deg, #67e8d0, #8ab4ec 55%, #c4b5fd); box-shadow: 0 0 12px rgba(154, 235, 210, .55); pointer-events: none; }
+
+.terra-header { position: sticky; top: 0; z-index: 50; border-bottom: 1px solid var(--terra-border); background: rgba(8, 15, 24, .92); backdrop-filter: blur(16px); transition: background .3s ease, border-color .3s ease, box-shadow .3s ease; }
+.terra-header.is-scrolled { background: rgba(7, 13, 21, .97); border-bottom-color: rgba(154, 235, 210, .16); box-shadow: 0 16px 44px rgba(0, 0, 0, .38); }
 .terra-header-inner { display: flex; align-items: center; justify-content: space-between; height: 82px; gap: 24px; }
 .terra-brand { display: inline-flex; align-items: center; gap: 12px; color: var(--terra-ink); font-size: 20px; font-weight: 650; letter-spacing: -.6px; }
 .terra-brand-mark { display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid #9aebd23b; border-radius: 12px; color: var(--terra-mint); background: #9aebd209; }
 .terra-brand small { display: block; margin-top: 3px; font-family: monospace; font-size: 8px; font-weight: 400; letter-spacing: 1.6px; color: var(--terra-muted); }
 .terra-header nav { display: flex; gap: 32px; }
 .terra-header nav a { color: #a4b5be; font-size: 13px; transition: color 180ms ease; }
-.terra-header-login { display: flex; align-items: center; gap: 16px; padding: 10px 17px; border: 1px solid #9aebd233; border-radius: 7px; color: var(--terra-mint); font-size: 12px; transition: background 180ms ease; }
-.terra-hero { position: relative; overflow: hidden; background: radial-gradient(ellipse at 80% 42%, #10333555, transparent 54%), radial-gradient(ellipse at 4% 2%, #162c4438, transparent 50%); }
-.terra-hero-grid { position: absolute; inset: 0; pointer-events: none; background-image: linear-gradient(#8fa5b005 1px, transparent 1px), linear-gradient(90deg, #8fa5b005 1px, transparent 1px); background-size: 72px 72px; mask-image: linear-gradient(black, transparent); }
+.terra-header nav a::after { content: ''; position: absolute; left: 0; right: 0; bottom: -7px; height: 1px; background: var(--terra-mint); transform: scaleX(0); transform-origin: right center; transition: transform .4s var(--terra-ease-out); }
+.terra-header-login { display: flex; align-items: center; gap: 16px; padding: 10px 17px; border: 1px solid #9aebd233; border-radius: 7px; color: var(--terra-mint); font-size: 12px; transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
+.terra-hero { position: relative; overflow: hidden; --hero-px: 0px; --hero-py: 0px; background: radial-gradient(ellipse at 80% 42%, #10333555, transparent 54%), radial-gradient(ellipse at 4% 2%, #162c4438, transparent 50%); }
+.terra-hero-grid { position: absolute; inset: -8%; pointer-events: none; background-image: linear-gradient(#8fa5b005 1px, transparent 1px), linear-gradient(90deg, #8fa5b005 1px, transparent 1px); background-size: 72px 72px; mask-image: linear-gradient(black, transparent); animation: terra-grid-pan 60s linear infinite; transform: translate(var(--hero-px), var(--hero-py)); transition: transform .6s var(--terra-ease-out); }
+@keyframes terra-grid-pan { to { background-position: 72px 72px, 72px 72px; } }
 .terra-hero-layout { position: relative; display: grid; grid-template-columns: .82fr 1.18fr; align-items: center; gap: 48px; padding-block: 72px 58px; }
 .terra-hero-copy { padding-block: 20px; }
 .terra-eyebrow { display: flex; align-items: center; gap: 10px; color: var(--terra-mint); font-family: 'SFMono-Regular', Consolas, monospace; font-size: 10px; font-weight: 500; letter-spacing: 1.8px; line-height: 1.7; }
@@ -48,13 +75,20 @@
 .terra-heading-accent { display: block; color: var(--terra-mint); }
 .terra-hero-description { max-width: 420px; margin-top: 24px; font-size: 14px; line-height: 2.05; color: var(--terra-muted); text-wrap: pretty; }
 .terra-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
-.terra-button { display: inline-flex; align-items: center; justify-content: center; gap: 20px; min-height: 46px; padding: 12px 20px; border: 1px solid transparent; border-radius: 7px; font-size: 13px; font-weight: 550; transition: background 180ms ease, border-color 180ms ease, transform 180ms var(--terra-ease-out); }
-.terra-button-primary { color: #0c2924; background: var(--terra-mint); }
+.terra-button { display: inline-flex; align-items: center; justify-content: center; gap: 20px; min-height: 46px; padding: 12px 20px; border: 1px solid transparent; border-radius: 7px; font-size: 13px; font-weight: 550; overflow: hidden; transform: translate(var(--pull-x, 0px), var(--pull-y, 0px)); transition: background 180ms ease, border-color 180ms ease, transform 320ms var(--terra-ease-out), box-shadow 320ms ease; }
+.terra-button::after { content: ''; position: absolute; top: -50%; bottom: -50%; width: 55%; left: var(--shine-x, -70%); transform: translateX(-120%) skewX(-18deg); background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .35), transparent); opacity: 0; pointer-events: none; transition: none; }
+.terra-button:hover::after { animation: terra-shine .85s ease forwards; }
+@keyframes terra-shine { 0% { opacity: 1; transform: translateX(-160%) skewX(-18deg); } 100% { opacity: 1; transform: translateX(320%) skewX(-18deg); } }
+.terra-button-primary { color: #0c2924; background: var(--terra-mint); box-shadow: 0 8px 26px -12px rgba(154, 235, 210, .6); }
+.terra-button-primary:hover { box-shadow: 0 14px 34px -12px rgba(154, 235, 210, .75); }
 .terra-button-secondary { color: #b7c8ce; border-color: var(--terra-border); background: #101d27; }
+.terra-button svg { transition: transform 320ms var(--terra-ease-out); }
+.terra-button:hover svg { transform: translateX(4px); }
 .terra-promises { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 30px; font-size: 11px; color: #789198; }
 .terra-promises span { display: inline-flex; align-items: center; gap: 6px; }
 .terra-promises svg { color: #80b5a8; }
 .terra-hero-visual { min-width: 0; }
+.terra-hero-visual > * { transform: translate(calc(var(--hero-px) * -.7), calc(var(--hero-py) * -.7)); transition: transform .6s var(--terra-ease-out); }
 .terra-topology { margin: 0; position: relative; overflow: hidden; border: 1px solid var(--terra-border); border-radius: 16px; background: linear-gradient(140deg, #101e2bc9, #0a192077); box-shadow: 0 25px 90px #00000020; }
 .terra-diagram-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 22px; border-bottom: 1px solid var(--terra-border); font-family: monospace; font-size: 9px; color: #708d9c; letter-spacing: 1.2px; }
 .terra-diagram-heading > span:first-child { display: flex; align-items: center; gap: 7px; color: #a0b9c2; }
@@ -73,8 +107,8 @@
 .terra-hero-bottom > div { display: flex; align-items: center; gap: 14px; font-family: monospace; color: #587783; font-size: 9px; letter-spacing: 1px; }
 .terra-bottom-line { height: 1px; width: 80px; background: linear-gradient(90deg, #67e8d099, #a5b4fc55); }
 .terra-motion-toggle { display: flex; align-items: center; gap: 7px; min-height: 32px; border: 1px solid var(--terra-border); border-radius: 5px; padding: 5px 10px; color: #8fa5b0; background: transparent; font-size: 10px !important; }
-.terra-section { padding: 104px 0; border-top: 1px solid var(--terra-border); scroll-margin-top: 100px; }
-.terra-section-tinted { background: #0b141f; }
+.terra-section { padding: 104px 0; border-top: 1px solid var(--terra-border); scroll-margin-top: 100px; position: relative; }
+.terra-section-tinted { background: linear-gradient(rgba(11, 20, 31, .88), rgba(11, 20, 31, .88)); backdrop-filter: blur(2px); }
 .terra-section-intro { display: grid; grid-template-columns: 1.1fr .9fr; gap: 80px; align-items: end; margin-bottom: 44px; }
 .terra-section h2 { margin-top: 20px; font-size: clamp(28px, 3.2vw, 42px); line-height: 1.5; font-weight: 550; letter-spacing: -1.5px; }
 .terra-section h2 span { color: #8298a1; }
@@ -88,9 +122,10 @@
 .terra-constraint-path { margin-top: 24px; padding-top: 17px; border-top: 1px solid var(--terra-border); color: #79a496; font-size: 10px; word-spacing: 7px; }
 .terra-architecture { border: 1px solid var(--terra-border); border-radius: 12px; overflow: hidden; background: #0c1723; }
 .terra-layer-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.terra-layer { display: block; text-align: left; min-width: 0; background: transparent; border: 0; border-right: 1px solid var(--terra-border); color: var(--terra-ink); padding: 22px 12px 24px; transition: background 180ms ease; }
+.terra-layer { display: block; text-align: left; min-width: 0; background: transparent; border: 0; border-right: 1px solid var(--terra-border); color: var(--terra-ink); padding: 22px 12px 24px; transition: background 180ms ease; overflow: hidden; }
 .terra-layer:last-child { border-right: 0; }
-.terra-layer[aria-pressed='true'] { background: #9aebd209; box-shadow: inset 0 -2px #9aebd2; }
+.terra-layer[aria-pressed='true'] { background: #9aebd209; }
+.terra-layer-underline { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--terra-mint), transparent); box-shadow: 0 0 12px rgba(154, 235, 210, .7); }
 .terra-layer:focus-visible { outline-offset: -5px !important; }
 .terra-layer-top { padding-inline: 10px; display: flex; justify-content: space-between; font-family: monospace; font-size: 10px; letter-spacing: 1px; }
 .terra-layer-top > span:first-child { color: #597281; }
@@ -99,13 +134,14 @@
 .terra-layer-bottom h3 { font-size: 19px; font-weight: 550; }
 .terra-layer-bottom p { font-size: 12px; color: #7e99a7; margin-top: 6px; }
 .terra-layer-bottom > svg { position: absolute; right: 10px; top: 8px; color: #6d9291; }
-.terra-layer-detail { display: flex; align-items: center; justify-content: space-between; gap: 30px; min-height: 110px; padding: 24px 30px; border-top: 1px solid var(--terra-border); background: #111f2a; }
-.terra-layer-detail > div:first-child { display: flex; align-items: center; gap: 22px; }
+.terra-layer-detail { position: relative; min-height: 110px; padding: 24px 30px; border-top: 1px solid var(--terra-border); background: #111f2a; overflow: hidden; }
+.terra-layer-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 30px; width: 100%; }
+.terra-layer-detail-row > div:first-child { display: flex; align-items: center; gap: 22px; }
 .terra-detail-number { font-family: monospace; font-size: 27px; font-weight: 300; }
 .terra-layer-detail p { max-width: 660px; color: #a2b6be; font-size: 13px; line-height: 1.9; }
 .terra-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .terra-tags > span { padding: 5px 9px; border: 1px solid var(--terra-border); border-radius: 4px; font-size: 10px; color: #91a9b3; white-space: nowrap; }
-.terra-layer-detail .terra-tags { flex-shrink: 0; max-width: 320px; justify-content: flex-end; }
+.terra-layer-detail-row .terra-tags { flex-shrink: 0; max-width: 320px; justify-content: flex-end; }
 .terra-control-rail { display: flex; align-items: center; gap: 9px; padding: 14px 27px; border-top: 1px solid var(--terra-border); font-size: 11px; color: #71938f; }
 .terra-rail-label { margin-left: auto; font-family: monospace; color: #4f6d7b; font-size: 9px; letter-spacing: 1.7px; }
 .terra-workflow { display: grid; grid-template-columns: .75fr 1.25fr; align-items: center; gap: 40px; margin-top: 26px; padding: 38px 42px; border: 1px solid var(--terra-border); border-radius: 12px; background: radial-gradient(ellipse at 65% 80%, #14283a6b, transparent 70%), #0c1723; }
@@ -119,8 +155,9 @@
 .terra-choice h3 { font-size: 21px; font-weight: 550; }
 .terra-choice p { flex: 1; margin-top: 16px; color: var(--terra-muted); font-size: 13px; line-height: 2; }
 .terra-choice-foot { display: flex; align-items: center; gap: 8px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--terra-border); color: #6f8a95; font-size: 11px; }
-.terra-choice-featured { background: linear-gradient(145deg, #1a3a3766, #101f2a); border-color: #9aebd25c; position: relative; }
-.terra-choice-featured::before { content: ''; position: absolute; top: -1px; left: 20%; right: 20%; height: 1px; background: linear-gradient(90deg, transparent, #9aebd2, transparent); }
+.terra-choice-featured { background: linear-gradient(145deg, #1a3a3766, #101f2a); border-color: #9aebd25c; position: relative; animation: terra-featured-pulse 4.5s ease-in-out infinite; }
+@keyframes terra-featured-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(154, 235, 210, 0); } 50% { box-shadow: 0 0 34px -8px rgba(154, 235, 210, .3); } }
+.terra-choice-featured::before { content: ''; position: absolute; top: 0; left: 20%; right: 20%; height: 1px; background: linear-gradient(90deg, transparent, #9aebd2, transparent); }
 .terra-choice-featured :is(.terra-choice-index, .terra-choice-foot, h3, svg) { color: var(--terra-mint); }
 .terra-scenario-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
 .terra-scenario { height: 100%; overflow: hidden; border: 1px solid var(--terra-border); border-radius: 10px; background: #0d1824; }
@@ -129,34 +166,69 @@
 .terra-scenario-copy { padding: 26px; border-top: 1px solid var(--terra-border); }
 .terra-scenario h3 { font-size: 20px; font-weight: 550; }
 .terra-scenario p { margin: 14px 0 24px; color: var(--terra-muted); font-size: 13px; line-height: 2; }
-.terra-closing { overflow: hidden; position: relative; padding: 86px 0 100px; text-align: center; border-block: 1px solid var(--terra-border); background: radial-gradient(ellipse at 50% 10%, #23483e4a, transparent 64%), #0b141d; }
+.terra-closing { overflow: hidden; position: relative; padding: 86px 0 100px; text-align: center; border-block: 1px solid var(--terra-border); background: radial-gradient(ellipse at 50% 10%, #23483e4a, transparent 64%), rgba(11, 20, 29, .82); }
 .terra-closing .terra-eyebrow { justify-content: center; margin-top: 28px; color: #77ad9c; }
 .terra-closing h2 { margin-top: 26px; font-size: clamp(28px, 3.4vw, 45px); font-weight: 500; letter-spacing: -1.4px; line-height: 1.55; }
 .terra-closing h2 span { color: var(--terra-mint); }
 .terra-closing-description { margin-top: 22px; font-size: 13px; line-height: 1.9; color: var(--terra-muted); }
 .terra-closing .terra-button { margin-top: 30px; }
 .terra-closing-symbol { position: relative; display: grid; place-items: center; width: 160px; height: 100px; margin: auto; color: var(--terra-mint); }
-.terra-closing-symbol span { position: absolute; inset: 0; border: 1px solid #9aebd225; border-radius: 50%; transform: rotate(-25deg); }
-.terra-closing-symbol span:nth-child(2) { inset: 8px 0; transform: rotate(25deg); }
+.terra-closing-symbol span { position: absolute; inset: 0; border: 1px solid #9aebd225; border-radius: 50%; transform: rotate(-25deg); animation: terra-orbit-spin 16s linear infinite; }
+.terra-closing-symbol span:nth-child(2) { inset: 8px 0; transform: rotate(25deg); animation-duration: 11s; animation-direction: reverse; }
+.terra-closing-symbol svg { animation: terra-orbit-pulse 3.4s ease-in-out infinite; }
+@keyframes terra-orbit-spin { to { transform: rotate(335deg); } }
+@keyframes terra-orbit-pulse { 0%, 100% { transform: scale(1); opacity: .85; } 50% { transform: scale(1.12); opacity: 1; } }
 .terra-footer { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding-block: 32px; font-size: 10px; color: #617d89; }
 .terra-footer .terra-brand { font-size: 17px; }
 .terra-packet { animation-duration: 4.8s; animation-timing-function: linear; animation-iteration-count: infinite; }
 .terra-light { animation: terra-light 3.2s ease infinite; }
 .terra-core-halo { transform-box: fill-box; transform-origin: center; animation: terra-halo 4.8s cubic-bezier(.77, 0, .175, 1) infinite; }
 .terra-scene[data-running='false'] :is(.terra-packet, .terra-light, .terra-core-halo),
-.terra-landing[data-paused='true'] :is(.terra-packet, .terra-light, .terra-core-halo) { animation-play-state: paused; }
+.terra-landing[data-paused='true'] :is(.terra-packet, .terra-light, .terra-core-halo, .terra-orb, .terra-hero-grid, .terra-closing-symbol span, .terra-closing-symbol svg, .terra-choice-featured, .terra-status-dot) { animation-play-state: paused; }
 @keyframes terra-light { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
 @keyframes terra-halo { 0%, 100% { transform: scale(.95); opacity: .4; } 50% { transform: scale(1.1); opacity: 1; } }
 
+/* Pulsing status dots */
+.terra-status-dot { animation: terra-dot-pulse 2.4s ease-in-out infinite; }
+.terra-explorer-status span { animation: terra-dot-pulse 2.4s ease-in-out infinite; }
+@keyframes terra-dot-pulse { 0%, 100% { box-shadow: 0 0 0 4px #9aebd20c; } 50% { box-shadow: 0 0 0 7px #9aebd218, 0 0 14px #9aebd266; } }
+
+/* ── Tilt cards: 3D hover + cursor glow ── */
+.terra-card-slot { height: 100%; }
+.terra-tilt { --tilt-x: 0deg; --tilt-y: 0deg; --glow-x: 50%; --glow-y: 50%; height: 100%; transform: perspective(1000px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y)); transform-style: preserve-3d; transition: transform .5s var(--terra-ease-out); will-change: transform; }
+.terra-tilt > :first-child { position: relative; overflow: hidden; height: 100%; }
+.terra-tilt > :first-child::after { content: ''; position: absolute; inset: 0; background: radial-gradient(360px circle at var(--glow-x) var(--glow-y), rgba(154, 235, 210, .12), transparent 62%); opacity: 0; transition: opacity .4s ease; pointer-events: none; }
+.terra-tilt:hover > :first-child::after { opacity: 1; }
+
+/* ── Explorer tab glow (framer layoutId target) ── */
+.terra-explorer-tabs button { position: relative; overflow: hidden; }
+.terra-tab-glow { position: absolute; inset: 0; border-radius: 10px; background: linear-gradient(135deg, rgba(154, 235, 210, .14), rgba(138, 180, 236, .08)); border: 1px solid rgba(154, 235, 210, .45); pointer-events: none; z-index: 0; }
+.terra-tab-label { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+
+/* ── Explorer panel (animated swap target) ── */
+.terra-explorer-panel { display: grid; grid-template-columns: .8fr 1.2fr; align-items: center; gap: 30px; width: 100%; }
+
+/* Scenario label arrow nudge */
+.terra-scenario-label span { transition: transform 320ms var(--terra-ease-out); }
+@media (hover: hover) and (pointer: fine) { .terra-scenario:hover .terra-scenario-label span { transform: translate(3px, -3px); } }
+
+/* Constraint path shimmer on hover */
+.terra-constraint-path { background: linear-gradient(90deg, #79a496, #79a496) no-repeat left center / 0 1px; transition: background-size .5s var(--terra-ease-out); }
+@media (hover: hover) and (pointer: fine) { .terra-constraint:hover .terra-constraint-path { background-size: 100% 1px; } }
+
 @media (hover: hover) and (pointer: fine) {
   .terra-header nav a:hover { color: var(--terra-mint); }
-  .terra-header-login:hover { background: #9aebd20d; }
-  .terra-button:hover { transform: translateY(-2px); }
+  .terra-header nav a:hover::after { transform: scaleX(1); transform-origin: left center; }
+  .terra-header-login:hover { background: #9aebd20d; border-color: #9aebd266; box-shadow: 0 0 22px -6px rgba(154, 235, 210, .4); }
+  .terra-button:hover { transform: translate(var(--pull-x, 0px), calc(var(--pull-y, 0px) - 2px)); }
   .terra-button-primary:hover { background: #b3f6e1; }
   .terra-button-secondary:hover { border-color: #9aebd266; background: #142833; }
   .terra-layer:hover { background: #9aebd20a; }
   .terra-motion-toggle:hover { color: var(--terra-ink); }
+  .terra-brand:hover .terra-brand-mark { transform: rotate(-8deg) scale(1.06); border-color: #9aebd277; box-shadow: 0 0 24px -6px rgba(154, 235, 210, .5); }
 }
+
+.terra-brand-mark { transition: transform 360ms var(--terra-ease-out), border-color 360ms ease, box-shadow 360ms ease; }
 
 @media (min-width: 1600px) { .terra-hero-layout { gap: 70px; } }
 @media (max-width: 1100px) {
@@ -164,8 +236,8 @@
   .terra-hero-layout { gap: 28px; padding-top: 52px; }
   .terra-hero h1 { font-size: 41px; }
   .terra-hero-description { font-size: 13px; }
-  .terra-layer-detail { align-items: flex-start; flex-direction: column; gap: 16px; }
-  .terra-layer-detail .terra-tags { max-width: none; justify-content: flex-start; padding-left: 55px; }
+  .terra-layer-detail-row { align-items: flex-start; flex-direction: column; gap: 16px; }
+  .terra-layer-detail-row .terra-tags { max-width: none; justify-content: flex-start; padding-left: 55px; }
   .terra-section-intro { gap: 40px; }
   .terra-constraint, .terra-choice { padding: 24px; }
   .terra-scenario-copy { padding: 22px; }
@@ -237,10 +309,10 @@
   .terra-layer-bottom p { font-size: 10px; }
   .terra-layer-bottom > svg { right: 4px; }
   .terra-layer-detail { min-height: 184px; padding: 22px 16px; }
-  .terra-layer-detail > div:first-child { align-items: flex-start; gap: 12px; }
+  .terra-layer-detail-row > div:first-child { align-items: flex-start; gap: 12px; }
   .terra-detail-number { font-size: 22px; }
   .terra-layer-detail p { font-size: 12px; }
-  .terra-layer-detail .terra-tags { padding-left: 0; gap: 5px; }
+  .terra-layer-detail-row .terra-tags { padding-left: 0; gap: 5px; }
   .terra-tags > span { font-size: 9px; padding: 4px 7px; }
   .terra-control-rail { padding: 14px; font-size: 10px; }
   .terra-workflow { grid-template-columns: 1fr; padding: 24px 22px 10px; gap: 24px; }
@@ -264,9 +336,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .terra-landing :is(.terra-packet, .terra-light, .terra-core-halo) { animation: none !important; }
+  .terra-landing :is(.terra-packet, .terra-light, .terra-core-halo, .terra-orb, .terra-hero-grid, .terra-closing-symbol span, .terra-closing-symbol svg, .terra-choice-featured, .terra-status-dot, .terra-explorer-status span) { animation: none !important; }
   .terra-packet { opacity: 0; }
   .terra-button:hover { transform: none; }
+  .terra-bg-spot { display: none; }
+  .terra-scroll-progress { display: none; }
+  .terra-tilt { transition: none; }
 }
 
 /* Narrative layers — the landing page moves from history to the missing layer. */
@@ -313,7 +388,7 @@
 .terra-explorer-tabs button:hover { color: var(--terra-ink); border-color: #9aebd226; transform: translateY(-2px); }
 .terra-explorer-tabs button.is-active { color: var(--terra-ink); border-color: #9aebd255; background: rgba(154,235,210,.08); box-shadow: inset 0 0 0 1px rgba(154,235,210,.06); }
 .terra-explorer-tabs small { color: #607984; font-family: monospace; font-size: 8px; letter-spacing: 1.1px; }
-.terra-explorer-body { display: grid; grid-template-columns: .8fr 1.2fr; align-items: center; gap: 30px; margin-top: 24px; padding: 24px; border-top: 1px solid rgba(138,172,188,.12); }
+.terra-explorer-body { margin-top: 24px; padding: 24px; border-top: 1px solid rgba(138,172,188,.12); overflow: hidden; }
 .terra-explorer-copy h4 { max-width: 420px; margin: 13px 0 12px; color: var(--terra-ink); font-size: clamp(22px, 2.7vw, 34px); font-weight: 600; letter-spacing: -1.2px; line-height: 1.3; }
 .terra-explorer-copy > p:not(.terra-eyebrow) { max-width: 430px; margin: 0; color: var(--terra-muted); font-size: 14px; line-height: 1.9; }
 .terra-explorer-nodes { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 22px; color: #b8cbc9; font-family: monospace; font-size: 10px; }
@@ -330,7 +405,8 @@
   .terra-explorer-tabs { gap: 5px; margin-top: 21px; }
   .terra-explorer-tabs button { min-height: 62px; padding: 11px 10px; font-size: 11px; }
   .terra-explorer-tabs small { font-size: 6px; letter-spacing: .4px; }
-  .terra-explorer-body { grid-template-columns: 1fr; gap: 10px; margin-top: 17px; padding: 20px 0 0; }
+  .terra-explorer-panel { grid-template-columns: 1fr; gap: 10px; }
+  .terra-explorer-body { margin-top: 17px; padding: 20px 0 0; }
   .terra-explorer-copy h4 { font-size: 25px; }
   .terra-explorer-copy > p:not(.terra-eyebrow) { font-size: 13px; }
   .terra-explorer-art { min-height: 145px; margin-top: -6px; }

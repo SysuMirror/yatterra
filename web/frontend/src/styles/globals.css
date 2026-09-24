@@ -155,6 +155,10 @@ body.landing-document {
   -webkit-overflow-scrolling: touch;
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  html.landing-document { scroll-behavior: smooth; }
+}
+
 /* Numeric data aligns in columns */
 .tnum,
 table td.num,
