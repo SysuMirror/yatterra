@@ -146,7 +146,7 @@ export default function PodDetail() {
             <DocHint section="pods" item={4} label="新手部署文档" onboardingTarget="page-docs" />
           </div>
           <p className="text-sm text-muted mt-0.5 truncate">
-            {pod?.owners?.[0] && `所有者: ${pod.owners[0]}`}{pod?.my_role && ` · 角色: ${pod.my_role === 'owner' ? '负责人' : pod.my_role}`}
+            {pod?.owners?.[0] && `所有者: ${pod?.labels?.[pod.owners[0]] || pod.owners[0]}`}{pod?.my_role && ` · 角色: ${pod.my_role === 'owner' ? '负责人' : pod.my_role}`}
           </p>
         </div>
 
@@ -163,7 +163,7 @@ export default function PodDetail() {
           <Button variant="secondary" size="sm" onClick={() => actOnPod('restart', '重启中')}>
             <RotateCw size={14} /> 重启
           </Button>
-          <PageAiAssistant page="pod" context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator ?? ''}` : ''} />
+          <PageAiAssistant page="pod" context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator_label ?? pod.creator ?? ''}` : ''} />
         </div>
       </div>
 
@@ -171,7 +171,7 @@ export default function PodDetail() {
         page="pod"
         title={`Pod ${name} 洞察`}
         className="mb-5"
-        context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator ?? ''}, 成员: ${(pod.members ?? []).join(', ')}, 角色: ${pod.my_role ?? ''}` : ''}
+        context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator_label ?? pod.creator ?? ''}, 成员: ${(pod.members ?? []).map((m: string) => pod.labels?.[m] || m).join(', ')}, 角色: ${pod.my_role ?? ''}` : ''}
       />
 
       <Tabs onboardingPrefix="pod-tab" tabs={tabDefs} active={activeTab} onChange={setActiveTab} className="mb-6" swipeable />

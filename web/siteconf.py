@@ -88,6 +88,17 @@ def public_url(port=None):
 
 PLATFORM_URL = _env("YATTERRA_PLATFORM_URL", public_url(PLATFORM_GUI_PORT))
 
+# Host the platform console is served under. The console has exactly ONE public
+# origin: cookies are scoped per host, so serving it on both `cloud.<domain>`
+# (443, via the nginx_proxy container) and `<domain>:24000` (via https-web.conf)
+# would split sessions — a login on one entry looks logged-out on the other.
+# Everything (OAuth redirect_uri, deploy REPORT_URL, PWA start_url) must agree.
+PLATFORM_HOST = _env("YATTERRA_PLATFORM_HOST", f"cloud.{DOMAIN}")
+
+# Canonical console URL — single origin, no explicit port.
+PLATFORM_CONSOLE_URL = _env("YATTERRA_PLATFORM_CONSOLE_URL",
+                            f"{PUBLIC_SCHEME}://{PLATFORM_HOST}")
+
 # --------------------------------------------------------------------------- #
 # Host data roots (hostPath volumes)
 # --------------------------------------------------------------------------- #
@@ -125,6 +136,20 @@ NGINX_SSL_KEY = _env("YATTERRA_NGINX_SSL_KEY",
 RESERVED_SUBDOMAINS = set(_list(
     "YATTERRA_RESERVED_SUBDOMAINS",
     ["www", "cloud", "sso", "admin"]))
+
+# Extra public entry hostnames (e.g. a Cloudflare Tunnel backup domain) that the
+# platform will accept as a valid origin when building OAuth redirect_uri values.
+# Comma-separated. Empty by default — the primary relay host is always allowed.
+EXTRA_PUBLIC_HOSTS = _list("YATTERRA_EXTRA_PUBLIC_HOSTS", [])
+
+# Domain attribute(s) for the session cookie, comma-separated. Cookies ignore
+# the port, so the registrable domain lets every console entry on the SAME
+# domain share one session — e.g. `cloud.<domain>` (443, nginx_proxy) and
+# `<domain>:24000` (https-web.conf) stop looking logged-out to each other.
+# Origins on a DIFFERENT registrable domain (e.g. a Cloudflare Tunnel backup
+# domain) still get their own session: a cookie can never span registrable
+# domains, and that is deliberate. Empty = host-only cookie (previous behaviour).
+SESSION_COOKIE_DOMAINS = _list("YATTERRA_SESSION_COOKIE_DOMAINS", [f".{DOMAIN}"])
 
 # --------------------------------------------------------------------------- #
 # Agent harnesses (per-user orchestration DAGs)

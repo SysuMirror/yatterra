@@ -63,6 +63,38 @@ YATERRA_BASE_URL = os.environ.get(
     "YATERRA_BASE_URL", siteconf.public_url(14000)
 )
 
+
+def request_base_url(request) -> str:
+    """Public base URL matching the current request's host.
+
+    The platform can be reached through more than one public origin (the relay
+    host and, optionally, a Cloudflare Tunnel backup domain). OAuth
+    ``redirect_uri`` must echo the host the user actually started from, so the
+    authorize and callback legs agree. Hosts outside the allow-list fall back to
+    the configured ``YATERRA_BASE_URL`` so a spoofed Host header can't redirect
+    users to an attacker-controlled origin.
+    """
+    host = (request.headers.get("X-Forwarded-Host") or request.host or "")
+    host = host.split(",")[0].strip()
+    scheme = (request.headers.get("X-Forwarded-Proto") or request.scheme or "https")
+    scheme = scheme.split(",")[0].strip()
+    allowed = {siteconf.PLATFORM_HOST, siteconf.PUBLIC_HOST}
+    allowed |= set(siteconf.EXTRA_PUBLIC_HOSTS)
+    if host and host in allowed:
+        return f"{scheme}://{host}"
+    return YATERRA_BASE_URL
+
+
+def current_base_url() -> str:
+    """Base URL for the in-flight request, or ``YATERRA_BASE_URL`` outside one."""
+    try:
+        from flask import has_request_context, request
+        if has_request_context():
+            return request_base_url(request)
+    except Exception:
+        pass
+    return YATERRA_BASE_URL
+
 # ---------------------------------------------------------------------------
 # In-memory state store  (good enough for single-worker gunicorn)
 # ---------------------------------------------------------------------------
@@ -125,7 +157,7 @@ def ssemarket_authorize_redirect(callback_path: str,
     intent: "login" (default) or "bind" (when binding from profile page).
     bind_username: required when intent="bind" — the yatterra user to bind to.
     """
-    redirect_uri = f"{YATERRA_BASE_URL}{callback_path}"
+    redirect_uri = f"{current_base_url()}{callback_path}"
     extra = {"intent": intent}
     if intent == "bind" and bind_username:
         extra["bind_username"] = bind_username
@@ -187,7 +219,7 @@ def unisso_authorize_redirect(callback_path: str,
     intent: "login" (default) or "bind" (when binding from profile page).
     bind_username: required when intent="bind" — the yatterra user to bind to.
     """
-    redirect_uri = f"{YATERRA_BASE_URL}{callback_path}"
+    redirect_uri = f"{current_base_url()}{callback_path}"
     verifier, challenge = _generate_pkce()
     extra = {"code_verifier": verifier, "intent": intent}
     if intent == "bind" and bind_username:

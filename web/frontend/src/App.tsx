@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
 import { Routes, Route, Outlet, useNavigate, useLocation } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import AuthLayout from './routes/_auth.layout'
@@ -55,13 +55,23 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation()
   const { isLoggedIn, login, logout } = useAuthStore()
 
-  const { data, isError } = useQuery({
+  const { data, isError, refetch } = useQuery({
     queryKey: ['auth-check'],
     queryFn: () => api.get<{ is_logged_in: boolean; user: string; user_id?: string | null; username?: string | null; display_name?: string | null; avatar_url?: string | null; display_source?: string | null; role: string; perms: string[] }>('/auth/me'),
     staleTime: 300_000,       // 5 min — don't re-check on every navigation
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,  // only re-check on network reconnect
+    retry: 1,                  // one retry absorbs a transient blip
+    retryDelay: 800,
   })
+
+  // Guards against a re-check loop when the server keeps saying "not logged in".
+  const recheckRef = useRef(false)
+  const leaveForLogin = useCallback(() => {
+    logout()
+    clearAppBadge()
+    if (location.pathname !== '/login') navigate('/login', { replace: true })
+  }, [logout, navigate, location.pathname])
 
   // Badge: poll for Pods that are currently down
   const { data: badgeData } = useQuery({
@@ -85,23 +95,52 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!data) return
+    const syncFrom = (d: NonNullable<typeof data>) =>
+      login(d.user, d.role || 'user', d.perms || [], { userId: d.user_id, username: d.username, displayName: d.display_name, avatarUrl: d.avatar_url, displaySource: d.display_source })
+
     if (data.is_logged_in) {
       // Always sync — cached localStorage perms may be stale (e.g. role
       // changed server-side); otherwise revoked perms keep rendering pages
       // that then 403 on every API call.
-      login(data.user, data.role || 'user', data.perms || [], { userId: data.user_id, username: data.username, displayName: data.display_name, avatarUrl: data.avatar_url, displaySource: data.display_source })
-    } else {
-      logout()
-      clearAppBadge()
-      if (location.pathname !== '/login') navigate('/login', { replace: true })
+      recheckRef.current = false
+      syncFrom(data)
+      return
     }
-  }, [data, isLoggedIn, login, logout, navigate, location.pathname])
+
+    // Not logged in. Never destroy the cached login on a single answer: the
+    // app is reachable through several public entries with independent
+    // session cookies, and a response can race a cookie that was just
+    // re-issued. Ask once more before believing it.
+    if (!isLoggedIn) {
+      leaveForLogin()
+      return
+    }
+    // Already re-asked once and still negative (recheckRef stays set until a
+    // successful login) — accept it instead of looping.
+    if (recheckRef.current) {
+      leaveForLogin()
+      return
+    }
+    recheckRef.current = true
+    refetch().then((r) => {
+      // refetch() resolves even on failure — only a successful answer counts.
+      if (r.status !== 'success') { recheckRef.current = false; return }
+      const fresh = r.data
+      if (fresh?.is_logged_in) syncFrom(fresh)
+      else leaveForLogin()
+    }).catch(() => {
+      // Network problem, not a verdict — keep the cached login.
+      recheckRef.current = false
+    })
+  }, [data, isLoggedIn, login, refetch, leaveForLogin])
 
   useEffect(() => {
+    // Only a hard 401 while we hold no cached login sends us to /login. Any
+    // other error (offline, 5xx, timeout) leaves the cached login alone.
     if (isError && !isLoggedIn && location.pathname !== '/login') {
-      navigate('/login', { replace: true })
+      leaveForLogin()
     }
-  }, [isError, isLoggedIn, navigate, location.pathname])
+  }, [isError, isLoggedIn, leaveForLogin, location.pathname])
 
   // If we have cached auth, render immediately (no "Checking auth…" screen)
   // If no cached auth and query hasn't returned yet, show minimal loader

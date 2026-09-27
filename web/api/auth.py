@@ -90,6 +90,9 @@ def _me_response():
         "user_id": u.get("user_id"),
         "username": u.get("username") or session.get("user"),
         "display_name": u.get("display_name") or session.get("oauth_name") or u.get("username") or session.get("user"),
+        "label": users.format_user_label(
+            u.get("username") or session.get("user"),
+            u.get("display_name") or session.get("oauth_name")),
         "avatar_url": u.get("avatar_url") or session.get("oauth_avatar") or "",
         "display_source": u.get("display_source") or session.get("oauth_provider") or "",
         "perms": _user_perms_list(),
@@ -263,7 +266,7 @@ def callback_ssemarket():
     intent = st.get("intent", "login")
 
     try:
-        redirect_uri = f"{oauth2_login.YATERRA_BASE_URL}/oauth/callback/ssemarket"
+        redirect_uri = f"{oauth2_login.request_base_url(request)}/oauth/callback/ssemarket"
         token_data = oauth2_login.ssemarket_exchange_code(code, redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
@@ -358,7 +361,7 @@ def callback_unisso():
     intent = st.get("intent", "login")
 
     try:
-        redirect_uri = f"{oauth2_login.YATERRA_BASE_URL}/oauth/callback/unisso"
+        redirect_uri = f"{oauth2_login.request_base_url(request)}/oauth/callback/unisso"
         token_data = oauth2_login.unisso_exchange_code(code, redirect_uri, code_verifier)
         access_token = token_data.get("access_token")
         if not access_token:

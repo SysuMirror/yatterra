@@ -110,7 +110,7 @@ export default function OpsAudit() {
     if (!items.length) return
     const lines = items.slice(0, 80).map((r: any) => {
       const ts = formatDatetime(r.ts || r.time)
-      return `[${ts}] ${r.action || r.type} (${r.actor || r.user}) ${r.detail || r.target || ''}`
+      return `[${ts}] ${r.action || r.type} (${r.actor_label || r.actor || r.user}) ${r.detail || r.target || ''}`
     })
     const prompt = `以下是平台最近的审计日志(${items.length} 条，已按时间倒序)。请总结：1) 近期主要操作和趋势 2) 是否有异常(登录失败、删除、错误) 3) 值得关注的运维建议。给出简洁中文总结，必要时可以跑 kubectl 等命令核实。\n\n${lines.join('\n')}`
     aiRef.current?.send(prompt)
@@ -119,7 +119,7 @@ export default function OpsAudit() {
   const handleExportCsv = () => {
     const header = '时间,操作者,操作,详情'
     const rows = items.map((r: any) =>
-      [formatDatetime(r.ts || r.time), r.actor || r.user, r.action || r.type, (r.detail || r.target || '').replace(/[,\n]/g, ' ')].join(',')
+      [formatDatetime(r.ts || r.time), r.actor_label || r.actor || r.user, r.action || r.type, (r.detail || r.target || '').replace(/[,\n]/g, ' ')].join(',')
     )
     const csv = [header, ...rows].join('\n')
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
@@ -135,7 +135,7 @@ export default function OpsAudit() {
         <div className="flex items-center gap-2">
           <Button data-onboarding-target="audit-export" variant="secondary" size="sm" disabled={!items.length} onClick={handleExportCsv}><Download size={14} /> 导出</Button>
           <Button variant="secondary" size="sm" disabled={!items.length} onClick={handleSummarize}>让运维助手总结</Button>
-          <PageAiAssistant page="audit" ref={aiRef} context={items.length > 0 ? `审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n最近事件:\n${items.slice(0, 15).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? ''}`).join('\n')}` : ''} />
+          <PageAiAssistant page="audit" ref={aiRef} context={items.length > 0 ? `审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n最近事件:\n${items.slice(0, 15).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor_label ?? r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? ''}`).join('\n')}` : ''} />
         </div>
       </PageHeader>
 
@@ -145,7 +145,7 @@ export default function OpsAudit() {
           page="audit"
           title="审计日志洞察"
           className="mb-5"
-          context={`审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n失败/删除: ${stats.failCount}, 登录: ${stats.loginCount}, 活跃用户: ${stats.uniqueUsers}\n操作分布: ${stats.actionDist.map(a => `${a.name}(${a.count})`).join(', ')}\n最近事件:\n${items.slice(0, 20).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? r.detail ?? ''}`).join('\n')}`}
+          context={`审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n失败/删除: ${stats.failCount}, 登录: ${stats.loginCount}, 活跃用户: ${stats.uniqueUsers}\n操作分布: ${stats.actionDist.map(a => `${a.name}(${a.count})`).join(', ')}\n最近事件:\n${items.slice(0, 20).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor_label ?? r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? r.detail ?? ''}`).join('\n')}`}
         />
       )}
 
@@ -268,9 +268,11 @@ export default function OpsAudit() {
               // Subsystem entries carry the module name as actor and put the
               // real operator in detail as `by=<user>`; render them distinctly.
               const isModule = MODULE_ACTORS.has(a)
+              // 人类操作者显示 昵称(sse_序号)，模块名保持原样
+              const shown = isModule ? a : (r.actor_label || a)
               return (
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="font-medium">{a}</span>
+                  <span className="font-medium">{shown}</span>
                   {isModule && <Badge variant="muted" className="text-[10px]">模块</Badge>}
                 </span>
               )

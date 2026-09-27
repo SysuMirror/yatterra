@@ -8,6 +8,7 @@ from middleware.error_handler import ApiError, bad_request, not_found, forbidden
 import llm_conf
 import llm_usage
 import audit
+import users
 
 from api._auth import require_auth, current_username, current_user_obj
 
@@ -118,10 +119,15 @@ def llm_usage_stats():
     component_out.sort(key=lambda x: -x["tokens"])
 
     # top_users: add tokens + cost aliases
+    _labels = users.user_labels(
+        [u.get("user") for u in top] + [c.get("user") for c in recent]
+        + [current_username() or ""])
     top_out = []
     for u in top:
+        uname = u.get("user", "?")
         top_out.append({
-            "user": u.get("user", "?"),
+            "user": uname,
+            "user_label": _labels.get(uname, uname),
             "tokens": u.get("total", 0),
             "total": u.get("total", 0),
             "prompt": u.get("prompt", 0),
@@ -129,6 +135,10 @@ def llm_usage_stats():
             "cost": _cost(u.get("prompt", 0), u.get("completion", 0)),
             "calls": u.get("calls", 0),
         })
+    for c in recent:
+        uname = c.get("user")
+        if uname:
+            c["user_label"] = _labels.get(uname, uname)
 
     return jsonify({
         **summary_out,

@@ -5,6 +5,7 @@ shlex_quote = shlex.quote
 from datetime import timedelta
 from flask import (Flask, request, redirect,
                    session, flash, Response, jsonify)
+from flask.sessions import SecureCookieSessionInterface
 from flask_socketio import SocketIO, emit
 from flask_compress import Compress
 import groups
@@ -57,9 +58,43 @@ app.secret_key = load_secret_key()
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = False  # served over frp http, not https
+app.config["SESSION_COOKIE_DOMAIN"] = (siteconf.SESSION_COOKIE_DOMAINS or [None])[0]
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 86400  # 1 day cache for /static/
 app.config["JSON_SORT_KEYS"] = False              # skip key sorting overhead
 app.permanent_session_lifetime = timedelta(days=7)
+
+
+class _HostAwareSessionInterface(SecureCookieSessionInterface):
+    """Send the session cookie on the widest domain that is safe for the host.
+
+    The console is reachable through several public entries. Entries that share
+    a registrable domain (``cloud.ssemarket.cn`` and ``ssemarket.cn:24000``)
+    should share one session, so they get ``Domain=.ssemarket.cn``. An entry on
+    an unrelated domain (a Cloudflare Tunnel backup host) must stay host-only —
+    a browser silently REJECTS a cookie whose Domain does not cover the origin
+    it came from, which would make that entry impossible to log into at all.
+    """
+
+    def get_cookie_domain(self, app, session=None):
+        try:
+            from flask import has_request_context, request
+        except Exception:  # pragma: no cover - import guard
+            return app.config.get("SESSION_COOKIE_DOMAIN")
+        if has_request_context():
+            host = (request.headers.get("X-Forwarded-Host") or request.host or "")
+            host = host.split(",")[0].strip().split(":")[0].lower()
+            for dom in siteconf.SESSION_COOKIE_DOMAINS:
+                d = dom.lower()
+                if host == d.lstrip(".") or host.endswith(d):
+                    return d
+            # Host is not under any shared domain (e.g. a Cloudflare Tunnel
+            # backup domain): keep the cookie host-only, never emit a Domain
+            # the browser would reject.
+            return None
+        return app.config.get("SESSION_COOKIE_DOMAIN")
+
+
+app.session_interface = _HostAwareSessionInterface()
 
 @app.after_request
 def _set_cache_headers(resp):
@@ -382,7 +417,7 @@ def oauth_callback_ssemarket():
         return redirect("/login?oauth_error=invalid_state")
     intent = st.get("intent", "login")
     try:
-        redirect_uri = f"{oauth2_login.YATERRA_BASE_URL}/oauth/callback/ssemarket"
+        redirect_uri = f"{oauth2_login.request_base_url(request)}/oauth/callback/ssemarket"
         token_data = oauth2_login.ssemarket_exchange_code(code, redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
@@ -466,7 +501,7 @@ def oauth_callback_unisso():
     code_verifier = st.get("code_verifier", "")
     intent = st.get("intent", "login")
     try:
-        redirect_uri = f"{oauth2_login.YATERRA_BASE_URL}/oauth/callback/unisso"
+        redirect_uri = f"{oauth2_login.request_base_url(request)}/oauth/callback/unisso"
         token_data = oauth2_login.unisso_exchange_code(code, redirect_uri, code_verifier)
         access_token = token_data.get("access_token")
         if not access_token:
@@ -647,8 +682,16 @@ def _sio_connect():
     # 建 PTY
     master, slave = pty.openpty()
     try:
+        # TERM must be set on the *remote* side: `kubectl exec -t` does not
+        # forward the local TERM, it hardcodes TERM=xterm (verified against
+        # k8s 1.3x), and this process has no controlling terminal anyway — so
+        # the shell would come up with a crippled TERM and drop all color
+        # (ls --color, PS1, git, …). `env TERM=… su -l cloud` survives the
+        # login shell, so the PTY gets a real 256-color terminal.
         proc = subprocess.Popen(
-            ['kubectl', '-n', groups.NS, 'exec', '-i', '-t', pod, '--', 'su', '-l', 'cloud'],
+            ['kubectl', '-n', groups.NS, 'exec', '-i', '-t', pod, '--',
+             'env', 'TERM=xterm-256color', 'COLORTERM=truecolor',
+             'su', '-l', 'cloud'],
             stdin=slave, stdout=slave, stderr=slave, close_fds=True,
         )
     finally:

@@ -54,6 +54,9 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
   const owners: string[] = data?.owners ?? []
   const members: string[] = (data?.members ?? []).filter((m: string) => !owners.includes(m))
   const pending: any[] = data?.pending ?? []
+  // username → "昵称(sse_1158)"; 操作仍用真实 username，只有显示走 label
+  const labels: Record<string, string> = data?.labels ?? {}
+  const lbl = (u: string) => labels[u] || u
 
   return (
     <div className="space-y-4">
@@ -70,13 +73,13 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
               const reason = p.reason ?? ''
               return (
                 <li key={u} className="flex items-center gap-3 flex-wrap">
-                  <span className="text-sm font-medium">{u}</span>
+                  <span className="text-sm font-medium">{lbl(u)}</span>
                   {reason && <span className="text-xs text-muted flex-1 min-w-0 truncate" title={reason}>“{reason}”</span>}
                   {canManage && <div className="flex items-center gap-1 ml-auto">
                     <Button variant="secondary" size="sm" disabled={approve.isPending} onClick={() => approve.mutate({ username: u, approved: true })} loading={approve.isPending && approve.variables?.username === u}>
                       <Check size={13} className="text-ok" /> 通过
                     </Button>
-                    <Button variant="ghost" size="sm" disabled={approve.isPending} onClick={() => { if (confirm(`拒绝 ${u} 的申请？`)) approve.mutate({ username: u, approved: false }) }}>
+                    <Button variant="ghost" size="sm" disabled={approve.isPending} onClick={() => { if (confirm(`拒绝 ${lbl(u)} 的申请？`)) approve.mutate({ username: u, approved: false }) }}>
                       <X size={13} />
                     </Button>
                   </div>}
@@ -101,12 +104,12 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
           {owners.map((u) => (
             <li key={u} className="flex items-center gap-2 py-1 text-sm group">
               <Badge variant="accent">Owner</Badge>
-              <span className="font-medium">{u}</span>
+              <span className="font-medium">{lbl(u)}</span>
               {canManage && owners.length > 1 && (
                 <button
-                  aria-label={`移除所有者 ${u}`}
+                  aria-label={`移除所有者 ${lbl(u)}`}
                   className="ml-auto opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
-                  onClick={() => { if (confirm(`移除所有者 ${u}？`)) remove.mutate({ kind: 'owner', u }) }}
+                  onClick={() => { if (confirm(`移除所有者 ${lbl(u)}？`)) remove.mutate({ kind: 'owner', u }) }}
                 >
                   <Trash2 size={13} />
                 </button>
@@ -136,12 +139,12 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
             {members.map((u) => (
               <li key={u} className="flex items-center gap-2 py-1 text-sm group">
                 <Badge variant="default">Member</Badge>
-                <span className="font-medium">{u}</span>
+                <span className="font-medium">{lbl(u)}</span>
                 {canManage && (
                   <button
-                    aria-label={`移除成员 ${u}`}
+                    aria-label={`移除成员 ${lbl(u)}`}
                     className="ml-auto opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
-                    onClick={() => { if (confirm(`移除成员 ${u}？`)) remove.mutate({ kind: 'member', u }) }}
+                    onClick={() => { if (confirm(`移除成员 ${lbl(u)}？`)) remove.mutate({ kind: 'member', u }) }}
                   >
                     <Trash2 size={13} />
                   </button>

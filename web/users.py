@@ -201,6 +201,17 @@ def _ensure_init():
                             "SET t.user_id=u.user_id WHERE t.user_id IS NULL")
                 cur.execute("UPDATE oauth_identities i JOIN users u ON u.username=i.username "
                             "SET i.user_id=u.user_id WHERE i.user_id IS NULL")
+                # Backfill display_name from a bound OAuth identity's provider
+                # name when the local projection is still the bare username
+                # (auto-provisioned sse_* accounts bound before nickname sync).
+                cur.execute(
+                    "UPDATE users u JOIN oauth_identities i ON i.user_id=u.user_id "
+                    "SET u.display_name=i.provider_name, "
+                    "    u.display_source=COALESCE(NULLIF(u.display_source,''), i.provider), "
+                    "    u.display_updated_at=NOW() "
+                    "WHERE i.provider_name <> '' "
+                    "  AND (u.display_name IS NULL OR u.display_name = '' OR u.display_name = u.username) "
+                    "  AND i.provider_name <> u.username")
                 # one-time migration from old JSON file
                 cur.execute("SELECT COUNT(*) AS n FROM users")
                 if cur.fetchone()["n"] == 0 and os.path.exists(OLD_USERS_FILE):
@@ -358,13 +369,63 @@ def can_pod(user, pod, level):
     return False
 
 
+# --- display labels ---
+# External logins (SSE Market) auto-provision usernames like ``sse_1158``.
+# Those are internal account ids, so everywhere we show a person we render
+# ``昵称(sse_1158)`` — nickname first, account id in parens — falling back to
+# the bare username when no distinct nickname is known.
+def format_user_label(username, display_name=None):
+    if not username:
+        return ""
+    username = str(username)
+    name = str(display_name or "").strip()
+    if name and name != username:
+        return f"{name}({username})"
+    return username
+
+
+def _display_names(usernames):
+    """Map username -> stored display_name for a batch of usernames."""
+    names = sorted({str(u) for u in (usernames or []) if u})
+    if not names:
+        return {}
+    _ensure_init()
+    placeholders = ",".join(["%s"] * len(names))
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            cur.execute(f"SELECT username, display_name FROM users WHERE username IN ({placeholders})",
+                        tuple(names))
+            return {r["username"]: (r.get("display_name") or "") for r in cur.fetchall()}
+
+
+def user_labels(usernames):
+    """Resolve ``{username: label}`` for a batch of usernames in one query.
+    Unknown usernames map to themselves so callers can render unconditionally."""
+    names = [str(u) for u in (usernames or []) if u]
+    dn = _display_names(names)
+    return {u: format_user_label(u, dn.get(u)) for u in names}
+
+
 # --- user CRUD ---
 def list_users():
     _ensure_init()
     with _conn() as cn:
         with cn.cursor() as cur:
-            cur.execute("SELECT user_id, username, role, display_name, avatar_url, display_source, status FROM users ORDER BY username")
-            return [dict(r) for r in cur.fetchall()]
+            # Fall back to a bound OAuth identity's name when the local
+            # display_name was never populated (accounts bound before the
+            # nickname-sync existed).
+            cur.execute(
+                "SELECT u.user_id, u.username, u.role, "
+                "COALESCE(NULLIF(u.display_name, ''), NULLIF(i.provider_name, ''), u.username) AS display_name, "
+                "u.avatar_url, u.display_source, u.status "
+                "FROM users u "
+                "LEFT JOIN (SELECT user_id, MAX(provider_name) AS provider_name "
+                "           FROM oauth_identities GROUP BY user_id) i ON i.user_id = u.user_id "
+                "ORDER BY u.username")
+            rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        r["label"] = format_user_label(r["username"], r.get("display_name"))
+    return rows
 
 
 def authenticate(username, password):
@@ -375,8 +436,10 @@ def authenticate(username, password):
                         (username,))
             r = cur.fetchone()
     if r and _verify_pw(password, r["password"]):
+        display_name = r.get("display_name") or r["username"]
         return {"user_id": r["user_id"], "username": r["username"], "role": r["role"],
-                "display_name": r.get("display_name") or r["username"],
+                "display_name": display_name,
+                "label": format_user_label(r["username"], display_name),
                 "avatar_url": r.get("avatar_url") or "", "display_source": r.get("display_source") or "", "status": r.get("status") or "active"}
     return None
 
@@ -413,7 +476,10 @@ def search_users_prefix(prefix, limit=10, excluded=()):
             for row in cur.fetchall():
                 item = {"username": row["username"]}
                 if row.get("user_id") is not None:
-                    item.update({"user_id": row["user_id"], "display_name": row.get("display_name") or row["username"], "avatar_url": row.get("avatar_url") or ""})
+                    dn = row.get("display_name") or row["username"]
+                    item.update({"user_id": row["user_id"], "display_name": dn,
+                                 "label": format_user_label(row["username"], dn),
+                                 "avatar_url": row.get("avatar_url") or ""})
                 result.append(item)
             return result
 
@@ -425,8 +491,10 @@ def get_user(username):
                         (username,))
             r = cur.fetchone()
     if r:
+        display_name = r.get("display_name") or r["username"]
         return {"user_id": r["user_id"], "username": r["username"], "role": r["role"],
-                "display_name": r.get("display_name") or r["username"],
+                "display_name": display_name,
+                "label": format_user_label(r["username"], display_name),
                 "avatar_url": r.get("avatar_url") or "", "display_source": r.get("display_source") or "", "status": r.get("status") or "active"}
     return None
 
@@ -603,6 +671,17 @@ def bind_identity(username, provider, provider_uid,
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (username, target.get("user_id"), provider, provider_uid, provider_name,
                  provider_email, provider_avatar))
+            # Keep the users-table display projection in sync on bind too, so a
+            # freshly bound account shows its nickname without a second login.
+            name = re.sub(r"[\x00-\x1f\x7f]", "", str(provider_name or "")).strip()[:128]
+            avatar = str(provider_avatar or "").strip()[:512]
+            if avatar and not avatar.startswith("https://"):
+                avatar = ""
+            cur.execute(
+                "UPDATE users SET display_name=%s, avatar_url=%s, display_source=%s, "
+                "display_updated_at=NOW() "
+                "WHERE username=%s AND (display_name IS NULL OR display_name='' OR display_name=username)",
+                (name or username, avatar, provider, username))
         cn.commit()
     return True, None
 

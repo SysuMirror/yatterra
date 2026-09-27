@@ -127,7 +127,7 @@ export default function DevLlm() {
           page="llm"
           title="LLM 用量洞察"
           className="mb-5"
-          context={`LLM Providers: ${providers.length} 个\n${providers.map((p: any) => `  ${p.name} [${p.type ?? p.model ?? '?'}] ${p.is_default ? '(默认)' : ''} ${p.enabled === false ? '(禁用)' : ''}`).join('\n')}\n用量: 总Token ${usage?.total_tokens ?? 0}, Prompt ${usage?.prompt_tokens ?? 0}, Completion ${usage?.completion_tokens ?? 0}, 费用 ¥${(usage?.total_cost ?? 0).toFixed(2)}\n${topUsers.length > 0 ? 'Top用户:\n' + topUsers.slice(0, 5).map((u: any) => `  ${u.user}: ${(u.tokens ?? 0).toLocaleString()} tokens, ¥${(u.cost ?? 0).toFixed(2)}`).join('\n') : ''}`}
+          context={`LLM Providers: ${providers.length} 个\n${providers.map((p: any) => `  ${p.name} [${p.type ?? p.model ?? '?'}] ${p.is_default ? '(默认)' : ''} ${p.enabled === false ? '(禁用)' : ''}`).join('\n')}\n用量: 总Token ${usage?.total_tokens ?? 0}, Prompt ${usage?.prompt_tokens ?? 0}, Completion ${usage?.completion_tokens ?? 0}, 费用 ¥${(usage?.total_cost ?? 0).toFixed(2)}\n${topUsers.length > 0 ? 'Top用户:\n' + topUsers.slice(0, 5).map((u: any) => `  ${u.user_label ?? u.user}: ${(u.tokens ?? 0).toLocaleString()} tokens, ¥${(u.cost ?? 0).toFixed(2)}`).join('\n') : ''}`}
         />
       )}
 
@@ -248,7 +248,7 @@ export default function DevLlm() {
             {topUsers.slice(0, 10).map((u: any, i: number) => (
               <div key={u.user ?? i} className="flex items-center gap-3 p-2 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <span className="text-xs text-muted w-5 text-right tnum">{i + 1}</span>
-                <span className="text-sm font-medium flex-1 min-w-0 truncate">{u.user}</span>
+                <span className="text-sm font-medium flex-1 min-w-0 truncate">{u.user_label || u.user}</span>
                 <span className="text-xs text-muted tnum">{(u.tokens ?? 0).toLocaleString()} tokens</span>
                 <span className="text-xs text-muted tnum">¥{(u.cost ?? 0).toFixed(2)}</span>
               </div>
@@ -268,7 +268,7 @@ export default function DevLlm() {
             {recent.slice(0, 20).map((r: any, i: number) => (
               <div key={i} className="flex items-center gap-3 p-2 rounded-lg hover:bg-black/[0.02] text-xs">
                 <span className="text-muted tnum w-[140px] flex-shrink-0">{formatDatetime(r.ts || r.time)}</span>
-                <span className="font-medium flex-1 min-w-0 truncate">{r.user || r.component || '—'}</span>
+                <span className="font-medium flex-1 min-w-0 truncate">{r.user_label || r.user || r.component || '—'}</span>
                 <Badge variant="muted" className="text-[10px]">{r.model || r.component || '-'}</Badge>
                 <span className="text-muted tnum">{(r.tokens ?? r.total_tokens ?? 0).toLocaleString()} tk</span>
               </div>

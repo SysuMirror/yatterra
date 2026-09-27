@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify
 from middleware.error_handler import bad_request
 
 import audit as audit_mod
+import users as users_mod
 
 from api._auth import require_auth
 
@@ -48,5 +49,13 @@ def audit_list():
 
     # Trim to requested limit after filtering
     entries = entries[:limit]
+
+    # Resolve actor usernames (sse_*) to "昵称(sse_序号)" for display. System
+    # actors (module=...) simply won't resolve and keep their raw name.
+    labels = users_mod.user_labels([e.get("actor") for e in entries])
+    for e in entries:
+        actor = e.get("actor")
+        if actor:
+            e["actor_label"] = labels.get(actor, actor)
 
     return jsonify({"entries": entries, "total": len(entries)})

@@ -217,7 +217,7 @@ export default function OpsOverview() {
                 <span className="text-xs text-muted tnum w-[140px] flex-shrink-0">
                   {formatDatetime(entry.ts || entry.time)}
                 </span>
-                <span className="text-sm font-medium flex-1 min-w-0 truncate">{entry.actor || entry.user}</span>
+                <span className="text-sm font-medium flex-1 min-w-0 truncate">{entry.actor_label || entry.actor || entry.user}</span>
                 <Badge variant={actionVariant(entry.action || entry.type)} className="text-[10px]">
                   {entry.action || entry.type}
                 </Badge>

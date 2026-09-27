@@ -99,7 +99,7 @@ export default function Users() {
     <>
       <PageHeader title="用户管理" description="系统用户与权限管理" count={users.length ? `${users.length} 人` : undefined} doc={{ section: 'ops', item: 1, label: '用户管理文档' }}>
         {canManage && <>
-          <PageAiAssistant page="users" context={users.length > 0 ? `用户总数: ${users.length}, 当前用户: ${data?.current ?? ''}\n${users.map((u: any) => `  ${u.name ?? u.username ?? u} [${u.role ?? '?'}]`).join('\n')}` : '暂无用户数据'} />
+          <PageAiAssistant page="users" context={users.length > 0 ? `用户总数: ${users.length}, 当前用户: ${data?.current ?? ''}\n${users.map((u: any) => `  ${u.label ?? u.name ?? u.username ?? u} [${u.role ?? '?'}]`).join('\n')}` : '暂无用户数据'} />
           <Button data-onboarding-target="users-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建用户</Button>
         </>}
       </PageHeader>
@@ -116,7 +116,7 @@ export default function Users() {
           page="users"
           title="用户管理洞察"
           className="mb-5"
-          context={`用户总数: ${users.length}, 当前用户: ${data?.current ?? ''}\n角色分布: ${['super','admin','owner','user','guest'].map(r => `${r}=${users.filter((u: any) => (u.role ?? 'user') === r).length}`).join(', ')}\n用户列表:\n${users.map((u: any) => `  ${u.name ?? u.username ?? u} [${u.role ?? '?'}]`).join('\n')}\nAPI Tokens: ${tokens?.length ?? 0} 个`}
+          context={`用户总数: ${users.length}, 当前用户: ${data?.current ?? ''}\n角色分布: ${['super','admin','owner','user','guest'].map(r => `${r}=${users.filter((u: any) => (u.role ?? 'user') === r).length}`).join(', ')}\n用户列表:\n${users.map((u: any) => `  ${u.label ?? u.name ?? u.username ?? u} [${u.role ?? '?'}]`).join('\n')}\nAPI Tokens: ${tokens?.length ?? 0} 个`}
         />
       )}
 
@@ -130,14 +130,15 @@ export default function Users() {
           columns={[
             { key: 'username', title: '用户名', sortable: true, render: (r: any) => {
               const name = r.username || r.user
-              const shown = r.display_name || name
+              // 昵称(sse_序号) — 外部登录账号用昵称优先显示，括号内保留真实账号
+              const shown = r.label || r.display_name || name
               const isCurrent = name === current
               return (
                 <div className="flex items-center gap-2">
                   <div className={`w-7 h-7 rounded-full flex items-center justify-center ${isCurrent ? 'bg-ok-bg' : 'bg-accent-light'}`}>
                     <User size={14} className={isCurrent ? 'text-ok' : 'text-accent'} />
                   </div>
-                  <span className="min-w-0"><span className="font-medium block truncate">{shown}</span>{shown !== name && <span className="text-xs text-muted block truncate">{name}</span>}</span>
+                  <span className="min-w-0"><span className="font-medium block truncate">{shown}</span>{r.display_name && r.display_name !== name && <span className="text-xs text-muted block truncate">{name}</span>}</span>
                   {isCurrent && <Badge variant="ok" className="text-[10px] px-1.5 py-0">你</Badge>}
                 </div>
               )

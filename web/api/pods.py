@@ -348,6 +348,9 @@ def list_pods():
             continue
         if status_filter and status_filter != st:
             continue
+        owners = pod.get("owners", [])
+        members = pod.get("members", [])
+        labels = users.user_labels(list(owners) + list(members))
         all_pods.append({
             "name": pname,
             "type": pod.get("type"),
@@ -356,9 +359,11 @@ def list_pods():
             "mem": pod.get("mem"),
             "storage": pod.get("storage"),
             "status": st,
-            "owners": pod.get("owners", []),
-            "members": pod.get("members", []),
+            "owners": owners,
+            "members": members,
             "pending": pod.get("pending", []),
+            "owner_labels": [labels.get(o, o) for o in owners],
+            "member_labels": [labels.get(m, m) for m in members],
             "my_role": role,
         })
 
@@ -409,6 +414,10 @@ def get_pod(name):
     grp_mk = [_minio_cred_card(k) for k in minio_mod.list_keys() if (k.get("label") or "").lower() == _gn]
     env = pod.get("env", {})
     deps = deploys.list_for(name)
+    _owners = pod.get("owners", [])
+    _members = pod.get("members", [])
+    _labels = users.user_labels(list(_owners) + list(_members)
+                                + [pod.get("creator", "")])
     return jsonify({
         "name": name,
         # connection info (was on the old SSR detail page, lost in SPA rewrite)
@@ -426,9 +435,12 @@ def get_pod(name):
         "mem": pod.get("mem"),
         "storage": pod.get("storage"),
         "status": st,
-        "owners": pod.get("owners", []),
-        "members": pod.get("members", []),
+        "owners": _owners,
+        "members": _members,
         "pending": pod.get("pending", []),
+        "labels": _labels,
+        "creator": pod.get("creator", ""),
+        "creator_label": _labels.get(pod.get("creator", ""), pod.get("creator", "")),
         "my_role": role,
         "password": pod.get("password", ""),
         "ssh_public": pod.get("ssh_public", 0),
@@ -1108,10 +1120,17 @@ def member_candidates(name):
 @api_pod("member")
 def list_members(name):
     pod = g.api_pod
+    owners = pod.get("owners", [])
+    members = pod.get("members", [])
+    pending = pod.get("pending", [])
+    pend_users = [p.get("username", "") for p in pending if isinstance(p, dict)]
+    labels = users.user_labels(list(owners) + list(members) + pend_users)
     return jsonify({
-        "owners": pod.get("owners", []),
-        "members": pod.get("members", []),
-        "pending": pod.get("pending", []),
+        "owners": owners,
+        "members": members,
+        "pending": pending,
+        # username -> "昵称(sse_1158)" for every principal above
+        "labels": labels,
     })
 
 

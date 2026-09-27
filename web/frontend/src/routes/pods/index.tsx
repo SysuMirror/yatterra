@@ -32,6 +32,8 @@ interface Pod {
   storage: string | number
   owners: string[]
   members: string[]
+  owner_labels?: string[]
+  member_labels?: string[]
   my_role: string
   type: string
   reason?: string
@@ -131,8 +133,8 @@ export default function PodList() {
       title: '负责人',
       width: 'minmax(80px, 1fr)',
       render: (p: Pod) => (
-        <span className="text-xs text-ink-2 truncate block max-w-[160px]" title={p.owners?.join('、')}>
-          {p.owners?.join('、') || '—'}
+        <span className="text-xs text-ink-2 truncate block max-w-[160px]" title={(p.owner_labels ?? p.owners)?.join('、')}>
+          {(p.owner_labels ?? p.owners)?.join('、') || '—'}
           {p.members?.length > 1 ? ` +${p.members.length - 1}` : ''}
         </span>
       ),
@@ -284,7 +286,7 @@ export default function PodList() {
               mem={typeof pod.mem === 'string' ? parseInt(pod.mem) || 0 : pod.mem}
               gpus={pod.gpus?.length ?? 0}
               storage={typeof pod.storage === 'string' ? parseInt(pod.storage) || 0 : pod.storage}
-              owner={pod.owners?.join('、') || pod.my_role || ''}
+              owner={(pod.owner_labels ?? pod.owners)?.join('、') || pod.my_role || ''}
               members={pod.members?.length}
               role={pod.my_role}
               reason={pod.reason}
