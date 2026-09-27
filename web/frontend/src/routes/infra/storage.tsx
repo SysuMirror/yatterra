@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { HardDrive, Plus, Trash2, Key, ExternalLink, Eye, EyeOff, FolderOpen } from 'lucide-react'
+import { HardDrive, Plus, Trash2, Key, Eye, EyeOff, FolderOpen } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -12,6 +12,7 @@ import { Dialog } from '@/components/ui/Dialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { CodeChip } from '@/components/ui/CodeChip'
+import { FileBrowser, type FileEntry } from '@/components/domain/FileBrowser'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 import { useAuth } from '@/hooks/useAuth'
@@ -70,6 +71,56 @@ client = Minio(
 )
 client.fput_object("授权的桶", "ckpt.bin", "/shared/weights/model.bin")`
 
+function toEntries(d: any): FileEntry[] {
+  const dirs = (d?.dirs ?? []).map((n: string) => ({ name: n, type: 'dir' as const }))
+  const files = (d?.files ?? []).map((f: any) => ({
+    name: f.name, type: 'file' as const, size: f.size, modified: f.modified,
+  }))
+  return [...dirs, ...files]
+}
+
+/** Browse a bucket's objects, expanding prefixes lazily. */
+function BucketBrowser({ bucket, onClose }: { bucket: string; onClose: () => void }) {
+  const q = encodeURIComponent(bucket)
+  const { data, isLoading, error } = useQuery<any>({
+    queryKey: ['infra-storage-objects', bucket],
+    queryFn: () => api.get(`/infra/storage/buckets/${q}/objects`),
+  })
+
+  const listPrefix = async (path: string): Promise<FileEntry[]> => {
+    const p = path.replace(/^\/+/, '')
+    const prefix = p ? `${p}/` : ''
+    const d: any = await api.get(`/infra/storage/buckets/${q}/objects?prefix=${encodeURIComponent(prefix)}`)
+    return toEntries(d)
+  }
+
+  const objectUrl = (path: string, download: boolean) => {
+    const key = path.replace(/^\/+/, '')
+    return `/api/infra/storage/buckets/${q}/object?key=${encodeURIComponent(key)}${download ? '&download=1' : ''}`
+  }
+
+  const entries = toEntries(data)
+
+  return (
+    <Dialog open onClose={onClose} title={`浏览：${bucket}`} description="点击目录展开，点击文件预览，⤓ 下载" width="max-w-2xl">
+      {isLoading ? (
+        <p className="text-sm text-muted py-8 text-center">加载中…</p>
+      ) : error ? (
+        <p className="text-sm text-bad py-8 text-center">{(error as any)?.message || '加载失败'}</p>
+      ) : entries.length === 0 ? (
+        <p className="text-sm text-muted py-8 text-center">（空桶）</p>
+      ) : (
+        <FileBrowser
+          entries={entries}
+          onExpand={listPrefix}
+          onOpen={(path) => window.open(objectUrl(path, false), '_blank', 'noopener')}
+          onDownload={(path) => window.open(objectUrl(path, true), '_blank', 'noopener')}
+        />
+      )}
+    </Dialog>
+  )
+}
+
 export default function InfraStorage() {
   const toast = useToastStore((s) => s.add)
   const { hasPerm } = useAuth()
@@ -82,6 +133,7 @@ export default function InfraStorage() {
   const [keyBucket, setKeyBucket] = useState('')
   const [keyPerm, setKeyPerm] = useState('readwrite')
   const [endpointCopied, setEndpointCopied] = useState(false)
+  const [browseBucket, setBrowseBucket] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['infra-storage'],
@@ -127,14 +179,6 @@ export default function InfraStorage() {
             <Button variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
             <Button data-onboarding-target="storage-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建桶</Button>
           </>}
-          <a
-            href="http://localhost:9001"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-ink-2 transition-colors duration-100 hover:bg-black/[0.04] active:bg-black/[0.06]"
-          >
-            <ExternalLink size={14} /> 控制台
-          </a>
         </div>
       </PageHeader>
 
@@ -210,7 +254,7 @@ export default function InfraStorage() {
                     <span className="font-medium text-sm truncate" title={name}>{name}</span>
                   </div>
                   <div className="flex gap-1 self-start">
-                    <Button variant="ghost" size="sm">
+                    <Button variant="ghost" size="sm" onClick={() => setBrowseBucket(name)}>
                       <FolderOpen size={12} /> 浏览
                     </Button>
                     {canManage && <Button variant="ghost" size="sm" onClick={() => { if (confirm(`删除桶 ${name}？桶内数据将丢失。`)) api.del(`/infra/storage/buckets/${name}`).then(() => { toast({ type: 'success', message: '桶已删除' }); qc.invalidateQueries({ queryKey: ['infra-storage'] }) }) }}>
@@ -315,6 +359,11 @@ export default function InfraStorage() {
             <code>{PYTHON_EXAMPLE}</code>
           </pre>
         </Card>
+      )}
+
+      {/* Bucket Browser */}
+      {browseBucket && (
+        <BucketBrowser bucket={browseBucket} onClose={() => setBrowseBucket(null)} />
       )}
 
       {/* Create Bucket Dialog */}

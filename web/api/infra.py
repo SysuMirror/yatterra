@@ -5,7 +5,8 @@ Host health, remote hosts, metrics, storage (MinIO), databases, proxy mappings.
 import json as _json
 import subprocess as _sp
 from importlib import import_module
-from flask import Blueprint, request, jsonify, g
+from urllib.parse import quote
+from flask import Blueprint, request, jsonify, g, Response, stream_with_context
 from middleware.error_handler import ApiError, not_found, bad_request
 
 import siteconf
@@ -249,6 +250,74 @@ def infra_storage_bucket_delete(name):
     try:
         minio_mod.remove_bucket(name, force=force)
         audit.record("api_bucket_delete", detail=name, actor=current_username() or "unknown")
+        return jsonify({"ok": True})
+    except Exception as e:
+        raise bad_request(str(e))
+
+
+@infra_bp.route("/storage/buckets/<name>/objects", methods=["GET"])
+@require_auth("infra.storage.read")
+def infra_storage_objects(name):
+    """List objects under a bucket prefix (non-recursive by default)."""
+    prefix = request.args.get("prefix", "")
+    recursive = request.args.get("recursive", "0") in ("1", "true", "yes")
+    try:
+        out = minio_mod.list_objects(name, prefix=prefix, recursive=recursive)
+        return jsonify({"ok": True, **out})
+    except Exception as e:
+        raise bad_request(str(e))
+
+
+@infra_bp.route("/storage/buckets/<name>/object", methods=["GET"])
+@require_auth("infra.storage.read")
+def infra_storage_object_get(name):
+    """Stream a single object through the platform.
+
+    Presigned URLs would point at the in-cluster ClusterIP, which a browser
+    cannot reach, so downloads are proxied here instead.
+    """
+    key = request.args.get("key", "")
+    if not key:
+        raise bad_request("Object key is required")
+    try:
+        resp, stat = minio_mod.get_object(name, key)
+    except Exception as e:
+        raise bad_request(str(e))
+
+    def _gen():
+        try:
+            for chunk in resp.stream(64 * 1024):
+                yield chunk
+        finally:
+            try:
+                resp.close()
+                resp.release_conn()
+            except Exception:
+                pass
+
+    filename = key.rstrip("/").rsplit("/", 1)[-1] or "download"
+    disposition = "attachment" if request.args.get("download") in ("1", "true", "yes") else "inline"
+    headers = {
+        "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
+        "Content-Length": str(stat.size),
+        "Cache-Control": "private, max-age=0, no-store",
+    }
+    return Response(stream_with_context(_gen()),
+                    mimetype=stat.content_type or "application/octet-stream",
+                    headers=headers)
+
+
+@infra_bp.route("/storage/buckets/<name>/object", methods=["DELETE"])
+@require_auth("infra.storage")
+def infra_storage_object_delete(name):
+    """Delete a single object from a bucket."""
+    key = request.args.get("key", "")
+    if not key:
+        raise bad_request("Object key is required")
+    try:
+        minio_mod.remove_object(name, key)
+        audit.record("api_object_delete", detail=f"{name}/{key}",
+                     actor=current_username() or "unknown")
         return jsonify({"ok": True})
     except Exception as e:
         raise bad_request(str(e))

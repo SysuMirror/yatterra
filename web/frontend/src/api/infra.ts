@@ -11,6 +11,12 @@ export const infraApi = {
   storageBuckets: {
     create: (name: string) => api.post('/infra/storage/buckets', { name }),
     delete: (name: string) => api.del(`/infra/storage/buckets/${name}`),
+    objects: (name: string, prefix = '', recursive = false) =>
+      api.get(`/infra/storage/buckets/${encodeURIComponent(name)}/objects?prefix=${encodeURIComponent(prefix)}${recursive ? '&recursive=1' : ''}`),
+    deleteObject: (name: string, key: string) =>
+      api.del(`/infra/storage/buckets/${encodeURIComponent(name)}/object?key=${encodeURIComponent(key)}`),
+    objectUrl: (name: string, key: string, download = false) =>
+      `/api/infra/storage/buckets/${encodeURIComponent(name)}/object?key=${encodeURIComponent(key)}${download ? '&download=1' : ''}`,
   },
   storageKeys: {
     create: (data: { bucket: string; perm: string }) => api.post('/infra/storage/keys', data),

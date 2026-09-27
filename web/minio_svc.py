@@ -220,6 +220,96 @@ def buckets():
         raise RuntimeError(f"列桶失败: {e}")
 
 
+def bucket_exists(name):
+    c = _client()
+    if not c:
+        return False
+    try:
+        return c.bucket_exists(name)
+    except Exception:
+        return False
+
+
+# --- object browsing (prefix-wise, like a filesystem) ---
+def _norm_prefix(prefix):
+    p = (prefix or "").lstrip("/")
+    return p
+
+
+def list_objects(bucket, prefix="", recursive=False):
+    """List a bucket prefix. Returns {prefix, dirs:[name], files:[{name,size,modified}]}.
+
+    Non-recursive listing uses '/' as a delimiter so nested prefixes surface
+    as dirs (mirrors the S3 console behaviour).
+    """
+    c = _client()
+    if not c:
+        raise RuntimeError("MinIO 未部署")
+    prefix = _norm_prefix(prefix)
+    dirs, files = [], []
+    try:
+        if recursive:
+            for o in c.list_objects(bucket, prefix=prefix, recursive=True):
+                name = o.object_name[len(prefix):]
+                if not name or name.endswith("/"):
+                    continue
+                files.append({
+                    "name": name,
+                    "size": o.size,
+                    "modified": o.last_modified.timestamp() if o.last_modified else None,
+                })
+        else:
+            for o in c.list_objects(bucket, prefix=prefix, recursive=False):
+                if o.is_dir:
+                    name = o.object_name[len(prefix):].rstrip("/")
+                    if name:
+                        dirs.append(name)
+                    continue
+                name = o.object_name[len(prefix):]
+                if not name:
+                    continue
+                files.append({
+                    "name": name,
+                    "size": o.size,
+                    "modified": o.last_modified.timestamp() if o.last_modified else None,
+                })
+    except Exception as e:
+        raise RuntimeError(f"列对象失败: {e}")
+    return {"prefix": prefix, "dirs": sorted(dirs), "files": files}
+
+
+def get_object(bucket, key):
+    """Return (response, stat) for a single object, for streamed download.
+
+    Caller must .close()/.release_conn() the response.
+    """
+    c = _client()
+    if not c:
+        raise RuntimeError("MinIO 未部署")
+    key = (key or "").lstrip("/")
+    if not key:
+        raise ValueError("对象名不能为空")
+    try:
+        stat = c.stat_object(bucket, key)
+        resp = c.get_object(bucket, key)
+        return resp, stat
+    except Exception as e:
+        raise RuntimeError(f"读取对象失败: {e}")
+
+
+def remove_object(bucket, key):
+    c = _client()
+    if not c:
+        raise RuntimeError("MinIO 未部署")
+    key = (key or "").lstrip("/")
+    if not key:
+        raise ValueError("对象名不能为空")
+    try:
+        c.remove_object(bucket, key)
+    except Exception as e:
+        raise RuntimeError(f"删除对象失败: {e}")
+
+
 def make_bucket(name):
     c = _client()
     if not c:
