@@ -2,8 +2,19 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Sparkles, Loader2, ChevronDown, ChevronUp, RefreshCw, MessageSquare, Send, StopCircle, X } from 'lucide-react'
 import { aiApi, streamAi } from '@/api/ai'
 import type { ToolCall, ToolResult } from '@/api/ai'
-import { MarkdownContent, InlineReasoning, ToolCallsBlock } from '@/components/ai'
-import type { ToolCallEntry } from '@/components/ai'
+import {
+  MarkdownContent,
+  InlineReasoning,
+  ToolCallsBlock,
+  appendText,
+  appendTool,
+  settleTool,
+  segmentsText,
+  segmentsReasoning,
+  segmentsTools,
+  fallbackSegments,
+} from '@/components/ai'
+import type { Segment, ToolCallEntry } from '@/components/ai'
 import { usePageAiAllowed } from '@/lib/pagePerms'
 
 interface Props {
@@ -31,6 +42,8 @@ interface ChatMsg {
   content: string
   reasoning?: string
   toolCalls?: ToolCallEntry[]
+  /** Arrival-ordered timeline of the stream (text / reasoning / tool runs). */
+  segments?: Segment[]
 }
 
 /**
@@ -176,9 +189,7 @@ export function AiInsightPanel({
     setAbortCtrl(ctrl)
 
     const history = chatMsgs.map(m => ({ role: m.role, content: m.content }))
-    let assistantContent = ''
-    let assistantReasoning = ''
-    let toolCalls: ToolCallEntry[] = []
+    let segments: Segment[] = []
 
     const updateAssistant = (updates: Partial<ChatMsg>) => {
       setChatMsgs(prev => {
@@ -194,6 +205,15 @@ export function AiInsightPanel({
       })
     }
 
+    const commit = () => {
+      updateAssistant({
+        content: segmentsText(segments),
+        reasoning: segmentsReasoning(segments),
+        toolCalls: segmentsTools(segments),
+        segments,
+      })
+    }
+
     try {
       for await (const ev of streamAi('/ai/page', {
         page,
@@ -203,19 +223,19 @@ export function AiInsightPanel({
       }, ctrl.signal)) {
         if (ctrl.signal.aborted) break
         if (ev.type === 'reasoning') {
-          assistantReasoning += ev.data as string
-          updateAssistant({ reasoning: assistantReasoning })
+          segments = appendText(segments, 'reasoning', ev.data as string)
+          commit()
         } else if (ev.type === 'content') {
-          assistantContent += ev.data as string
-          updateAssistant({ content: assistantContent, reasoning: assistantReasoning, toolCalls: [...toolCalls] })
+          segments = appendText(segments, 'text', ev.data as string)
+          commit()
         } else if (ev.type === 'tool_call') {
           const tc = ev.data as ToolCall
-          toolCalls = [...toolCalls, { id: tc.id, name: tc.name, args: tc.arguments, status: 'running' }]
-          updateAssistant({ content: assistantContent, reasoning: assistantReasoning, toolCalls: [...toolCalls] })
+          segments = appendTool(segments, { id: tc.id, name: tc.name, args: tc.arguments, status: 'running' })
+          commit()
         } else if (ev.type === 'tool_result') {
           const tr = ev.data as ToolResult
-          toolCalls = toolCalls.map(tc => tc.id === tr.tool_call_id ? { ...tc, result: tr.result, status: 'done' as const } : tc)
-          updateAssistant({ content: assistantContent, reasoning: assistantReasoning, toolCalls: [...toolCalls] })
+          segments = settleTool(segments, tr.tool_call_id, { result: tr.result, status: 'done' })
+          commit()
         }
       }
     } catch (e: any) {
@@ -325,9 +345,13 @@ export function AiInsightPanel({
                                 : 'rounded-lg bg-muted/10 px-2.5 py-1.5 text-sm max-w-[85%] space-y-1'
                             }
                           >
-                            {m.role === 'assistant' && m.reasoning && <InlineReasoning text={m.reasoning} />}
-                            {m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && <ToolCallsBlock calls={m.toolCalls} />}
-                            {m.content && (m.role === 'user' ? m.content : <MarkdownContent content={m.content} />)}
+                            {m.role === 'assistant'
+                              ? (m.segments?.length ? m.segments : fallbackSegments(m)).map((seg, j) =>
+                                  seg.kind === 'reasoning' ? <InlineReasoning key={j} text={seg.text} />
+                                    : seg.kind === 'tools' ? <ToolCallsBlock key={j} calls={seg.calls} />
+                                      : <MarkdownContent key={j} content={seg.text} />
+                                )
+                              : m.content}
                           </div>
                         </div>
                       ))}

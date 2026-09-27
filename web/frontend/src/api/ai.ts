@@ -50,6 +50,26 @@ export interface AiPageRequest {
   question: string
   context?: string
   stream?: boolean
+  /** Persisted conversation id; server loads history for it (per-user). */
+  session_id?: string
+}
+
+/** One persisted page-assistant conversation (per user, global list). */
+export interface PageSession {
+  id: string
+  title: string
+  page?: string | null
+  updated: number
+  created: number
+  preview: string
+  n: number
+}
+
+/** One stored turn as returned by /ai/page/session/load. */
+export interface PageSessionMessage {
+  role: 'user' | 'assistant'
+  content: string
+  ts: number
 }
 
 export type AiPageType =
@@ -118,6 +138,27 @@ export const aiApi = {
   /** Page-level AI assistant */
   page: (req: AiPageRequest) =>
     api.post<{ content: string }>('/ai/page', { ...req, stream: false }),
+
+  /** List the current user's page-assistant conversations (newest first) */
+  pageSessions: () =>
+    api.get<{ sessions: PageSession[] }>('/ai/page/sessions'),
+
+  /** Create a new page-assistant conversation */
+  newPageSession: (page?: string) =>
+    api.post<{ session_id: string }>('/ai/page/session/new', { page }),
+
+  /** Load one conversation's messages (ownership enforced server-side) */
+  loadPageSession: (id: string) =>
+    apiFetch<{ session_id: string; title: string; page?: string | null; messages: PageSessionMessage[] }>(
+      '/ai/page/session/load?id=' + encodeURIComponent(id)),
+
+  /** Rename a conversation */
+  renamePageSession: (id: string, title: string) =>
+    api.post<{ ok: boolean }>('/ai/page/session/rename', { id, title }),
+
+  /** Delete a conversation */
+  deletePageSession: (id: string) =>
+    api.post<{ ok: boolean }>('/ai/page/session/delete', { id }),
 
   /** Read pre-computed insight from Redis cache */
   getInsight: (page: string) =>

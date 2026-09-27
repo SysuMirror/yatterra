@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify, Response, stream_with_context, g
 from middleware.error_handler import ApiError, bad_request
 
 import ai_service
+import ai_chat_store
 import insight
 import kb_service
 
@@ -296,8 +297,17 @@ def ai_page():
                                       "message": f"Permission denied: {_req_perm}"}}), 403
 
     context = body.get("context", "")
-    history = body.get("history") or []
     images = body.get("images") or []  # base64 strings
+    session_id = (body.get("session_id") or "").strip()
+    username = current_username()
+    # History source of truth: when a session_id is given, load it server-side
+    # (per-user, untamperable). The client-supplied `history` is only a
+    # fallback for callers that don't use sessions yet.
+    if session_id:
+        ai_chat_store.require_session(session_id, username)
+        history = ai_chat_store.load_history(session_id, username)
+    else:
+        history = body.get("history") or []
 
     # Page-specific system prompts
     page_systems = {
@@ -352,9 +362,23 @@ def ai_page():
         messages.append({"role": "user", "content": question})
 
     if body.get("stream"):
-        return _sse_stream(
-            ai_service.stream_agent(messages, system=system, max_tokens=4096,
-                                    user=_user(), perms=g.api_user))
+        def _gen():
+            parts = []
+            try:
+                for kind, data in ai_service.stream_agent(
+                        messages, system=system, max_tokens=4096,
+                        user=_user(), perms=g.api_user):
+                    if kind == "content":
+                        parts.append(data)
+                    yield (kind, data)
+            finally:
+                if session_id:
+                    try:
+                        ai_chat_store.append_turn(session_id, username, question,
+                                                  "".join(parts))
+                    except Exception:
+                        pass
+        return _sse_stream(_gen())
 
     # Non-streaming: collect full response
     parts = []
@@ -362,7 +386,70 @@ def ai_page():
                                               user=_user(), perms=g.api_user):
         if kind == "content":
             parts.append(data)
-    return jsonify({"content": "".join(parts)})
+    answer = "".join(parts)
+    if session_id:
+        try:
+            ai_chat_store.append_turn(session_id, username, question, answer)
+        except Exception:
+            pass
+    return jsonify({"content": answer, "session_id": session_id or None})
+
+
+# ── Page assistant conversation history (per-user, MySQL) ──────
+@ai_bp.route("/page/sessions", methods=["GET"])
+@require_auth()
+def ai_page_sessions():
+    """List the current user's page-assistant conversations (newest first)."""
+    return jsonify({"sessions": ai_chat_store.list_sessions(current_username())})
+
+
+@ai_bp.route("/page/session/new", methods=["POST"])
+@require_auth()
+def ai_page_session_new():
+    """Create a new conversation for the current user."""
+    body = request.get_json(silent=True) or {}
+    sid = ai_chat_store.create_session(current_username(),
+                                       page=body.get("page"))
+    return jsonify({"session_id": sid}), 201
+
+
+@ai_bp.route("/page/session/load", methods=["GET"])
+@require_auth()
+def ai_page_session_load():
+    """Load one conversation's messages (ownership enforced → 404)."""
+    sid = request.args.get("id", "")
+    username = current_username()
+    s = ai_chat_store.require_session(sid, username)
+    return jsonify({
+        "session_id": sid,
+        "title": s.get("title", "新对话"),
+        "page": s.get("page"),
+        "messages": ai_chat_store.load_messages(sid, username),
+    })
+
+
+@ai_bp.route("/page/session/rename", methods=["POST"])
+@require_auth()
+def ai_page_session_rename():
+    body = request.get_json(silent=True) or {}
+    sid = (body.get("id") or "").strip()
+    if not sid:
+        raise bad_request("id is required")
+    username = current_username()
+    ai_chat_store.require_session(sid, username)
+    ai_chat_store.rename_session(sid, body.get("title", ""), username)
+    return jsonify({"ok": True})
+
+
+@ai_bp.route("/page/session/delete", methods=["POST", "DELETE"])
+@require_auth()
+def ai_page_session_delete():
+    body = request.get_json(silent=True) or {}
+    sid = (body.get("id") or "").strip()
+    username = current_username()
+    ai_chat_store.require_session(sid, username)
+    ai_chat_store.delete_session(sid, username)
+    return jsonify({"ok": True})
 
 
 # ── Pre-computed Insights ──────────────────────────────────────

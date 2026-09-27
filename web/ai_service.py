@@ -4,6 +4,7 @@ Wraps llm.chat / llm.stream_chat with task-specific prompts and post-processing.
 All calls go through the active LLM provider (Qwen on platform.ssemarket.cn).
 """
 import json
+import os
 import llm
 import siteconf
 
@@ -656,8 +657,20 @@ _POD_TARGET_TOOLS = {"get_pod", "pod_logs", "get_pod_events",
 # Host-command tools run as root on the server (shell_exec/read_file).
 # The guest role carries infra.host for *viewing* host health, but must not
 # get root shell/file access through the AI — enforce a minimum account role.
+# shell_exec/read_file/read of configmaps are root-equivalent (k3s.yaml, .env,
+# k8s Secrets), and there is no HTTP endpoint that grants them, so they are
+# floored at admin (rank 2) — tighter than any read-only perm.
 _ROLE_RANK = {"guest": 0, "user": 1, "admin": 2, "super": 3}
-_TOOL_MIN_ROLE = {"shell_exec": 1, "read_file": 1, "save_knowledge": 1}
+_TOOL_MIN_ROLE = {"shell_exec": 2, "read_file": 2, "get_configmaps": 2,
+                  "save_knowledge": 1}
+
+# Paths read_file must never return, even for admin: cluster admin kubeconfig,
+# platform secrets, and private keys. Matched as substring on the realpath.
+_READ_FILE_DENY = (
+    "k3s.yaml", "/opt/yatterra/.env", "db.conf", "/etc/shadow",
+    "/etc/rancher/", "id_rsa", "id_ed25519", ".ssh/", ".pem", ".key",
+    "/opt/yatterra/llm.conf", "/opt/yatterra/.env",
+)
 
 
 def _expand_perms(perms):
@@ -709,34 +722,107 @@ def tools_for(perms=None):
             if _tool_allowed(t["function"]["name"], p, user=u)]
 
 
+def _is_privileged(user):
+    """super/admin see every pod (mirrors users.pod_role's super/admin branch)."""
+    return isinstance(user, dict) and user.get("role") in ("super", "admin")
+
+
+def _visible_group_names(user):
+    """Group names `user` may see — same rule as api/pods.py list_pods.
+
+    A pod is visible iff users.pod_role(user, pod) is not None; super/admin
+    see everything (pod_role returns "owner" for them). Returns a set of
+    group names. Never raises — on failure returns an empty set (deny).
+    """
+    try:
+        import groups as groups_mod
+        import users as users_mod
+        pods = groups_mod.load_state()["groups"]
+    except Exception:
+        return set()
+    out = set()
+    for name, pod in pods.items():
+        try:
+            if users_mod.pod_role(user, pod):
+                out.add(name)
+        except Exception:
+            continue
+    return out
+
+
+def _resolve_target_group(target, user):
+    """Map a tool's `name` argument to a group name the caller may access.
+
+    Accepts either a group name ("mygroup") or a real k8s pod name
+    ("group-mygroup-<hash>-<suffix>"). Returns (group_name, error_str):
+    group_name is None when the target cannot be resolved to a group the
+    caller owns. This closes the old bypass where any non-group name fell
+    through to "platform infra pod → infra.host" (held by guest/user).
+    """
+    target = (target or "").strip()
+    if not target:
+        return None, "缺少 Pod 名称"
+    try:
+        import groups as groups_mod
+        import users as users_mod
+        pods = groups_mod.load_state()["groups"]
+    except Exception:
+        return None, "权限校验失败(无法加载组状态)"
+
+    group = target if target in pods else None
+    if group is None:
+        # reverse-resolve a k8s pod name → group (uses the warmed pod-name cache)
+        try:
+            for g, pname in groups_mod._pod_cache.get("pod_names", {}).items():
+                if pname == target:
+                    group = g
+                    break
+        except Exception:
+            group = None
+    if group is None:
+        # prefix match: group-<group>-<hash>-<suffix>
+        for g in pods:
+            if target.startswith(f"group-{g}-"):
+                group = g
+                break
+    if group is None:
+        # Not a group pod. Only super/admin may touch platform infra pods;
+        # everyone else is denied (HTTP /api/pods/<name> 404s non-group names).
+        if _is_privileged(user):
+            return None, None   # allowed, but no group scoping applies
+        return None, f"权限不足: 无权访问 {target} (非本组资源)"
+    try:
+        if users_mod.pod_role(user, pods[group]):
+            return group, None
+    except Exception:
+        pass
+    return None, f"权限不足: 无权访问 Pod {group} (需要组成员权限)"
+
+
+def _has_infra_proxy(user):
+    """True if user holds the global proxy-admin perm (mirrors infra.py)."""
+    if _is_privileged(user):
+        return True
+    try:
+        import users as users_mod
+        return users_mod.has_perm(user, "infra.proxy")
+    except Exception:
+        return False
+
+
 def _check_pod_access(arguments, user, perms):
     """Pod-targeted tools: caller must be member+ of the target pod.
 
-    Returns an error string, or None if allowed. Non-group pods
-    (platform infra) require infra.host. This is checked server-side
-    against the real user dict, so prompt injection cannot bypass it.
+    Returns an error string, or None if allowed. Resolves both group names
+    and real k8s pod names; anything else is denied unless super/admin.
+    Checked server-side against the real user dict, so prompt injection
+    cannot bypass it.
     """
     target = (arguments.get("name") or "").strip()
     if not target:
         return None
-    try:
-        import groups as groups_mod
-        pod = groups_mod.load_state()["groups"].get(target)
-    except Exception:
-        return "权限校验失败(无法加载组状态)"
-    if pod is None:
-        # not a group pod → platform infra pod, host-level access
-        if not ("*" in perms or "infra.host" in perms):
-            return f"权限不足: 无权查看非组资源 {target} (需要 infra.host)"
-        return None
-    # group pod → member+ access required
-    try:
-        import users as users_mod
-        if isinstance(user, dict) and users_mod.pod_role(user, pod):
-            return None
-    except Exception:
-        pass
-    return f"权限不足: 无权访问 Pod {target} (需要组成员权限)"
+    _group, err = _resolve_target_group(target, user)
+    return err
 
 
 # Safe command prefixes for shell_exec
@@ -787,16 +873,35 @@ def _execute_tool(name, arguments, user=None):
                 return denied
 
         if name == "list_pods":
-            r = subprocess.run(
-                ["kubectl", "get", "pods", "-o", "wide", "--no-headers"],
-                capture_output=True, text=True, timeout=10,
-            )
-            return r.stdout[:3000] if r.returncode == 0 else f"错误: {r.stderr[:500]}"
+            # Scoped to the caller's own groups — mirrors api/pods.py list_pods.
+            try:
+                import groups as groups_mod
+                import users as users_mod
+                pods = groups_mod.load_state()["groups"]
+            except Exception:
+                return "无法加载组状态"
+            lines = []
+            for gname, pod in pods.items():
+                role = users_mod.pod_role(user, pod)
+                if role is None:
+                    continue
+                lines.append(
+                    f"{gname}: 状态 {groups_mod.pod_status(gname)}, "
+                    f"GPU {pod.get('gpus', [])}, CPU {pod.get('cpu', '?')}, "
+                    f"内存 {pod.get('mem', '?')}, 我的角色 {role}")
+            return "\n".join(lines) if lines else "你暂无可见的 Pod"
 
         elif name == "get_pod":
-            pod_name = arguments.get("name", "")
+            _g, _err = _resolve_target_group(arguments.get("name", ""), user)
+            if _err:
+                return _err
+            if _g is None:
+                pod_name = arguments.get("name", "")
+            else:
+                import groups as groups_mod
+                pod_name = groups_mod.resolve_pod_name(_g) or _g
             r = subprocess.run(
-                ["kubectl", "get", "pod", pod_name, "-o", "json"],
+                ["kubectl", "get", "pod", pod_name, "-n", siteconf.GROUP_NS, "-o", "json"],
                 capture_output=True, text=True, timeout=10,
             )
             if r.returncode != 0:
@@ -821,10 +926,17 @@ def _execute_tool(name, arguments, user=None):
                 return r.stdout[:3000]
 
         elif name == "pod_logs":
-            pod_name = arguments.get("name", "")
+            _g, _err = _resolve_target_group(arguments.get("name", ""), user)
+            if _err:
+                return _err
+            if _g is None:
+                pod_name = arguments.get("name", "")
+            else:
+                import groups as groups_mod
+                pod_name = groups_mod.resolve_pod_name(_g) or _g
             tail = arguments.get("tail", 50)
             r = subprocess.run(
-                ["kubectl", "logs", pod_name, f"--tail={tail}"],
+                ["kubectl", "logs", pod_name, "-n", siteconf.GROUP_NS, f"--tail={tail}"],
                 capture_output=True, text=True, timeout=15,
             )
             output = r.stdout[:4000]
@@ -867,6 +979,10 @@ def _execute_tool(name, arguments, user=None):
             # Security: no path traversal
             if ".." in path or not path.startswith("/"):
                 return "安全限制: 仅允许绝对路径且不含 .."
+            # Sensitive-path denylist: kubeconfig, platform secrets, private keys.
+            _rp = os.path.realpath(path)
+            if any(d in _rp for d in _READ_FILE_DENY):
+                return "安全限制: 该路径属于敏感文件,禁止读取"
             try:
                 with open(path) as f:
                     return f.read(4000)
@@ -890,10 +1006,26 @@ def _execute_tool(name, arguments, user=None):
 
         elif name == "get_resource_usage":
             parts = []
-            r = subprocess.run(["kubectl", "top", "pods", "--sort-by=cpu", "--no-headers"],
+            r = subprocess.run(["kubectl", "top", "pods", "-n", siteconf.GROUP_NS,
+                                "--sort-by=cpu", "--no-headers"],
                                capture_output=True, text=True, timeout=10)
             if r.returncode == 0 and r.stdout.strip():
-                parts.append("Pod 资源占用排名(CPU):\n" + r.stdout[:2000])
+                visible = _visible_group_names(user)
+                rows = []
+                try:
+                    import groups as groups_mod
+                    groups_mod.all_pod_statuses()   # warm pod-name cache
+                    name_to_group = {pn: g for g, pn
+                                     in groups_mod._pod_cache.get("pod_names", {}).items()}
+                except Exception:
+                    name_to_group = {}
+                for line in r.stdout.splitlines():
+                    pname = line.split()[0] if line.split() else ""
+                    grp = name_to_group.get(pname)
+                    if grp in visible:
+                        rows.append(line)
+                if rows:
+                    parts.append("Pod 资源占用排名(CPU):\n" + "\n".join(rows)[:2000])
             r = subprocess.run(["kubectl", "top", "nodes", "--no-headers"],
                                capture_output=True, text=True, timeout=10)
             if r.returncode == 0 and r.stdout.strip():
@@ -975,7 +1107,14 @@ def _execute_tool(name, arguments, user=None):
                 return f"查询用户失败: {e}"
 
         elif name == "get_pod_events":
-            pname = arguments.get("name", "")
+            _g, _err = _resolve_target_group(arguments.get("name", ""), user)
+            if _err:
+                return _err
+            if _g is None:
+                pname = arguments.get("name", "")
+            else:
+                import groups as groups_mod
+                pname = groups_mod.resolve_pod_name(_g) or _g
             if not pname:
                 return "缺少 Pod 名称"
             out = subprocess.run(
@@ -1021,11 +1160,17 @@ def _execute_tool(name, arguments, user=None):
                 maps = proxy_map.list_mappings()
                 if not maps:
                     return "暂无代理映射"
+                # Non-admins only see mappings bound to their own pods —
+                # mirrors api/infra.py infra_proxy_list.
+                privileged = _is_privileged(user) or _has_infra_proxy(user)
+                if not privileged:
+                    visible = _visible_group_names(user)
+                    maps = [m for m in maps if m.get("pod") in visible]
                 lines = []
                 for m in maps:
                     en = "✓" if m.get("enabled", True) else "✗"
                     lines.append(f"  {m.get('subdomain', '?')} → :{m.get('port', '?')} [{en}] {m.get('note', '')}")
-                return "\n".join(lines)
+                return "\n".join(lines) if lines else "你暂无可见的代理映射"
             except Exception as e:
                 return f"查询代理失败: {e}"
 
@@ -1035,9 +1180,27 @@ def _execute_tool(name, arguments, user=None):
                 usage = gpu_stats.per_pod_usage()
                 if not usage:
                     return "暂无 Pod GPU 使用数据"
+                visible = _visible_group_names(user)
+                try:
+                    import groups as groups_mod
+                    groups_mod.all_pod_statuses()   # warm pod-name cache
+                    name_to_group = {pn: g for g, pn
+                                     in groups_mod._pod_cache.get("pod_names", {}).items()}
+                except Exception:
+                    name_to_group = {}
+
+                def _allowed(pod_key):
+                    grp = name_to_group.get(pod_key)
+                    if grp is None:
+                        # key may already be a group name
+                        grp = pod_key if pod_key in visible else None
+                    return grp in visible
+
                 lines = []
                 if isinstance(usage, dict):
                     for pod, info in usage.items():
+                        if not _allowed(pod):
+                            continue
                         if isinstance(info, dict):
                             # {gpu_id: mem_used_mb}
                             for gpu_id, mem in info.items():
@@ -1053,6 +1216,8 @@ def _execute_tool(name, arguments, user=None):
                 elif isinstance(usage, list):
                     for u in usage:
                         if isinstance(u, dict):
+                            if not _allowed(u.get("pod", "")):
+                                continue
                             lines.append(f"  {u.get('pod', '?')}: GPU {u.get('gpu', u.get('gpu_id', '?'))}, 显存 {u.get('mem_used', '?')}/{u.get('mem_total', '?')} MB")
                         else:
                             lines.append(f"  {u}")
@@ -1219,13 +1384,19 @@ def _execute_tool(name, arguments, user=None):
                 elif isinstance(day_data, dict):
                     for k, v in list(day_data.items())[:days]:
                         lines.append(f"  {k}: {v}")
-                # Top users
+                # Top users — only super/admin may see the cross-user board.
+                # Everyone else sees their own usage only (no HTTP endpoint
+                # exposes platform-wide top users to non-admins).
+                caller = (user or {}).get("username") if isinstance(user, dict) else None
                 top = llm_usage.top_users(days=days, limit=10)
                 lines.append(f"\n=== Top 用户 ===")
                 if isinstance(top, list):
                     for u in top[:10]:
                         if isinstance(u, dict):
-                            lines.append(f"  {u.get('user', u.get('username', '?'))}: {u.get('total', u.get('tokens', '?'))} tokens, {u.get('calls', '?')} calls")
+                            uname = u.get("user", u.get("username", "?"))
+                            if not _is_privileged(user) and uname != caller:
+                                continue
+                            lines.append(f"  {uname}: {u.get('total', u.get('tokens', '?'))} tokens, {u.get('calls', '?')} calls")
                         else:
                             lines.append(f"  {u}")
                 # Component breakdown
@@ -1243,13 +1414,16 @@ def _execute_tool(name, arguments, user=None):
 
         elif name == "get_agent_sessions":
             mode = arguments.get("mode", "")
+            caller = (user or {}).get("username") if isinstance(user, dict) else None
             try:
                 import agent_runs
                 lines = []
                 modes = [mode] if mode else ["ops", "build", "db", "storage", "net", "gpu", "web", "train"]
                 for m in modes:
                     try:
-                        sessions = agent_runs.list_sessions(m)
+                        # Scope to the caller — the HTTP endpoint
+                        # (api/agents.py agents_sessions) does the same.
+                        sessions = agent_runs.list_sessions(m, caller)
                         if sessions:
                             lines.append(f"=== {m} ===")
                             if isinstance(sessions, list):
@@ -1266,10 +1440,13 @@ def _execute_tool(name, arguments, user=None):
 
         elif name == "get_deploy_tasks":
             group = arguments.get("group", "")
+            visible = _visible_group_names(user)
             try:
                 import deploys
                 lines = []
                 if group:
+                    if group not in visible:
+                        return f"权限不足: 无权查看组 {group} 的部署任务"
                     tasks = deploys.list_for(group)
                     lines.append(f"=== 组 {group} 的部署任务 ===")
                     if isinstance(tasks, list):
@@ -1283,6 +1460,8 @@ def _execute_tool(name, arguments, user=None):
                     lines.append("=== 所有部署任务 ===")
                     if isinstance(state, dict):
                         for g, tasks in state.items():
+                            if g not in visible:
+                                continue
                             if isinstance(tasks, list):
                                 lines.append(f"  组 {g}: {len(tasks)} 个任务")
                                 for t in tasks[:5]:
@@ -1299,6 +1478,7 @@ def _execute_tool(name, arguments, user=None):
             try:
                 import groups as groups_mod
                 state = groups_mod.load_state()
+                visible = _visible_group_names(user)
                 lines = []
                 if isinstance(state, dict):
                     groups_list = state.get("groups", state)
@@ -1306,6 +1486,8 @@ def _execute_tool(name, arguments, user=None):
                         for g in groups_list:
                             if isinstance(g, dict):
                                 name = g.get("name", g.get("group", "?"))
+                                if name not in visible:
+                                    continue
                                 members = g.get("members", [])
                                 gpu = g.get("gpu_ids", g.get("gpus", []))
                                 cpu = g.get("cpu", g.get("millicpu", "?"))
@@ -1313,24 +1495,24 @@ def _execute_tool(name, arguments, user=None):
                                 lines.append(f"  {name}: 成员 {len(members) if isinstance(members, list) else members}, GPU {gpu}, CPU {cpu}, 内存 {mem}")
                     elif isinstance(groups_list, dict):
                         for name, g in groups_list.items():
+                            if name not in visible:
+                                continue
                             if isinstance(g, dict):
                                 members = g.get("members", [])
                                 gpu = g.get("gpu_ids", g.get("gpus", []))
                                 lines.append(f"  {name}: 成员 {len(members) if isinstance(members, list) else members}, GPU {gpu}")
-                # Pod statuses
+                # Pod statuses (only visible groups)
                 try:
                     statuses = groups_mod.all_pod_statuses()
-                    if statuses:
-                        lines.append("\n=== Pod 状态 ===")
-                        if isinstance(statuses, list):
-                            for s in statuses[:20]:
-                                if isinstance(s, dict):
-                                    lines.append(f"  {s.get('name', '?')}: {s.get('phase', s.get('status', '?'))}")
-                                else:
-                                    lines.append(f"  {s}")
+                    if isinstance(statuses, dict):
+                        rows = [f"  {sname}: {phase}" for sname, phase
+                                in statuses.items() if sname in visible]
+                        if rows:
+                            lines.append("\n=== Pod 状态 ===")
+                            lines.extend(rows)
                 except Exception:
                     pass
-                return "\n".join(lines) if lines else "暂无组"
+                return "\n".join(lines) if lines else "你暂无可见的组"
             except Exception as e:
                 return f"查询组失败: {e}"
 
@@ -1450,7 +1632,14 @@ def _execute_tool(name, arguments, user=None):
                 return f"查询远程主机失败: {e}"
 
         elif name == "get_pod_env":
-            pname = arguments.get("name", "")
+            _g, _err = _resolve_target_group(arguments.get("name", ""), user)
+            if _err:
+                return _err
+            if _g is None:
+                pname = arguments.get("name", "")
+            else:
+                import groups as groups_mod
+                pname = groups_mod.resolve_pod_name(_g) or _g
             if not pname:
                 return "缺少 Pod 名称"
             try:

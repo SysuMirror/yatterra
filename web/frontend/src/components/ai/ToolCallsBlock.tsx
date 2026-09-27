@@ -40,36 +40,51 @@ const TOOL_LABELS: Record<string, string> = {
   shell_exec: '执行命令',
 }
 
+function StatusIcon({ status }: { status: ToolCallEntry['status'] }) {
+  if (status === 'running') return <Loader2 size={13} className="animate-spin text-accent" />
+  if (status === 'done') return <CheckCircle2 size={13} className="text-ok" />
+  return <AlertCircle size={13} className="text-bad" />
+}
+
 export function ToolCallsBlock({ calls }: { calls: ToolCallEntry[] }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   if (!calls?.length) return null
   return (
-    <div className="space-y-1 mb-1.5">
+    <div className="my-1.5 space-y-1">
       {calls.map((tc) => {
         const isOpen = expanded[tc.id] ?? false
         const label = TOOL_LABELS[tc.name] || tc.name
         const argStr = Object.entries(tc.args)
           .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
           .join(' ')
+        const expandable = Boolean(tc.result) || Boolean(argStr)
         return (
-          <div key={tc.id} className="rounded-lg bg-slate-50 border border-slate-200/60 overflow-hidden">
+          <div
+            key={tc.id}
+            className="rounded-lg bg-surface-2 border border-black/[0.06] border-l-2 border-l-accent/50 overflow-hidden"
+          >
             <button
-              onClick={() => setExpanded((p) => ({ ...p, [tc.id]: !p[tc.id] }))}
-              className="flex items-center gap-1.5 w-full px-2.5 py-1.5 text-xs hover:bg-slate-100 transition-colors"
+              type="button"
+              onClick={() => expandable && setExpanded((p) => ({ ...p, [tc.id]: !p[tc.id] }))}
+              disabled={!expandable}
+              className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs transition-colors enabled:hover:bg-black/[0.04] disabled:cursor-default"
             >
-              {tc.status === 'running' ? (
-                <Loader2 size={13} className="animate-spin text-blue-500" />
-              ) : tc.status === 'done' ? (
-                <CheckCircle2 size={13} className="text-emerald-500" />
-              ) : (
-                <AlertCircle size={13} className="text-red-500" />
+              <StatusIcon status={tc.status} />
+              <Wrench size={12} className="shrink-0 text-muted" />
+              <span className="font-medium text-ink shrink-0">{label}</span>
+              {argStr && (
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
+                  {argStr}
+                </span>
               )}
-              <Wrench size={12} className="text-slate-400" />
-              <span className="font-medium text-slate-700">{label}</span>
-              {argStr && <span className="text-slate-400 truncate ml-1 max-w-[180px]">{argStr}</span>}
-              {isOpen ? <ChevronDown size={11} className="ml-auto text-slate-400" /> : <ChevronRight size={11} className="ml-auto text-slate-400" />}
+              {expandable &&
+                (isOpen ? (
+                  <ChevronDown size={11} className="ml-auto shrink-0 text-muted" />
+                ) : (
+                  <ChevronRight size={11} className="ml-auto shrink-0 text-muted" />
+                ))}
             </button>
-            <AnimatePresence>
+            <AnimatePresence initial={false}>
               {isOpen && tc.result && (
                 <motion.div
                   initial={{ height: 0, opacity: 0 }}
@@ -78,7 +93,7 @@ export function ToolCallsBlock({ calls }: { calls: ToolCallEntry[] }) {
                   transition={{ duration: 0.15 }}
                   className="overflow-hidden"
                 >
-                  <pre className="px-2.5 pb-2 text-[11px] text-slate-600 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto font-mono">
+                  <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words border-t border-black/[0.06] bg-black/[0.03] px-2.5 py-2 font-mono text-[11px] leading-relaxed text-ink-2">
                     {tc.result}
                   </pre>
                 </motion.div>
