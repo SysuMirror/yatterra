@@ -96,9 +96,20 @@ def list_mappings():
 
 
 # ---------------------------------------------------------------- nginx block
+def _upstream_port(port):
+    """nginx 反代的后端端口。
+
+    23xxx 是公网 TLS 端口(nginx 自己监听),后端必须走 frps 内部端口
+    13xxx(= 公网端口 - 10000,纯 HTTP,见 groups.py 的 frpc 约定);
+    其他端口原样使用。
+    """
+    return port - 10000 if 23000 <= port < 24000 else port
+
+
 def _server_blocks(sub, port):
     """生成一对 80/443 server 块(2 空格缩进,http {} 内)。"""
     sn = f"{sub}.{DOMAIN}"
+    port = _upstream_port(port)
     return f"""  server {{
     listen 80;
     server_name {sn};
