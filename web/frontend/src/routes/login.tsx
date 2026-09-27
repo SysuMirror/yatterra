@@ -73,8 +73,14 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
   const [health, setHealth] = useState<'checking' | 'ok' | 'error'>('checking')
   const navigate = useNavigate()
-  const { login } = useAuthStore()
+  const { login, isLoggedIn } = useAuthStore()
   const [searchParams] = useSearchParams()
+
+  // Already logged in: go straight to the console instead of showing the
+  // login form again (fixes login-seems-forgotten after PWA relaunch).
+  useEffect(() => {
+    if (isLoggedIn) navigate('/console', { replace: true })
+  }, [isLoggedIn, navigate])
 
   useEffect(() => {
     const oauthError = searchParams.get('oauth_error')

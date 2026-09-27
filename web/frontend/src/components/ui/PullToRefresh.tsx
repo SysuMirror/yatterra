@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { motion, useMotionValue, animate } from 'framer-motion'
+import { motion, useMotionValue, useTransform, animate } from 'framer-motion'
 import { useDrag } from '@use-gesture/react'
 import { RefreshCw, Check } from 'lucide-react'
 
@@ -138,12 +138,15 @@ export function PullToRefresh({ children, onRefresh, threshold = 80, enabled = t
   // The indicator follows the pull distance, capped at threshold + some overshoot
   // We derive it from y for smooth animation
 
+  // Hidden at rest: without this the knob sits over the page header.
+  const indicatorOpacity = useTransform(y, (v) => Math.min(1, Math.max(0, v / 16)))
+
   return (
     <div className="relative touch-pan-y" {...bind()} onTouchStartCapture={handleTouchStart}>
       {/* Refresh indicator */}
       <motion.div
         className="absolute top-0 left-0 right-0 flex items-center justify-center pointer-events-none z-10"
-        style={{ y: y, height: threshold }}
+        style={{ y: y, height: threshold, opacity: indicatorOpacity }}
       >
         <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/90 shadow-1">
           {success ? (

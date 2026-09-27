@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion, useInView, useReducedMotion, useScroll, useSpring } from 'framer-motion'
 import { Link } from 'react-router'
+import { useAuthStore } from '@/stores/auth'
 import { ArrowDown, ArrowRight, Check, ChevronRight, Cpu, Globe2, Network, Orbit, Pause, Play, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
-import { LayerIllustration, NetworkIllustration, ScenarioIllustration, WorkflowIllustration } from './landing-illustrations'
+import { ExplorerIllustration, GapIllustration, LayerIllustration, NetworkIllustration, RootsIllustration, ScenarioIllustration, WorkflowIllustration } from './landing-illustrations'
 import { LandingBackground } from './landing-background'
 import '../styles/landing.css'
 
@@ -25,12 +26,12 @@ const scenarios = [
   { title: '团队与研究项目', label: '03 / SMALL TEAMS', description: '从一个原型到持续运行的服务。把连接、部署和协作交给平台，让团队专注于想法本身。', tags: ['应用部署', '团队协作', 'Agent 服务'] },
 ]
 
-const infrastructureMilestones = [
-  { period: 'INDUSTRIAL AGE', title: '蒸汽机', text: '曾经只有大工厂才能拥有的动力。', color: '#f6c889' },
-  { period: 'ELECTRIC AGE', title: '电力', text: '从工厂的专属能力，变成触手可得的日常设施。', color: '#67e8d0' },
-  { period: 'COMPUTING AGE', title: '图灵机 → 手机', text: '从军方与研究机构的计算能力，进入每个人的口袋。', color: '#8ab4ec' },
-  { period: 'AI AGE', title: '下一层基础设施', text: '智能正在普惠，但承载智能的算力与连接还没有。', color: '#c4b5fd' },
-]
+const utilitySteps = [
+  { era: '1880s — 1900s', title: '动力', note: '工厂的蒸汽机 → 走进每个插座', color: '#f6c889', glyph: 'power' },
+  { era: '1970s — 2010s', title: '计算', note: '机构的大型机 → 口袋里的手机', color: '#67e8d0', glyph: 'compute' },
+  { era: '2006 — 2020s', title: '容量', note: '自建的机房 → 按需租用的云', color: '#8ab4ec', glyph: 'cloud' },
+  { era: 'NOW · 缺失的一级', title: '承载智能的一层', note: '模型人人可及，这一层还不是', color: '#c4b5fd', glyph: 'lock' },
+] as const
 
 const startingPoints = [
   { key: 'device', label: '一台设备', eyebrow: 'START WITH A DEVICE', title: '让一台闲置设备，重新成为生产力。', text: '从工作站、家庭服务器或实验室 GPU 开始，不需要先拥有完整的数据中心。', accent: '#67e8d0', nodes: ['本地 GPU', '内网服务', '你的项目'] },
@@ -38,7 +39,7 @@ const startingPoints = [
   { key: 'idea', label: '一个想法', eyebrow: 'START WITH AN IDEA', title: '让一个想法拥有持续运行的环境。', text: '从模型、Agent 或应用开始，向下连接真实算力，向上形成可访问的服务。', accent: '#c4b5fd', nodes: ['模型 / Agent', '运行环境', '真实产出'] },
 ]
 
-function Reveal({ children, delay = 0, className = '' }: { children: ReactNode; delay?: number; className?: string }) {
+function Reveal({ children, delay = 0, className = '', pop = false }: { children: ReactNode; delay?: number; className?: string; pop?: boolean }) {
   const reduce = useReducedMotion()
   const element = useRef<HTMLDivElement>(null)
   const visible = useInView(element, { once: true, margin: '-40px' })
@@ -46,10 +47,71 @@ function Reveal({ children, delay = 0, className = '' }: { children: ReactNode; 
     <motion.div
       ref={element}
       className={className}
-      initial={{ opacity: 0, transform: reduce ? 'none' : 'translateY(18px)' }}
-      animate={visible ? { opacity: 1, transform: reduce ? 'none' : 'translateY(0px)' } : undefined}
+      initial={reduce ? { opacity: 1, transform: 'none' } : { opacity: 0, transform: pop ? 'translateY(26px) scale(.965)' : 'translateY(18px)' }}
+      animate={visible ? { opacity: 1, transform: reduce ? 'none' : 'translateY(0px) scale(1)' } : undefined}
       transition={{ duration: reduce ? .2 : .6, delay: reduce ? 0 : delay, ease: [.23, 1, .32, 1] }}
     >{children}</motion.div>
+  )
+}
+
+/** Per-character entrance for headings — a wave of lift + blur. */
+function StaggerLine({ text, visible, reduce, delay = 0, className }: { text: string; visible: boolean; reduce: boolean | null; delay?: number; className?: string }) {
+  if (reduce) return <span className={className}>{text}</span>
+  return (
+    <span className={className}>
+      {[...text].map((char, index) => (
+        <motion.span
+          key={index}
+          className="terra-char"
+          initial={{ opacity: 0, y: 16, filter: 'blur(7px)' }}
+          animate={visible ? { opacity: 1, y: 0, filter: 'blur(0px)' } : undefined}
+          transition={{ duration: .55, delay: delay + index * .028, ease: [.23, 1, .32, 1] }}
+        >{char === ' ' ? ' ' : char}</motion.span>
+      ))}
+    </span>
+  )
+}
+
+/** Two-line heading that waves in on scroll. */
+function StaggerHeading({ lines, reduce, delay = 0 }: { lines: [string, string]; reduce: boolean | null; delay?: number }) {
+  const ref = useRef<HTMLHeadingElement>(null)
+  const visible = useInView(ref, { once: true, margin: '-60px' })
+  return (
+    <h2 ref={ref}>
+      <StaggerLine text={lines[0]} className="terra-line-lead" visible={visible} reduce={reduce} delay={delay} />
+      <StaggerLine text={lines[1]} className="terra-line-accent" visible={visible} reduce={reduce} delay={delay + lines[0].length * .028} />
+    </h2>
+  )
+}
+
+/** Eyebrow + two-line heading + blurb, choreographed as one entrance. */
+function SectionIntro({ eyebrow, lines, desc, delay = 0 }: { eyebrow: string; lines: [string, string]; desc: string; delay?: number }) {
+  const reduce = useReducedMotion()
+  const ref = useRef<HTMLDivElement>(null)
+  const visible = useInView(ref, { once: true, margin: '-60px' })
+  return (
+    <motion.div
+      ref={ref}
+      className="terra-section-intro"
+      initial={reduce ? { opacity: 1 } : { opacity: 0, y: 14 }}
+      animate={visible ? { opacity: 1, y: 0 } : undefined}
+      transition={{ duration: reduce ? .2 : .55, delay: reduce ? 0 : delay, ease: [.23, 1, .32, 1] }}
+    >
+      <div>
+        <motion.p
+          className="terra-eyebrow"
+          initial={reduce ? { opacity: 1 } : { opacity: 0, x: -12 }}
+          animate={visible ? { opacity: 1, x: 0 } : undefined}
+          transition={{ duration: .5, delay: reduce ? 0 : delay, ease: [.23, 1, .32, 1] }}
+        >{eyebrow}</motion.p>
+        <StaggerHeading lines={lines} reduce={reduce} delay={delay + .08} />
+      </div>
+      <motion.p
+        initial={reduce ? { opacity: 1 } : { opacity: 0, y: 12 }}
+        animate={visible ? { opacity: 1, y: 0 } : undefined}
+        transition={{ duration: .55, delay: reduce ? 0 : delay + .3, ease: [.23, 1, .32, 1] }}
+      >{desc}</motion.p>
+    </motion.div>
   )
 }
 
@@ -100,22 +162,12 @@ function TiltCard({ children, className = '', style }: { children: ReactNode; cl
   )
 }
 
-/** Word-by-word hero heading entrance. */
-function HeroTitle({ lines, reduce }: { lines: ReactNode[]; reduce: boolean | null }) {
+/** Character-wave hero heading entrance. */
+function HeroTitle({ lines, reduce }: { lines: string[]; reduce: boolean | null }) {
   return (
     <h1>
-      {lines.map((line, index) => (
-        <motion.span
-          key={index}
-          className={index === 1 ? 'terra-heading-accent' : undefined}
-          initial={{ opacity: 0, y: reduce ? 0 : 26, filter: reduce ? 'none' : 'blur(10px)' }}
-          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-          transition={{ duration: reduce ? .2 : .75, delay: reduce ? 0 : .12 + index * .14, ease: [.23, 1, .32, 1] }}
-          style={{ display: 'block' }}
-        >
-          {line}
-        </motion.span>
-      ))}
+      <StaggerLine text={lines[0]!} className="terra-line-lead" visible reduce={reduce} delay={.14} />
+      <StaggerLine text={lines[1]!} className="terra-heading-accent" visible reduce={reduce} delay={.14 + lines[0]!.length * .03} />
     </h1>
   )
 }
@@ -184,31 +236,197 @@ function Architecture() {
   )
 }
 
+function UtilityGlyph({ glyph, color }: { glyph: typeof utilitySteps[number]['glyph']; color: string }) {
+  if (glyph === 'power') return <path d="M2.5 -11 -6 1.5h5.5L-1.5 11 8 -1.5H2.5Z" fill={color} />
+  if (glyph === 'compute') return (
+    <g stroke={color} strokeWidth="1.6" fill="none" strokeLinejoin="round">
+      <rect x="-6" y="-10" width="12" height="20" rx="3" />
+      <path d="M-2.5 7h5" strokeLinecap="round" />
+      <circle cx="0" cy="-1" r="3" fill={color} fillOpacity=".35" />
+    </g>
+  )
+  if (glyph === 'cloud') return (
+    <path d="M-8 4a5 5 0 0 1 1.2-9.8A7 7 0 0 1 6 -5a5.5 5.5 0 0 1 2 10.6Z" fill={color} fillOpacity=".3" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+  )
+  return (
+    <g stroke={color} strokeWidth="1.6" fill="none" strokeLinejoin="round">
+      <rect x="-6" y="-1" width="12" height="9" rx="2" fill={color} fillOpacity=".2" />
+      <path d="M-3.5 -1v-3.5a3.5 3.5 0 0 1 7 0V-1" />
+      <circle cx="0" cy="4" r="1.4" fill={color} stroke="none" />
+    </g>
+  )
+}
+
 function InfrastructureArc() {
   const reduce = useReducedMotion()
+  const arcRef = useRef<HTMLDivElement>(null)
+  const shown = useInView(arcRef, { once: true, margin: '-90px' })
+  const steps = [
+    { x: 60, w: 190, y: 260 },
+    { x: 290, w: 190, y: 195 },
+    { x: 520, w: 190, y: 130 },
+    { x: 790, w: 180, y: 65 },
+  ]
   return (
-    <div className="terra-history-art" aria-label="基础设施从少数组织专属能力走向普惠的演进图" role="img">
-      <svg viewBox="0 0 1000 250" fill="none" aria-hidden="true">
+    <motion.div
+      ref={arcRef}
+      className="terra-history-art"
+      role="img"
+      aria-label="每一项能力从少数机构专属走向每个人可用的阶梯图；承载智能的一级仍然缺失，由 YatTerra 补上"
+      initial={reduce ? { opacity: 1 } : { opacity: 0, y: 18 }}
+      animate={shown ? { opacity: 1, y: 0 } : undefined}
+      transition={{ duration: reduce ? .2 : .6, ease: [.23, 1, .32, 1] }}
+    >
+      <svg viewBox="0 0 1000 370" fill="none" aria-hidden="true">
         <defs>
-          <linearGradient id="terra-history-path" x1="50" y1="125" x2="950" y2="125" gradientUnits="userSpaceOnUse"><stop stopColor="#f6c889" /><stop offset=".37" stopColor="#67e8d0" /><stop offset=".68" stopColor="#8ab4ec" /><stop offset="1" stopColor="#c4b5fd" /></linearGradient>
-          <filter id="terra-history-glow"><feGaussianBlur stdDeviation="8" /></filter>
+          <linearGradient id="terra-arc-path" x1="60" y1="260" x2="710" y2="130" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#f6c889" /><stop offset=".5" stopColor="#67e8d0" /><stop offset="1" stopColor="#8ab4ec" />
+          </linearGradient>
+          <linearGradient id="terra-arc-bar" x1="0" y1="0" x2="0" y2="1">
+            <stop stopColor="#ffffff" stopOpacity=".14" /><stop offset="1" stopColor="#ffffff" stopOpacity=".02" />
+          </linearGradient>
+          <filter id="terra-arc-glow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="5" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
         </defs>
-        <path d="M50 125C230 125 300 125 440 125C620 125 720 125 950 125" stroke="url(#terra-history-path)" strokeOpacity=".28" strokeWidth="2" strokeDasharray="5 10" />
-        <path d="M50 125C230 125 300 125 440 125C620 125 720 125 950 125L950 190H50V125Z" fill="url(#terra-history-path)" fillOpacity=".05" />
-        {infrastructureMilestones.map((item, index) => {
-          const x = [105, 350, 615, 875][index]!
-          return <g key={item.title}>
-            <circle cx={x} cy="125" r="28" fill={item.color} fillOpacity=".08" filter="url(#terra-history-glow)" />
-            <circle cx={x} cy="125" r="9" fill="#0c1723" stroke={item.color} strokeWidth="2" />
-            <motion.circle cx={x} cy="125" r="3" fill={item.color} animate={reduce ? undefined : { opacity: [.25, 1, .25], scale: [.8, 1.4, .8] }} transition={{ duration: 2.8, delay: index * .32, repeat: Infinity }} />
-            <text x={x} y="70" textAnchor="middle" fill="#e4edea" fontSize="16" fontWeight="600">{item.title}</text>
-            <text x={x} y="94" textAnchor="middle" fill="#718792" fontSize="10" letterSpacing="1.5">{item.period}</text>
-          </g>
+
+        <motion.g
+          initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+          animate={shown ? { opacity: 1 } : undefined}
+          transition={{ duration: .5, delay: reduce ? 0 : .12 }}
+        >
+          <path d="M60 344h910" stroke="#8fa5b0" strokeOpacity=".22" strokeWidth="1" />
+          <path d="M44 344V40" stroke="#8fa5b0" strokeOpacity=".22" strokeWidth="1" />
+          <path d="M44 44l-4 8h8ZM44 340l-4-8h8Z" fill="#8fa5b0" fillOpacity=".4" />
+          <text transform="translate(30 250) rotate(-90)" textAnchor="middle" fill="#718792" fontSize="10.5" fontWeight="600" letterSpacing="2.5">少数组织专属</text>
+          <text transform="translate(30 160) rotate(-90)" textAnchor="middle" fill="#9aebd2" fontSize="10.5" fontWeight="600" letterSpacing="2.5">每一个人</text>
+        </motion.g>
+
+        <motion.path
+          d="M60 260H250L290 195H480L520 130H710"
+          stroke="url(#terra-arc-path)"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          filter="url(#terra-arc-glow)"
+          initial={reduce ? { pathLength: 1, opacity: 1 } : { pathLength: 0, opacity: 0 }}
+          animate={shown ? { pathLength: 1, opacity: 1 } : undefined}
+          transition={reduce ? { duration: 0 } : { pathLength: { duration: 1.3, delay: .3, ease: [.65, 0, .35, 1] }, opacity: { duration: .25, delay: .3 } }}
+        />
+        <motion.path
+          d="M710 130L790 65"
+          stroke="#c4b5fd" strokeOpacity=".55" strokeWidth="2.5" strokeDasharray="6 7" strokeLinecap="round"
+          className="terra-march"
+          initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+          animate={shown ? { opacity: 1 } : undefined}
+          transition={{ duration: .5, delay: reduce ? 0 : 1.5 }}
+        />
+        <motion.path
+          d="M790 65H960"
+          stroke="#c4b5fd" strokeOpacity=".45" strokeWidth="3" strokeDasharray="6 7" strokeLinecap="round"
+          className="terra-march"
+          initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+          animate={shown ? { opacity: 1 } : undefined}
+          transition={{ duration: .5, delay: reduce ? 0 : 1.62 }}
+        />
+
+        {steps.map((step, index) => {
+          const item = utilitySteps[index]!
+          const done = index < 3
+          return (
+            <motion.g
+              key={item.title}
+              initial={reduce ? { opacity: 1 } : { opacity: 0, y: 16 }}
+              animate={shown ? { opacity: 1, y: 0 } : undefined}
+              transition={{ duration: reduce ? .2 : .5, delay: reduce ? 0 : .55 + index * .14, ease: [.23, 1, .32, 1] }}
+            >
+              <path d={`M${step.x} ${step.y + 24}V344`} stroke={item.color} strokeOpacity=".16" strokeDasharray="3 7" />
+              <rect x={step.x} y={step.y} width={step.w} height="22" rx="11" fill={done ? item.color : 'transparent'} fillOpacity={done ? '.22' : '0'} stroke={item.color} strokeOpacity={done ? '.75' : '.55'} strokeWidth="1.6" strokeDasharray={done ? undefined : '6 5'} />
+              {done && <rect x={step.x + 3} y={step.y + 3} width={step.w - 6} height="6" rx="3" fill="url(#terra-arc-bar)" />}
+              <g transform={`translate(${step.x} ${step.y + 11})`}>
+                <circle r="17" fill="#0c1723" stroke={item.color} strokeOpacity=".85" strokeWidth="1.6" />
+                <UtilityGlyph glyph={item.glyph} color={item.color} />
+              </g>
+              <text x={step.x + 28} y={step.y - 30} fill={item.color} fontSize="11" fontWeight="700" letterSpacing="1.8">{item.era}</text>
+              <text x={step.x + 28} y={step.y - 10} fill="#e4edea" fontSize="17" fontWeight="600">{item.title}</text>
+              <text x={step.x} y={step.y + 46} fill={done ? '#718792' : item.color} fillOpacity={done ? '1' : '.9'} fontSize="12" fontWeight={done ? 400 : 600}>{item.note}</text>
+              {done ? (
+                <g transform={`translate(${step.x + step.w} ${step.y + 11})`}>
+                  <circle r="9" fill={item.color} fillOpacity=".18" stroke={item.color} strokeOpacity=".7" />
+                  <path d="M-3.5 0l2.5 2.5 4.5-5" stroke={item.color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </g>
+              ) : (
+                <g transform={`translate(${step.x + step.w} ${step.y + 11})`}>
+                  <circle r="9" fill="#0c1723" stroke={item.color} strokeOpacity=".7" strokeDasharray="3 2" />
+                  <path d="M-3.5-2.5v-1.5a3.5 3.5 0 0 1 7 0v1.5" stroke={item.color} strokeWidth="1.4" fill="none" />
+                  <rect x="-4" y="-2.5" width="8" height="6.5" rx="1.5" fill={item.color} fillOpacity=".35" stroke={item.color} strokeWidth="1.2" />
+                </g>
+              )}
+            </motion.g>
+          )
         })}
-        <motion.circle cx="58" cy="125" r="4" fill="#fff" animate={reduce ? undefined : { cx: [58, 942], cy: [125, 125], opacity: [0, 1, 1, 0] }} transition={{ duration: 5, repeat: Infinity, ease: 'linear' }} />
+
+        <g transform="translate(750 97)">
+          <motion.g
+            initial={reduce ? { opacity: 1, scale: 1 } : { opacity: 0, scale: .55 }}
+            animate={shown ? { opacity: 1, scale: 1 } : undefined}
+            transition={{ duration: reduce ? .2 : .6, delay: reduce ? 0 : 1.3, ease: [.23, 1, .32, 1] }}
+            style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
+          >
+            <circle r="27" fill="#c4b5fd" fillOpacity=".1" className="terra-pulse-ring" />
+            <path d="M0 -18 15.6 -9v18L0 18-15.6 9V-9Z" fill="#0e2436" stroke="#c4b5fd" strokeWidth="1.8" />
+            <path d="M0 -18V0M0 0 15.6 -9M0 0-15.6 9" stroke="#c4b5fd" strokeOpacity=".4" />
+            <text y="4" textAnchor="middle" fill="#e8ecff" fontSize="10.5" fontWeight="800">YT</text>
+          </motion.g>
+        </g>
+
+        {shown && !reduce && (
+          <>
+            <motion.circle
+              r="5"
+              fill="#fff"
+              initial={{ opacity: 0 }}
+              animate={{ cx: [60, 250, 290, 480, 520, 710], cy: [260, 260, 195, 195, 130, 130], opacity: [0, 1, 1, 1, 1, 0] }}
+              transition={{ duration: 4.2, repeat: Infinity, ease: 'linear', delay: 1.65 }}
+              filter="url(#terra-arc-glow)"
+            />
+            <motion.circle
+              r="4"
+              fill="#c4b5fd"
+              initial={{ opacity: 0 }}
+              animate={{ cx: [712, 750, 790, 955], cy: [130, 97, 65, 65], opacity: [0, .9, .9, 0] }}
+              transition={{ duration: 2.6, repeat: Infinity, ease: 'linear', delay: 5.85 }}
+            />
+          </>
+        )}
+
+        <g transform="translate(790 210)">
+          <motion.g
+            initial={reduce ? { opacity: 1, scale: 1 } : { opacity: 0, scale: .9 }}
+            animate={shown ? { opacity: 1, scale: 1 } : undefined}
+            transition={{ duration: reduce ? .2 : .55, delay: reduce ? 0 : 1.45, ease: [.23, 1, .32, 1] }}
+            style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
+          >
+            <rect width="180" height="64" rx="14" fill="#c4b5fd" fillOpacity=".07" stroke="#c4b5fd" strokeOpacity=".55" strokeDasharray="6 5" />
+            <path d="M18 16 27 11.5v9L18 25l-9-4.5v-9Z" fill="#c4b5fd" fillOpacity=".3" stroke="#c4b5fd" strokeWidth="1.3" />
+            <text x="36" y="23" fill="#e8ecff" fontSize="13" fontWeight="700" letterSpacing=".4">YatTerra</text>
+            <text x="14" y="45" fill="#c4b5fd" fontSize="11.5" fontWeight="600">把缺失的一级补上</text>
+            <text x="14" y="58" fill="#7d93a8" fontSize="10">让承载智能的基础设施也普惠</text>
+          </motion.g>
+        </g>
+
+        <motion.g
+          initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+          animate={shown ? { opacity: 1 } : undefined}
+          transition={{ duration: .5, delay: reduce ? 0 : .3 }}
+        >
+          <text x="60" y="362" fill="#718792" fontSize="10" fontWeight="600" letterSpacing="1.6">SCARCE CAPABILITY</text>
+          <text x="960" y="362" textAnchor="end" fill="#9aebd2" fontSize="10" fontWeight="600" letterSpacing="1.6">UNIVERSAL UTILITY</text>
+        </motion.g>
       </svg>
-      <div className="terra-history-scale"><span>少数组织专属</span><span>普惠性基础设施</span></div>
-    </div>
+      <div className="terra-history-scale"><span>曾经：少数机构的能力</span><span>目标：每个人都能接上</span></div>
+    </motion.div>
   )
 }
 
@@ -232,9 +450,9 @@ function StartingPointExplorer() {
           <motion.div
             key={active.key}
             className="terra-explorer-panel"
-            initial={{ opacity: 0, x: reduce ? 0 : -18 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: reduce ? 0 : 14 }}
+            initial={{ opacity: 0, x: reduce ? 0 : -18, scale: reduce ? 1 : .98 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: reduce ? 0 : 14, scale: reduce ? 1 : .985 }}
             transition={{ duration: reduce ? .15 : .34, ease: [.23, 1, .32, 1] }}
           >
             <div className="terra-explorer-copy">
@@ -243,12 +461,7 @@ function StartingPointExplorer() {
               <p>{active.text}</p>
               <div className="terra-explorer-nodes">{active.nodes.map((node, index) => <span key={node}><b style={{ backgroundColor: active.accent }} />{node}{index < active.nodes.length - 1 && <ArrowRight size={13} />}</span>)}</div>
             </div>
-            <svg className="terra-explorer-art" viewBox="0 0 560 230" fill="none" role="img" aria-label={`${active.label} 到系统产出的动态示意图`}>
-              <defs><linearGradient id="explorer-line" x1="44" y1="115" x2="516" y2="115" gradientUnits="userSpaceOnUse"><stop stopColor={active.accent} stopOpacity=".2" /><stop offset=".5" stopColor={active.accent} /><stop offset="1" stopColor="#f6c889" stopOpacity=".55" /></linearGradient><filter id="explorer-glow"><feGaussianBlur stdDeviation="7" /></filter></defs>
-              <path d="M56 115C153 35 188 195 280 115S407 35 504 115" stroke="url(#explorer-line)" strokeOpacity=".35" strokeWidth="2" strokeDasharray="5 9" />
-              {[56, 280, 504].map((x, index) => <g key={x}><circle cx={x} cy="115" r={index === 1 ? 36 : 25} fill={active.accent} fillOpacity=".08" filter="url(#explorer-glow)" /><circle cx={x} cy="115" r={index === 1 ? 19 : 13} fill="#0c1723" stroke={index === 1 ? active.accent : '#789198'} strokeWidth="2" /><text x={x} y="120" textAnchor="middle" fill="#e4edea" fontSize={index === 1 ? 16 : 12}>{index === 0 ? '起点' : index === 1 ? 'Y' : '产出'}</text></g>)}
-              <motion.circle r="4" fill={active.accent} animate={{ cx: [64, 280, 496], cy: [110, 120, 110], opacity: [0, 1, 0] }} transition={{ duration: 2.8, repeat: Infinity, ease: 'easeInOut' }} />
-            </svg>
+            <ExplorerIllustration kind={active.key} accent={active.accent} />
           </motion.div>
         </AnimatePresence>
       </div>
@@ -261,6 +474,7 @@ export default function Landing() {
   const [scrolled, setScrolled] = useState(false)
   const reduce = useReducedMotion()
   const heroRef = useRef<HTMLElement>(null)
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn)
 
   useEffect(() => {
     document.documentElement.classList.add('landing-document')
@@ -303,7 +517,7 @@ export default function Landing() {
         <div className="terra-container terra-header-inner">
           <Link to="/" className="terra-brand" aria-label="YatTerra 首页"><span className="terra-brand-mark"><Orbit size={24} /></span><span>YatTerra<small>INFRASTRUCTURE, RECONNECTED.</small></span></Link>
           <nav aria-label="公开页面导航"><a href="#thesis">为什么现在</a><a href="#why">断层</a><a href="#layers">怎么工作</a><a href="#scenarios">场景</a></nav>
-          <Link to="/login" className="terra-header-login">进入控制台 <ArrowRight size={15} /></Link>
+          <Link to={isLoggedIn ? "/console" : "/login"} className="terra-header-login">进入控制台 <ArrowRight size={15} /></Link>
         </div>
       </header>
       <main id="terra-main" className="terra-main">
@@ -314,19 +528,23 @@ export default function Landing() {
               <Reveal><div className="terra-eyebrow"><span className="terra-status-dot" /> BUILT FOR THE REAL WORLD</div></Reveal>
               <HeroTitle reduce={reduce} lines={['更高级的生产力，', '应该属于每一个人。']} />
               <Reveal delay={.12}><p className="terra-hero-description">蒸汽机、电力、计算机，都曾经只属于少数组织，后来成为每个人日常生活的一部分。AI 正在完成下一次普惠，而它需要一层新的基础设施。</p></Reveal>
-              <Reveal delay={.18}><div className="terra-actions"><ShinyButton to="/login" className="terra-button-primary">进入 YatTerra <ArrowRight size={17} /></ShinyButton><ShinyButton href="#thesis" className="terra-button-secondary">理解这件事 <ArrowDown size={16} /></ShinyButton></div></Reveal>
+              <Reveal delay={.18}><div className="terra-actions"><ShinyButton to={isLoggedIn ? "/console" : "/login"} className="terra-button-primary">进入 YatTerra <ArrowRight size={17} /></ShinyButton><ShinyButton href="#thesis" className="terra-button-secondary">理解这件事 <ArrowDown size={16} /></ShinyButton></div></Reveal>
               <Reveal delay={.24}><div className="terra-promises"><span><Check size={14} />普惠性的技术基础设施</span><span><Check size={14} />公有云与私有云之间</span></div></Reveal>
             </div>
-            <Reveal delay={.12} className="terra-hero-visual"><NetworkIllustration /></Reveal>
+            <Reveal delay={.12} pop className="terra-hero-visual"><NetworkIllustration /></Reveal>
           </div>
           <div className="terra-container terra-hero-bottom"><span>从少数人的机器，到每个人的基础设施。</span><div><span>PRODUCTION POWER</span><span className="terra-bottom-line" /><span>EVERYWHERE</span></div><button type="button" className="terra-motion-toggle" aria-pressed={motionOff} disabled={Boolean(reduce)} onClick={() => setPaused(value => !value)}>{motionOff ? <Play size={12} /> : <Pause size={12} />}{reduce ? '已减少动态' : paused ? '播放动效' : '暂停动效'}</button></div>
         </section>
 
         <section id="thesis" className="terra-section terra-section-tinted terra-thesis-section">
           <div className="terra-container">
-            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">00 — THE LONG ARC</p><h2>世界一直在做同一件事：<br /><span>把生产力带到日常生活。</span></h2></div><p>技术进步不只是发明新的机器，更是让越来越多的人能够使用曾经只属于少数组织的能力。</p></div></Reveal>
-            <Reveal><InfrastructureArc /></Reveal>
-            <Reveal><div className="terra-thesis-note"><span className="terra-thesis-mark">→</span><p>AI 的下一步，不只是让更多人调用模型。<strong>而是让更多人拥有承载模型、工作流与创造的基础设施。</strong></p></div></Reveal>
+            <SectionIntro
+              eyebrow="00 — THE LONG ARC"
+              lines={['每一项能力成为基础设施，', '都要走完同一段路。']}
+              desc="从少数机构的专属能力，到每个人都能接上的公共设施。动力走完了，计算走完了，容量也走完了——智能的承载层，还没有。"
+            />
+            <InfrastructureArc />
+            <Reveal delay={.06}><div className="terra-thesis-note"><span className="terra-thesis-mark">→</span><p>AI 的下一步，不只是让更多人调用模型。<strong>而是让更多人拥有承载模型、工作流与创造的基础设施。</strong></p></div></Reveal>
           </div>
         </section>
 
@@ -338,9 +556,13 @@ export default function Landing() {
 
         <section id="why" className="terra-section terra-section-tinted">
           <div className="terra-container">
-            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">01 — THE MISSING LAYER</p><h2>AI 正在走向每一个人，<br /><span>基础设施却没有跟上。</span></h2></div><p>传统公有云主要服务企业、政府、医院和研究机构，解决的是“非计算机专业客户如何不必考虑运维”。但 AI 时代的创新正在不可逆地碎片化、个人化。</p></div></Reveal>
+            <SectionIntro
+              eyebrow="01 — THE MISSING LAYER"
+              lines={['AI 正在走向每一个人，', '基础设施却没有跟上。']}
+              desc="传统公有云主要服务企业、政府、医院和研究机构，解决的是“非计算机专业客户如何不必考虑运维”。但 AI 时代的创新正在不可逆地碎片化、个人化。"
+            />
             <div className="terra-constraint-grid">{constraints.map((item, index) => (
-              <Reveal key={item.title} delay={index * .06}>
+              <Reveal key={item.title} delay={index * .07} pop>
                 <TiltCard className="terra-card-slot">
                   <article className="terra-constraint">
                     <div className="terra-constraint-heading"><item.icon size={23} /><span>{item.label}</span></div>
@@ -351,13 +573,17 @@ export default function Landing() {
                 </TiltCard>
               </Reveal>
             ))}</div>
-            <Reveal><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p></div></Reveal>
+            <Reveal pop><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p><GapIllustration /></div></Reveal>
           </div>
         </section>
 
         <section id="layers" className="terra-section">
           <div className="terra-container">
-            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">02 — ONE COHERENT FABRIC</p><h2>不是把云做小，<br /><span>而是把基础设施做普惠。</span></h2></div><p>YatTerra 把连接、编排、AI 与运维组织成一层统一的技术土壤，让真实设备也能拥有平台化的可靠性。</p></div></Reveal>
+            <SectionIntro
+              eyebrow="02 — ONE COHERENT FABRIC"
+              lines={['不是把云做小，', '而是把基础设施做普惠。']}
+              desc="YatTerra 把连接、编排、AI 与运维组织成一层统一的技术土壤，让真实设备也能拥有平台化的可靠性。"
+            />
             <Reveal><Architecture /></Reveal>
             <Reveal><div className="terra-workflow"><div className="terra-workflow-copy"><p className="terra-eyebrow">FROM IDEA TO SERVICE</p><h3>给想法一条<br />完整的落地路径。</h3><p>从代码、容器到模型服务，<br />把日常开发接进同一套基础设施。</p><div className="terra-tags"><span>开发</span><ArrowRight size={14} /><span>部署</span><ArrowRight size={14} /><span>运行</span></div></div><WorkflowIllustration /></div></Reveal>
           </div>
@@ -365,20 +591,28 @@ export default function Landing() {
 
         <section className="terra-section terra-section-tinted">
           <div className="terra-container">
-            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">03 — A THIRD PATH</p><h2>不替代公有云，<br /><span>也不鼓励复杂自建。</span></h2></div><p>公有云解决的是托管与规模，私有云解决的是控制与成本。YatTerra 在两者之间做 tradeoff：连接真实设备，复用平台能力，把可靠性带给更小、更分散的创造者。</p></div></Reveal>
-            <Reveal><div className="terra-choice-grid">
-              <TiltCard className="terra-card-slot"><article className="terra-choice"><span className="terra-choice-index">01 / PUBLIC CLOUD</span><Globe2 size={30} /><h3>公有云</h3><p>能力完整、弹性强，默认用户拥有企业级预算、规模与运维需求。</p><div className="terra-choice-foot">规模化供给 · 长期账单</div></article></TiltCard>
-              <TiltCard className="terra-card-slot"><article className="terra-choice terra-choice-featured"><span className="terra-choice-index">02 / THE MISSING MIDDLE</span><Orbit size={32} /><h3>YatTerra</h3><p>让内网设备、闲置算力与本地数据成为可靠服务，同时获得连接、编排和运维能力。</p><div className="terra-choice-foot"><Check size={14} /> 更低门槛 · 平台级可靠性</div></article></TiltCard>
-              <TiltCard className="terra-card-slot"><article className="terra-choice"><span className="terra-choice-index">03 / PRIVATE CLOUD</span><Wrench size={29} /><h3>私有云 / 下云</h3><p>控制权更强，但需要自行承担网络、机房、集群与长期运维的全部复杂度。</p><div className="terra-choice-foot">自主控制 · 运维负担</div></article></TiltCard>
-            </div></Reveal>
+            <SectionIntro
+              eyebrow="03 — A THIRD PATH"
+              lines={['不替代公有云，', '也不鼓励复杂自建。']}
+              desc="公有云解决的是托管与规模，私有云解决的是控制与成本。YatTerra 在两者之间做 tradeoff：连接真实设备，复用平台能力，把可靠性带给更小、更分散的创造者。"
+            />
+            <div className="terra-choice-grid">
+              <Reveal pop delay={0}><TiltCard className="terra-card-slot"><article className="terra-choice"><span className="terra-choice-index">01 / PUBLIC CLOUD</span><Globe2 size={30} /><h3>公有云</h3><p>能力完整、弹性强，默认用户拥有企业级预算、规模与运维需求。</p><div className="terra-choice-foot">规模化供给 · 长期账单</div></article></TiltCard></Reveal>
+              <Reveal pop delay={.08}><TiltCard className="terra-card-slot"><article className="terra-choice terra-choice-featured"><span className="terra-choice-index">02 / THE MISSING MIDDLE</span><Orbit size={32} /><h3>YatTerra</h3><p>让内网设备、闲置算力与本地数据成为可靠服务，同时获得连接、编排和运维能力。</p><div className="terra-choice-foot"><Check size={14} /> 更低门槛 · 平台级可靠性</div></article></TiltCard></Reveal>
+              <Reveal pop delay={.16}><TiltCard className="terra-card-slot"><article className="terra-choice"><span className="terra-choice-index">03 / PRIVATE CLOUD</span><Wrench size={29} /><h3>私有云 / 下云</h3><p>控制权更强，但需要自行承担网络、机房、集群与长期运维的全部复杂度。</p><div className="terra-choice-foot">自主控制 · 运维负担</div></article></TiltCard></Reveal>
+            </div>
           </div>
         </section>
 
         <section id="scenarios" className="terra-section">
           <div className="terra-container">
-            <Reveal><div className="terra-section-intro"><div><p className="terra-eyebrow">04 — MANY PLACES, ONE PLATFORM</p><h2>创新会发生在任何地方，<br /><span>基础设施也应该在那里。</span></h2></div><p>校园、家庭、工作室、实验室与小团队，只是不同的起点。底层需要的是同一条连接资源、模型与人的路径。</p></div></Reveal>
+            <SectionIntro
+              eyebrow="04 — MANY PLACES, ONE PLATFORM"
+              lines={['创新会发生在任何地方，', '基础设施也应该在那里。']}
+              desc="校园、家庭、工作室、实验室与小团队，只是不同的起点。底层需要的是同一条连接资源、模型与人的路径。"
+            />
             <div className="terra-scenario-grid">{scenarios.map((item, index) => (
-              <Reveal key={item.title} delay={index * .06}>
+              <Reveal key={item.title} delay={index * .07} pop>
                 <TiltCard className="terra-card-slot">
                   <article className="terra-scenario">
                     <div className="terra-scenario-label">{item.label}<span>↗</span></div>
@@ -393,7 +627,12 @@ export default function Landing() {
 
         <section className="terra-closing">
           <div className="terra-container">
-            <Reveal><div className="terra-closing-symbol" aria-hidden="true"><span /><span /><Orbit size={40} /></div><p className="terra-eyebrow">YATTERRA — THE SOIL FOR AI</p><h2>让每一个想法，<br /><span>都能拥有自己的基础设施。</span></h2><p className="terra-closing-description">Yat 来自 Sun Yat-sen University。Terra 是大地，是土壤，也是让万物生长的基础。我们不替代云，我们让更多创造拥有可以扎根的土壤。</p><ShinyButton to="/login" className="terra-button-primary">进入 YatTerra <ArrowRight size={17} /></ShinyButton></Reveal>
+            <Reveal><div className="terra-closing-symbol" aria-hidden="true"><span /><span /><Orbit size={40} /></div></Reveal>
+            <Reveal delay={.06}><RootsIllustration /></Reveal>
+            <Reveal delay={.1}><p className="terra-eyebrow">YATTERRA — THE SOIL FOR AI</p></Reveal>
+            <StaggerHeading lines={['让每一个想法，', '都能拥有自己的基础设施。']} reduce={reduce} />
+            <Reveal delay={.12}><p className="terra-closing-description">Yat 来自 Sun Yat-sen University。Terra 是大地，是土壤，也是让万物生长的基础。我们不替代云，我们让更多创造拥有可以扎根的土壤。</p></Reveal>
+            <Reveal delay={.18}><ShinyButton to={isLoggedIn ? "/console" : "/login"} className="terra-button-primary">进入 YatTerra <ArrowRight size={17} /></ShinyButton></Reveal>
           </div>
         </section>
       </main>

@@ -34,6 +34,7 @@ export function Card({
   hover = false,
   padding = 'md',
   className,
+  style,
   children,
   ...props
 }: CardProps) {
@@ -47,7 +48,7 @@ export function Card({
         hover && 'cursor-pointer',
         className,
       )}
-      style={{ boxShadow: '0 1px 2px rgba(0,0,0,.04)' }}
+      style={{ boxShadow: '0 1px 2px rgba(0,0,0,.04)', ...style }}
       whileHover={hover ? { y: -2, boxShadow: '0 8px 24px rgba(0,0,0,.10)' } : undefined}
       whileTap={hover ? { scale: 0.985 } : undefined}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}

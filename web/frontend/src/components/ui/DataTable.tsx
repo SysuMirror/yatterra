@@ -99,8 +99,8 @@ export function DataTable<T>({ columns, data, keyFn, onRowClick, empty, classNam
               <motion.tr
                 key={keyFn(row)}
                 className={cn(
-                  'border-b border-black/[0.04] last:border-0',
-                  onRowClick && 'cursor-pointer hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors',
+                  'border-b border-black/[0.04] last:border-0 transition-colors hover:bg-[var(--surface-2)]',
+                  onRowClick && 'cursor-pointer active:bg-black/[0.04]',
                 )}
                 onClick={() => onRowClick?.(row)}
                 initial={{ opacity: 0, y: 4 }}

@@ -22,6 +22,8 @@ export default {
           3: 'var(--surface-3)',
           4: 'var(--surface-4)',
         },
+        canvas: 'var(--canvas)',
+        line: 'var(--line)',
       },
       borderRadius: {
         xs: '6px',

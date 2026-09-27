@@ -183,10 +183,20 @@
 .terra-packet { animation-duration: 4.8s; animation-timing-function: linear; animation-iteration-count: infinite; }
 .terra-light { animation: terra-light 3.2s ease infinite; }
 .terra-core-halo { transform-box: fill-box; transform-origin: center; animation: terra-halo 4.8s cubic-bezier(.77, 0, .175, 1) infinite; }
-.terra-scene[data-running='false'] :is(.terra-packet, .terra-light, .terra-core-halo),
-.terra-landing[data-paused='true'] :is(.terra-packet, .terra-light, .terra-core-halo, .terra-orb, .terra-hero-grid, .terra-closing-symbol span, .terra-closing-symbol svg, .terra-choice-featured, .terra-status-dot) { animation-play-state: paused; }
+.terra-spin { transform-box: fill-box; transform-origin: center; animation: terra-rotate linear infinite; }
+.terra-pulse-ring { transform-box: fill-box; transform-origin: center; animation: terra-pulse-ring 3.6s ease-out infinite; }
+.terra-float { transform-box: fill-box; transform-origin: center; animation: terra-float 4.5s ease-in-out infinite; }
+.terra-march { animation: terra-march 1.8s linear infinite; }
+.terra-scene[data-running='false'] :is(.terra-packet, .terra-light, .terra-core-halo, .terra-spin, .terra-pulse-ring, .terra-float, .terra-march),
+.terra-landing[data-paused='true'] :is(.terra-packet, .terra-light, .terra-core-halo, .terra-orb, .terra-hero-grid, .terra-closing-symbol span, .terra-closing-symbol svg, .terra-choice-featured, .terra-status-dot, .terra-spin, .terra-pulse-ring, .terra-float, .terra-march) { animation-play-state: paused; }
+/* One-shot entrance animations jump to their end state when motion is paused. */
+.terra-landing[data-paused='true'] :is(.terra-header, .terra-bottom-line, .terra-explorer-copy > *, .terra-explorer-nodes > span, .terra-explorer-art svg) { animation: none; }
 @keyframes terra-light { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
 @keyframes terra-halo { 0%, 100% { transform: scale(.95); opacity: .4; } 50% { transform: scale(1.1); opacity: 1; } }
+@keyframes terra-rotate { to { transform: rotate(360deg); } }
+@keyframes terra-pulse-ring { 0% { transform: scale(.7); opacity: .9; } 70% { opacity: .15; } 100% { transform: scale(1.25); opacity: 0; } }
+@keyframes terra-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@keyframes terra-march { to { stroke-dashoffset: -32; } }
 
 /* Pulsing status dots */
 .terra-status-dot { animation: terra-dot-pulse 2.4s ease-in-out infinite; }
@@ -336,7 +346,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .terra-landing :is(.terra-packet, .terra-light, .terra-core-halo, .terra-orb, .terra-hero-grid, .terra-closing-symbol span, .terra-closing-symbol svg, .terra-choice-featured, .terra-status-dot, .terra-explorer-status span) { animation: none !important; }
+  .terra-landing :is(.terra-packet, .terra-light, .terra-core-halo, .terra-orb, .terra-hero-grid, .terra-closing-symbol span, .terra-closing-symbol svg, .terra-choice-featured, .terra-status-dot, .terra-explorer-status span, .terra-spin, .terra-pulse-ring, .terra-float, .terra-march) { animation: none !important; }
+  .terra-landing :is(.terra-header, .terra-bottom-line, .terra-explorer-copy > *, .terra-explorer-nodes > span, .terra-explorer-art svg) { animation: none !important; }
   .terra-packet { opacity: 0; }
   .terra-button:hover { transform: none; }
   .terra-bg-spot { display: none; }
@@ -355,7 +366,7 @@
   background: linear-gradient(135deg, rgba(16, 30, 43, .82), rgba(10, 23, 34, .7));
 }
 
-.terra-history-art svg { display: block; width: 100%; min-height: 190px; }
+.terra-history-art svg { display: block; width: 100%; min-height: 300px; }
 .terra-history-scale { display: flex; justify-content: space-between; margin-top: 3px; color: #718792; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; }
 .terra-thesis-note { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 18px; max-width: 760px; margin: 38px auto 0; padding: 24px 28px; border-left: 2px solid var(--terra-mint); background: rgba(154, 235, 210, .05); }
 .terra-thesis-mark { color: var(--terra-mint); font-family: 'SFMono-Regular', Consolas, monospace; font-size: 22px; line-height: 1.2; }
@@ -364,10 +375,14 @@
 .terra-gap-callout { display: grid; grid-template-columns: .8fr 1.2fr; align-items: center; gap: 36px; margin-top: 42px; padding: 28px 32px; border: 1px solid rgba(246, 200, 137, .2); border-radius: 16px; background: linear-gradient(100deg, rgba(246, 200, 137, .08), rgba(103, 232, 208, .04)); }
 .terra-gap-callout h3 { margin: 12px 0 0; color: var(--terra-ink); font-size: clamp(22px, 2.5vw, 32px); font-weight: 600; letter-spacing: -1.2px; }
 .terra-gap-callout p { margin: 0; color: #a1b1b7; font-size: 14px; line-height: 1.9; }
+.terra-gap-art { grid-column: 1 / -1; margin-top: 4px; border-radius: 14px; overflow: hidden; border: 1px solid rgba(103, 232, 208, .14); }
+.terra-gap-art svg { display: block; width: 100%; height: auto; }
+.terra-roots-art { width: min(560px, 100%); margin: 8px auto 0; }
+.terra-roots-art svg { display: block; width: 100%; height: auto; border-radius: 16px; border: 1px solid rgba(103, 232, 208, .16); background: rgba(8, 15, 24, .5); box-shadow: 0 18px 50px rgba(0, 0, 0, .25); }
 
 @media (max-width: 800px) {
   .terra-history-art { margin-top: 30px; padding: 17px 12px 13px; border-radius: 13px; }
-  .terra-history-art svg { min-height: 145px; }
+  .terra-history-art svg { min-height: 210px; }
   .terra-history-scale { font-size: 7px; letter-spacing: .6px; }
   .terra-thesis-note { margin-top: 26px; padding: 19px 20px; gap: 12px; }
   .terra-thesis-note p { font-size: 13px; line-height: 1.75; }
@@ -411,3 +426,27 @@
   .terra-explorer-copy > p:not(.terra-eyebrow) { font-size: 13px; }
   .terra-explorer-art { min-height: 145px; margin-top: -6px; }
 }
+
+/* ── Heading character wave ── */
+.terra-landing :is(h1, h2) > .terra-line-lead,
+.terra-landing :is(h1, h2) > .terra-line-accent { display: block; }
+.terra-landing :is(h1, h2) > .terra-line-lead { color: inherit; }
+.terra-landing :is(h1, h2) .terra-char { display: inline-block; color: inherit; }
+
+/* ── First-load settle ── */
+@keyframes terra-settle-in { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
+.terra-header { animation: terra-settle-in .65s var(--terra-ease-out) .05s both; }
+@keyframes terra-line-grow { from { transform: scaleX(0); } }
+.terra-bottom-line { transform-origin: left center; animation: terra-line-grow .9s var(--terra-ease-out) .55s both; }
+
+/* ── Explorer copy entrance (re-runs on every tab swap) ── */
+@keyframes terra-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.terra-explorer-copy > * { animation: terra-rise .5s var(--terra-ease-out) both; }
+.terra-explorer-copy > :nth-child(2) { animation-delay: .07s; }
+.terra-explorer-copy > :nth-child(3) { animation-delay: .14s; }
+.terra-explorer-copy > :nth-child(4) { animation-delay: .2s; }
+.terra-explorer-nodes > span { animation: terra-rise .45s var(--terra-ease-out) both; }
+.terra-explorer-nodes > :nth-child(2) { animation-delay: .26s; }
+.terra-explorer-nodes > :nth-child(3) { animation-delay: .32s; }
+@keyframes terra-art-in { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+.terra-explorer-art svg { animation: terra-art-in .6s var(--terra-ease-out) .12s both; }

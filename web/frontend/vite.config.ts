@@ -27,7 +27,7 @@ export default defineConfig({
         background_color: '#070b17',
         display: 'standalone',
         orientation: 'any',
-        start_url: '/',
+        start_url: '/console',
         scope: '/',
         categories: ['education', 'productivity', 'utilities'],
         icons: [
@@ -45,7 +45,7 @@ export default defineConfig({
             name: '集群概览',
             short_name: '概览',
             description: '查看集群状态与资源概览',
-            url: '/',
+            url: '/console',
             icons: [{ src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' }],
           },
           {

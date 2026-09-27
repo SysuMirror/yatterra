@@ -5,7 +5,7 @@ import { cn } from '@/lib/cn'
 import { haptic } from '@/lib/haptic'
 
 const tabs = [
-  { key: 'home', path: '/', icon: LayoutDashboard, label: '概览' },
+  { key: 'home', path: '/console', icon: LayoutDashboard, label: '概览' },
   { key: 'pods', path: '/pods', icon: Box, label: 'Pod' },
   { key: 'host', path: '/infra/host', icon: Server, label: '主机' },
   { key: 'harness', path: '/dev/harness', icon: Workflow, label: '编排' },
@@ -16,9 +16,11 @@ export function MobileTabBar() {
   const location = useLocation()
   const navigate = useNavigate()
 
-  // Determine active tab by matching path prefix
+  // Determine active tab by matching path prefix. The home tab points at
+  // /console (the dashboard) — "/" is the public landing page, so it must not
+  // be treated as the console's active state.
   const activeKey = tabs.find((t) => {
-    if (t.path === '/') return location.pathname === '/'
+    if (t.path === '/console') return location.pathname === '/console'
     return location.pathname.startsWith(t.path)
   })?.key ?? 'home'
 
