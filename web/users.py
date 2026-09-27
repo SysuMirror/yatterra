@@ -449,7 +449,9 @@ def search_users_prefix(prefix, limit=10, excluded=()):
     if not isinstance(prefix, str):
         return []
     prefix = prefix.strip()
-    if len(prefix) < 2 or len(prefix) > 64:
+    # Single ASCII chars match too many usernames; a lone CJK char is fine.
+    min_len = 1 if any(ord(c) > 127 for c in prefix) else 2
+    if len(prefix) < min_len or len(prefix) > 64:
         return []
     try:
         limit = max(1, min(int(limit), 20))
@@ -461,8 +463,12 @@ def search_users_prefix(prefix, limit=10, excluded=()):
            "COALESCE(NULLIF(u.display_name,''), u.username) AS display_name, "
            "COALESCE(u.avatar_url,'') AS avatar_url "
            "FROM users u LEFT JOIN oauth_identities i ON i.user_id=u.user_id "
-           "WHERE CONCAT_WS(' ', u.username, u.display_name, i.provider_name) LIKE %s ESCAPE '!'")
-    params = [pattern]
+           # Match each name field separately: a single CONCAT_WS + prefix LIKE
+           # would only ever hit the username, since it leads the concatenation.
+           "WHERE (u.username LIKE %s ESCAPE '!' "
+           "    OR u.display_name LIKE %s ESCAPE '!' "
+           "    OR i.provider_name LIKE %s ESCAPE '!')")
+    params = [pattern, pattern, pattern]
     if excluded:
         sql += " AND u.username NOT IN (" + ",".join(["%s"] * len(excluded)) + ")"
         params.extend(excluded)

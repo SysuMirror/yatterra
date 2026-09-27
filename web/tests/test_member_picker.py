@@ -41,12 +41,26 @@ class MemberPickerTests(unittest.TestCase):
             self.assertEqual(self.users.search_users_prefix('a_%!', 999, ['owner', 'member']), [{'username': 'a_%!'}])
         sql, params = cur.execute.call_args.args
         self.assertIn("ESCAPE '!'", sql)
+        # Each name field is matched separately: a single CONCAT_WS + prefix
+        # LIKE would only ever hit the leading field (the username).
+        self.assertNotIn('CONCAT_WS', sql)
+        self.assertEqual(sql.count("LIKE %s ESCAPE '!'"), 3)
         self.assertLess(sql.index('NOT IN'), sql.index('LIMIT'))
-        self.assertEqual(params, ('a!_!%!!%', 'member', 'owner', 20))
+        self.assertEqual(params, ('a!_!%!!%', 'a!_!%!!%', 'a!_!%!!%', 'member', 'owner', 20))
 
     def test_empty_overlong_non_string_do_not_query(self):
-        for q in ['', ' ', 'x' * 65, None, 42, {}]:
+        # A lone ASCII char would match half the table; one CJK char is a fine
+        # prefix for a nickname, so the minimum length depends on the alphabet.
+        for q in ['', ' ', 'x', 'x' * 65, None, 42, {}]:
             self.assertEqual(self.users.search_users_prefix(q), [])
+
+    def test_single_cjk_char_does_query(self):
+        cn = MagicMock(); cur = cn.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cur.fetchall.return_value = []
+        with patch.object(self.users, '_conn', return_value=cn):
+            self.assertEqual(self.users.search_users_prefix('中'), [])
+        sql, params = cur.execute.call_args.args
+        self.assertEqual(params, ('中%', '中%', '中%', 10))
 
     def test_mutations_validate_and_use_canonical_username(self):
         for method in [self.groups.invite_member, self.groups.add_owner]:
