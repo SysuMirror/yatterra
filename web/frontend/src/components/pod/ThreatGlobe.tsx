@@ -65,6 +65,15 @@ function jitter(ip: string): [number, number] {
   return [((h & 0xff) / 255 - 0.5) * 1.4, ((h >> 8 & 0xff) / 255 - 0.5) * 1.4]
 }
 
+/** Whiten a hex color so the comet trail reads as a hot core of its arc. */
+function tint(hex: string, amt = 0.55): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex)
+  if (!m) return '#ffffff'
+  const n = parseInt(m[1] ?? '', 16)
+  const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => Math.round(v + (255 - v) * amt))
+  return `rgb(${c[0]},${c[1]},${c[2]})`
+}
+
 interface ThreatData {
   target?: { lat?: number; lon?: number; name?: string }
   attacks?: any[]
@@ -78,9 +87,18 @@ function buildLinesAndPoints(data: ThreatData) {
 
   const attackLines = attacks.filter((a) => a.lat && a.lon && target.lat && target.lon).map((a) => {
     const j = jitter(a.ip)
+    const color = patColor(a.pattern)
     return {
       coords: [[a.lon + j[0], a.lat + j[1]], [target.lon, target.lat]],
       value: a.count,
+      lineStyle: { color },
+      effect: {
+        show: true,
+        period: 3.2 + ((a.count || 1) % 7) * 0.35,
+        trailWidth: 2.4,
+        trailLength: 0.55,
+        trailColor: tint(color),
+      },
     }
   })
   const normalLines = normal.filter((n) => n.lat && n.lon && target.lat && target.lon).map((n) => {
@@ -89,19 +107,26 @@ function buildLinesAndPoints(data: ThreatData) {
   })
   const attackPoints = attacks.filter((a) => a.lat && a.lon).map((a) => {
     const j = jitter(a.ip)
+    const color = patColor(a.pattern)
     return {
       value: [a.lon + j[0], a.lat + j[1], a.count],
       ip: a.ip, city: a.city, country: a.country, count: a.count,
       banned: a.banned, pattern: a.pattern, response: a.response,
-      itemStyle: { color: patColor(a.pattern) },
+      itemStyle: { color },
     }
   })
+  // Soft glow disc behind every attack point — additive blending turns it
+  // into a bloom halo without paying for a post-processing pass.
+  const attackHalos = attackPoints.map((p) => ({
+    ...p,
+    itemStyle: { color: (p.itemStyle as { color: string }).color, opacity: 0.14 },
+  }))
   const normalPoints = normal.filter((n) => n.lat && n.lon).map((n) => {
     const j = jitter(n.ip)
     return { value: [n.lon + j[0], n.lat + j[1], n.count], ip: n.ip, city: n.city, country: n.country, count: n.count }
   })
   const targetPoints = target.lat ? [{ value: [target.lon, target.lat, 100], name: target.name || '本站' }] : []
-  return { attackLines, normalLines, attackPoints, normalPoints, targetPoints }
+  return { attackLines, normalLines, attackPoints, attackHalos, normalPoints, targetPoints }
 }
 
 function fmtPoint(d: any, c: string): string {
@@ -113,19 +138,32 @@ function fmtPoint(d: any, c: string): string {
 
 const EARTH_URL = '/static/vendor/earth.jpg?v=20260910b'
 
-let _earthImg: HTMLImageElement | null = null
+/** Fresh `HTMLImageElement` for the globe texture, every time.
+ *
+ *  echarts-gl caches the uploaded GPU texture per image element: once the
+ *  chart re-renders its series, the cached texture is dropped and the sphere
+ *  goes flat grey — and re-sending the SAME element does not bring it back.
+ *  Handing it a newly decoded element is the only thing that forces a
+ *  re-upload, so every setOption that touches the globe must be paired with a
+ *  brand-new image (browser HTTP cache keeps this ~free). */
+function nextTask(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
 
-/** Preload the earth texture ourselves — echarts-gl's internal image loader
- *  is unreliable under echarts 5.x (globe renders black); passing a decoded
- *  HTMLImageElement as baseTexture is the only path that renders reliably
- *  (canvas textures don't upload at all). If WebGL drops the texture under
- *  GPU memory pressure, the webglcontextlost handler rebuilds the chart and
- *  re-uploads from this cached element. */
-async function preloadEarth(): Promise<HTMLImageElement | string> {
-  if (_earthImg?.complete && _earthImg.naturalWidth > 0) return _earthImg
+function loadEarthImage(): Promise<HTMLImageElement | string> {
   return new Promise((resolve) => {
     const img = new Image()
-    img.onload = () => { _earthImg = img; resolve(img) }
+    img.onload = () => {
+      // echarts-gl uploads the bitmap synchronously during render; without an
+      // explicit decode the GPU upload can grab an undecoded frame and the
+      // sphere renders as a flat grey shell.
+      if (typeof img.decode === 'function') {
+        img.decode().then(
+          () => resolve(img),
+          () => resolve(img),
+        )
+      } else resolve(img)
+    }
     img.onerror = () => resolve(EARTH_URL) // fall back to URL load
     img.src = EARTH_URL
   })
@@ -140,10 +178,10 @@ function buildGlobeOption(data: ThreatData, earth?: HTMLImageElement | string) {
       baseTexture: earth ?? EARTH_URL,
       shading: 'lambert',
       light: {
-        ambient: { intensity: 0.6 },
-        main: { intensity: 1.5, shadow: false },
+        ambient: { intensity: 0.5 },
+        main: { intensity: 1.3, shadow: false },
       },
-      atmosphere: { show: true, offset: 4, color: '#4f7cd0', glowPower: 3, innerGlowPower: 2 },
+      atmosphere: { show: true, offset: 4, color: '#5b8cff', glowPower: 3, innerGlowPower: 2 },
       globeOuterRadius: 100,
       // The camera must never enter the atmosphere/bloom shell — closer than
       // ~radius the view clips and washes out to white (echarts-gl default
@@ -160,21 +198,36 @@ function buildGlobeOption(data: ThreatData, earth?: HTMLImageElement | string) {
       },
       silent: false,
     },
-    tooltip: { show: true, backgroundColor: 'rgba(11,15,26,0.92)', borderColor: 'rgba(79,124,208,0.35)', textStyle: { color: '#dbe4f5', fontSize: 12 } },
+    tooltip: {
+      show: true,
+      backgroundColor: 'rgba(11,15,26,0.92)',
+      borderColor: 'rgba(79,124,208,0.35)',
+      textStyle: { color: '#dbe4f5', fontSize: 12 },
+      formatter: (p: any) => {
+        const d = p?.data
+        return d && d.ip ? fmtPoint(d, patColor(d.pattern)) : ''
+      },
+    },
     series: [
       {
-        // All attack arcs share one warm-red family — per-pattern colors
-        // stay on the scatter points and legend, keeping the sky readable.
+        // Arcs are tinted per attack pattern so the sky matches the legend;
+        // per-item `effect` gives each comet a trail in its own hue.
         type: 'lines3D', coordinateSystem: 'globe', blendMode: 'lighter',
-        lineStyle: { width: 2.4, opacity: 0.8, color: '#ff4a30' },
-        effect: { show: true, period: 4, trailWidth: 2.6, trailLength: 0.5, trailColor: '#ffa184' },
+        lineStyle: { width: 2.2, opacity: 0.75, color: '#ff4a30' },
+        effect: { show: true, period: 4, trailWidth: 2.4, trailLength: 0.5, trailColor: '#ffd9cc' },
         data: L.attackLines,
       },
       {
         type: 'lines3D', coordinateSystem: 'globe', blendMode: 'lighter',
-        lineStyle: { width: 1.6, opacity: 0.45, color: '#4fae7a' },
+        lineStyle: { width: 1.5, opacity: 0.4, color: '#4fae7a' },
         effect: { show: true, period: 7, trailWidth: 1.6, trailLength: 0.35, trailColor: '#8fd8ab' },
         data: L.normalLines,
+      },
+      {
+        type: 'scatter3D', coordinateSystem: 'globe', blendMode: 'lighter', silent: true,
+        symbolSize: (v: number[]) => Math.min(7 + (v[2] ?? 0) / 260, 18) * 2.6,
+        itemStyle: { opacity: 0.1 },
+        data: L.attackHalos,
       },
       {
         type: 'scatter3D', coordinateSystem: 'globe', blendMode: 'lighter',
@@ -190,8 +243,13 @@ function buildGlobeOption(data: ThreatData, earth?: HTMLImageElement | string) {
       {
         // Target marker. No 3D text label (it clips into the sphere at limb
         // angles) — the target identity lives in the fixed HUD panel.
-        type: 'scatter3D', coordinateSystem: 'globe', symbolSize: 14,
-        itemStyle: { color: '#34d399', opacity: 1, borderColor: '#a7f3d0', borderWidth: 2.5 },
+        type: 'scatter3D', coordinateSystem: 'globe', silent: true, symbolSize: 30,
+        itemStyle: { color: 'rgba(52,211,153,0.12)', borderColor: 'rgba(52,211,153,0.85)', borderWidth: 2, opacity: 0.9 },
+        data: L.targetPoints,
+      },
+      {
+        type: 'scatter3D', coordinateSystem: 'globe', symbolSize: 13,
+        itemStyle: { color: '#34d399', opacity: 1, borderColor: '#d1fae5', borderWidth: 2.5 },
         emphasis: { scale: 1.4 },
         data: L.targetPoints,
       },
@@ -260,9 +318,18 @@ export function ThreatGlobe({ data, className }: ThreatGlobeProps) {
             ensureChart()
           }, 400 * rebuilds)
         })
-        const earth = await preloadEarth()
-        if (disposed) return
+        // Two independent decodes: the option's baseTexture and the follow-up
+        // re-apply must be *different* image elements, otherwise echarts-gl
+        // reuses the (sometimes never-uploaded) cached GPU texture and the
+        // sphere renders flat grey. The re-apply must also land in a *later*
+        // task than the initial setOption — back-to-back calls in one task
+        // reliably leave the sphere grey.
+        const [earth, reapply] = await Promise.all([loadEarthImage(), loadEarthImage()])
+        if (disposed || chartRef.current !== chart) return
         chart.setOption(buildGlobeOption(dataRef.current, earth))
+        await nextTask()
+        if (disposed || chartRef.current !== chart) return
+        chart.setOption({ globe: { baseTexture: reapply } })
       } catch (e: any) {
         setFailed(e?.message || String(e))
       }
@@ -300,12 +367,26 @@ export function ThreatGlobe({ data, className }: ThreatGlobeProps) {
     }
   }, [])
 
-  // Refresh series when data changes without re-creating the globe
+  // Refresh series when data changes without re-creating the globe.
+  // Order matters: updating `series` invalidates echarts-gl's globe texture,
+  // so a second setOption carrying a *freshly decoded* baseTexture has to
+  // follow in a later task — otherwise the earth silently turns grey for the
+  // rest of the session.
   useEffect(() => {
-    if (!chartRef.current || !data) return
-    try {
-      chartRef.current.setOption({ series: buildGlobeOption(data).series })
-    } catch { /* chart may be mid-init */ }
+    const chart = chartRef.current
+    if (!chart || !data) return
+    let cancelled = false
+    ;(async () => {
+      const earth = await loadEarthImage()
+      if (cancelled || chartRef.current !== chart) return
+      try {
+        chart.setOption({ series: buildGlobeOption(data).series })
+        await nextTask()
+        if (cancelled || chartRef.current !== chart) return
+        chart.setOption({ globe: { baseTexture: earth } })
+      } catch { /* chart may be mid-init */ }
+    })()
+    return () => { cancelled = true }
   }, [data])
 
   return (
@@ -322,14 +403,14 @@ export function ThreatGlobe({ data, className }: ThreatGlobeProps) {
       <button
         onClick={handleAiAnalyze}
         disabled={aiLoading}
-        className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-black/40 hover:bg-black/60 disabled:opacity-40 transition-colors backdrop-blur-sm"
+        className="absolute top-3 right-3 z-20 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-mono text-[10px] tracking-wider uppercase text-white/80 bg-black/50 hover:bg-black/75 hover:text-white disabled:opacity-40 transition-colors border border-white/10 backdrop-blur-md"
       >
-        {aiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-        AI 分析威胁
+        {aiLoading ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} className="text-[#a78bfa]" />}
+        AI 分析
       </button>
       {aiTip && (
-        <div className="absolute bottom-2 left-2 right-2 z-10 p-3 rounded-lg bg-black/70 backdrop-blur-sm border border-white/10 text-xs text-white/90 whitespace-pre-wrap max-h-48 overflow-y-auto">
-          <div className="flex items-center gap-1 mb-1 text-[10px] font-semibold text-accent"><Sparkles size={9} /> AI 分析</div>
+        <div className="absolute bottom-11 left-3 right-3 z-20 pointer-events-auto p-3 rounded-lg bg-black/80 backdrop-blur-md border border-white/10 text-xs text-white/90 whitespace-pre-wrap max-h-44 overflow-y-auto shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
+          <div className="flex items-center gap-1 mb-1.5 text-[10px] font-semibold tracking-wider text-[#a78bfa]"><Sparkles size={9} /> AI 分析</div>
           {aiTip}
         </div>
       )}
