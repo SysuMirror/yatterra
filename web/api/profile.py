@@ -67,6 +67,32 @@ def profile_password():
     return jsonify({"ok": True})
 
 
+@profile_bp.route("/push-prefs", methods=["GET"])
+@require_auth()
+def push_prefs_get():
+    """读取当前用户的推送偏好 (prefs.push_kinds: None=全部, 或 kind 列表)。"""
+    kinds = users_mod.get_push_kinds(current_username())
+    return jsonify({"push_kinds": kinds})
+
+
+@profile_bp.route("/push-prefs", methods=["PUT"])
+@require_auth()
+def push_prefs_put():
+    """保存推送偏好。body: {"push_kinds": null | ["pod-down", ...]}"""
+    body = request.get_json(silent=True) or {}
+    if "push_kinds" not in body:
+        raise bad_request("push_kinds is required")
+    kinds = body.get("push_kinds")
+    if kinds is not None and not isinstance(kinds, list):
+        raise bad_request("push_kinds 必须是列表或 null")
+    _cu = current_username()
+    ok, err = users_mod.set_push_kinds(_cu, kinds)
+    if not ok:
+        raise bad_request(err)
+    audit.record("api_push_prefs", detail=f"kinds={kinds}", actor=_cu)
+    return jsonify({"ok": True, "push_kinds": users_mod.get_push_kinds(_cu)})
+
+
 @profile_bp.route("/bind/ssemarket", methods=["POST"])
 @require_auth()
 def profile_bind_ssemarket():

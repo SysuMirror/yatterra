@@ -100,21 +100,17 @@ def _body():
     return request.get_json(silent=True) or {}
 
 
-# ── self-documenting root ─────────────────────────────────────
+# ── root ──────────────────────────────────────────────────────
+# SECURITY: this root must never self-describe.  It previously returned the
+# full endpoint inventory (users/storage/databases/deploys/…) together with
+# the exact permission name each route requires, to *unauthenticated* callers
+# — an information-disclosure finding ("unauth API self-description leak at
+# /api/v1/").  Keep it authenticated and minimal; do not add route/permission
+# maps back here.
 @api_bp.route("/", methods=["GET"])
+@api_auth()
 def api_index():
-    return jsonify({"service": "YatTerra API", "version": "1",
-                    "auth": "Authorization: Bearer <token>",
-                    "endpoints": {
-        "users":       "GET /users, POST /users, DELETE /users/<name>, PUT /users/<name>/role, PUT /users/<name>/password [admin.users]",
-        "groups":      "GET /groups, POST /groups, GET/DELETE /groups/<name>, POST /groups/<name>/start|stop|restart, GET /groups/<name>/logs [group.view/create + pod access]",
-        "deploys":     "GET/POST /groups/<name>/deploys, POST /groups/<name>/deploys/<id>/run|stop, GET /groups/<name>/deploys/<id>/status|logs, DELETE /groups/<name>/deploys/<id> [pod access]",
-        "storage":     "GET /storage, POST /storage/buckets, DELETE /storage/buckets/<name>, POST /storage/keys, DELETE /storage/keys/<id> [infra.storage]",
-        "databases":   "GET /databases, POST /databases/creds, DELETE /databases/creds/<id> [infra.db]",
-        "host":        "GET /host/health [infra.host]",
-        "audit":       "GET /audit [ops.audit]",
-        "tokens":      "GET /tokens, POST /tokens, DELETE /tokens/<id> [any authenticated user]",
-    }})
+    return jsonify({"service": "YatTerra API", "version": "1"})
 
 
 # ── users ─────────────────────────────────────────────────────
@@ -488,7 +484,7 @@ def api_tokens_delete(tid):
 from .pods import pods_bp  # noqa: E402
 from .auth import auth_bp  # noqa: E402
 from .infra import infra_bp  # noqa: E402
-from .agents import agents_bp  # noqa: E402
+from .agents import agents_bp, harnesses_bp  # noqa: E402
 from .mcp import mcp_bp  # noqa: E402
 from .audit import audit_bp  # noqa: E402
 from .shared import shared_bp  # noqa: E402
@@ -499,9 +495,6 @@ from .threat_map import threat_map_bp  # noqa: E402
 from .push import push_bp  # noqa: E402
 from .ai import ai_bp  # noqa: E402
 
-users = import_module("users")
-audit = import_module("audit")
-
 
 # ── Blueprint registration helper ─────────────────────────────
 def register_all_blueprints(app):
@@ -511,6 +504,7 @@ def register_all_blueprints(app):
     app.register_blueprint(auth_bp)
     app.register_blueprint(infra_bp)
     app.register_blueprint(agents_bp)
+    app.register_blueprint(harnesses_bp)
     app.register_blueprint(mcp_bp)
     app.register_blueprint(audit_bp)
     app.register_blueprint(shared_bp)

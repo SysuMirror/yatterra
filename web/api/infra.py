@@ -12,6 +12,8 @@ from middleware.error_handler import ApiError, not_found, bad_request
 import siteconf
 import host_health, remote_hosts, metrics
 import cpu_stats
+import cgroup_stats
+import kvcache
 import gpu_stats
 import minio_svc as minio_mod
 import db_svc as db_mod
@@ -185,6 +187,53 @@ def infra_cpu_requests():
         "used_mem_gi": round(used_mem, 2),
         "pods": pods_out,
     })
+
+
+@infra_bp.route("/usage", methods=["GET"])
+@require_auth("infra.host")
+def infra_usage():
+    """Live per-group CPU/memory *actually in use* (cgroup v2), for the pie charts.
+
+    Complements ``/cpu-requests`` (the EWMA *reservations* stamped into pod
+    specs) with what the pods are really consuming right now: CPU cores from the
+    cgroup ``usage_usec`` delta, memory as the kubelet working set
+    (``memory.current`` minus reclaimable file cache).  Straight from cgroup v2,
+    so unlike ``kubectl top`` there is no metrics-server lag.
+
+    Returns: {cores, mem_total_gi, used_cores, used_mem_gi,
+              groups: [{name, cpu_cores, mem_gi}]}
+    """
+    def _compute():
+        try:
+            rows = cgroup_stats.sample_live()
+        except Exception:
+            rows = {}
+        groups_out = [
+            {"name": g, "cpu_cores": round(c, 2), "mem_gi": round(m, 2)}
+            for g, (c, m) in rows.items()
+        ]
+        groups_out.sort(key=lambda x: x["mem_gi"], reverse=True)
+        alloc_cpu = alloc_mem = 0.0
+        try:
+            r = _sp.run(["kubectl", "get", "nodes", "-o", "json"],
+                        capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                for n in _json.loads(r.stdout).get("items", []):
+                    a = n.get("status", {}).get("allocatable", {}) or {}
+                    alloc_cpu += _parse_cpu_q(a.get("cpu", "0"))
+                    alloc_mem += _parse_mem_gi_q(a.get("memory", "0"))
+        except Exception:
+            pass
+        return {
+            "cores": round(alloc_cpu, 1),
+            "mem_total_gi": round(alloc_mem, 1),
+            "used_cores": round(sum(g["cpu_cores"] for g in groups_out), 2),
+            "used_mem_gi": round(sum(g["mem_gi"] for g in groups_out), 2),
+            "groups": groups_out,
+        }
+    # sample_live() blocks ~1s to measure a CPU rate; cache so the cost is
+    # amortised across the page's 10s refresh rather than paid every request.
+    return jsonify(kvcache.get_or_compute("infra:live-usage", _compute, ttl=8))
 
 
 # ── storage (MinIO) ──────────────────────────────────────────
@@ -394,8 +443,8 @@ def infra_databases_cred_create():
     """Issue a database credential."""
     body = request.get_json(silent=True) or {}
     service = (body.get("service") or "").strip()
-    if service not in ("mysql", "redis", "qdrant"):
-        raise bad_request("service must be mysql, redis, or qdrant")
+    if service not in ("mysql", "redis", "qdrant", "postgres"):
+        raise bad_request("service must be mysql, redis, qdrant, or postgres")
     # Accept the frontend group name while retaining the API label field.
     label = (body.get("label") or body.get("group") or "").strip()
     try:

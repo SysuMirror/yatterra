@@ -10,6 +10,7 @@ from middleware.error_handler import ApiError, not_found, bad_request
 import agent
 import agent_runs
 import agent_conf
+import harness_runs
 import browser_assistant
 users = import_module("users")
 import groups
@@ -343,3 +344,136 @@ def agents_pods():
                 "role": users.pod_role(_uo, g),
             })
     return jsonify({"pods": out})
+
+
+# ─────────────────────────────────────────────────────────────
+# Harness(编排)API — /api/harnesses
+# SPA dev/harness 页的"运行/导入"入口用带 /api 前缀的 client 调用这些端点;
+# 列表/详情/删除历史遗留地走裸 /harness/*(见 app.py)。两者共用 agent_conf
+# 的按用户 harness 存储 + harness_runs 后台执行器。
+# ─────────────────────────────────────────────────────────────
+harnesses_bp = Blueprint("api_harnesses", __name__, url_prefix="/api/harnesses")
+
+
+@harnesses_bp.route("", methods=["GET"])
+@require_auth("dev.harness")
+def harnesses_list():
+    """列出当前用户的 harness 名称。"""
+    return jsonify({"names": agent_conf.list_harnesses(current_username())})
+
+
+@harnesses_bp.route("/stream", methods=["GET"])
+@require_auth("dev.harness")
+def harnesses_stream():
+    """Harness 运行的 SSE 流。Query: run_id, offset;Header: Last-Event-ID。"""
+    run_id = request.args.get("run_id", "")
+    lei = request.headers.get("Last-Event-ID")
+    try:
+        if lei is not None:
+            after = int(lei) + 1
+        else:
+            after = int(request.args.get("offset") or 0)
+    except ValueError:
+        after = 0
+
+    run = harness_runs.get(run_id)
+    if not run:
+        raise not_found("Harness run not found or has ended")
+    _uo = current_user_obj()
+    owner = getattr(run, "username", None)
+    if owner and owner != current_username() \
+            and _uo.get("role") not in ("super", "admin"):
+        raise ApiError("FORBIDDEN", "Access denied for this run", 403)
+
+    def stream():
+        yield "retry: 5000\n\n"
+        for item in harness_runs.stream_events(run_id, after):
+            if item is None:
+                yield ": keepalive\n\n"
+            else:
+                idx, ev = item
+                yield f"id: {idx}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    resp = Response(stream(), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
+@harnesses_bp.route("/import", methods=["POST"])
+@require_auth("dev.harness")
+def harnesses_import():
+    """从公开商店导入一个 harness 到当前用户的个人库。"""
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise bad_request("name is required")
+    ok, err = agent_conf.import_public_harness(name, current_username())
+    if not ok:
+        raise bad_request(err or "导入失败")
+    audit.record("api_harness_import", detail=name, actor=current_username() or "unknown")
+    return jsonify({"ok": True, "name": name})
+
+
+@harnesses_bp.route("/<name>", methods=["GET"])
+@require_auth("dev.harness")
+def harnesses_get(name):
+    """读取一个 harness 定义。"""
+    doc = agent_conf.load_harness(name, current_username())
+    if not doc:
+        raise not_found(f"harness 不存在: {name}")
+    return jsonify(doc)
+
+
+@harnesses_bp.route("", methods=["POST"])
+@require_auth("dev.harness")
+def harnesses_create():
+    """保存一个新 harness。Body: {name, doc?} 或直接是含 name 的 doc。"""
+    body = request.get_json(silent=True) or {}
+    doc = body.get("doc") if isinstance(body.get("doc"), dict) else body
+    name = (body.get("name") or doc.get("name") or "").strip()
+    if not name:
+        raise bad_request("name is required")
+    try:
+        agent_conf.save_harness(name, doc, current_username())
+    except ValueError as e:
+        raise bad_request(str(e))
+    audit.record("api_harness_save", detail=name, actor=current_username() or "unknown")
+    return jsonify({"ok": True, "name": name})
+
+
+@harnesses_bp.route("/<name>", methods=["PUT"])
+@require_auth("dev.harness")
+def harnesses_update(name):
+    """覆盖保存一个 harness。Body 为 doc(或 {doc: ...})。"""
+    body = request.get_json(silent=True) or {}
+    doc = body.get("doc") if isinstance(body.get("doc"), dict) else body
+    try:
+        agent_conf.save_harness(name, doc, current_username())
+    except ValueError as e:
+        raise bad_request(str(e))
+    audit.record("api_harness_update", detail=name, actor=current_username() or "unknown")
+    return jsonify({"ok": True})
+
+
+@harnesses_bp.route("/<name>", methods=["DELETE"])
+@require_auth("dev.harness")
+def harnesses_delete(name):
+    """删除一个 harness。"""
+    agent_conf.delete_harness(name, current_username())
+    audit.record("api_harness_delete", detail=name, actor=current_username() or "unknown")
+    return jsonify({"ok": True})
+
+
+@harnesses_bp.route("/<name>/run", methods=["POST"])
+@require_auth("dev.harness")
+def harnesses_run(name):
+    """启动一次后台 harness 运行,返回 run_id(用 /stream 订阅事件)。"""
+    _uo = current_user_obj()
+    _cu = current_username()
+    if not agent_conf.load_harness(name, _cu):
+        raise not_found(f"harness 不存在: {name}")
+    run_id = secrets.token_hex(8)
+    harness_runs.start(name, run_id, user=_uo)
+    audit.record("api_harness_run", detail=f"{name} run={run_id}", actor=_cu or "unknown")
+    return jsonify({"run_id": run_id})

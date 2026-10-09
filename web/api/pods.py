@@ -7,7 +7,7 @@ Re-uses auth helpers (api_auth, api_pod, _actor, _body) from the api package.
 """
 import os, subprocess, time, shlex, codecs, select, base64, json
 from importlib import import_module
-from flask import Blueprint, request, jsonify, g, Response
+from flask import Blueprint, request, jsonify, g, Response, current_app
 
 import siteconf
 users = import_module("users")
@@ -25,6 +25,7 @@ _SVC_ENDPOINTS = {
     "mysql": ("mysql.platform-infra.svc.cluster.local", 3306),
     "redis": ("redis.platform-infra.svc.cluster.local", 6379),
     "qdrant": ("qdrant.platform-infra.svc.cluster.local", 6333),
+    "postgres": ("postgres.platform-infra.svc.cluster.local", 5432),
 }
 
 def _db_cred_card(c):
@@ -395,7 +396,8 @@ def create_pod():
         audit.record("api_create_pod", detail=pod["name"], actor=_actor())
         return jsonify({"ok": True, "name": pod["name"]}), 201
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        current_app.logger.warning("create_pod failed: %s", e, exc_info=True)
+        return jsonify({"error": "创建 Pod 失败，请检查名称是否合法或已存在"}), 400
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -630,13 +632,17 @@ def get_metrics_history(name):
             cpu = [round(min(c / lim_mc * 100.0, 999.0), 1) for c in cpu]
         if lim_mm:
             mem = [round(min(m / lim_mm * 100.0, 999.0), 1) for m in mem]
+        gpu_series = metrics.group_gpu_history(pod.get("gpus"))
         return jsonify({
             "cpu": cpu,
             "mem": mem,
+            "gpu_util": gpu_series.get("gpu_util", []),
+            "gpu_mem": gpu_series.get("gpu_mem", []),
             "samples": snap.get("samples", 0),
         })
     except Exception as e:
-        return jsonify({"cpu": [], "mem": [], "error": str(e)})
+        current_app.logger.warning("metrics history for %s failed: %s", name, e)
+        return jsonify({"error": "获取指标历史失败"}), 502
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -817,16 +823,28 @@ def get_file_content(name):
     try:
         rc, out, err = deploys._exec(
             name,
+            # 首行输出文件总字节数(stat),其后是 head 截断的内容
+            f"stat -c %s {shlex.quote(norm)} 2>/dev/null; "
             f"head -c 262144 {shlex.quote(norm)} 2>/dev/null "
             "&& echo -n '__EOF__' || echo -n '__ERR__'",
             timeout=15)
         if "__ERR__" in out and "__EOF__" not in out:
             return jsonify({"error": (err or "读取失败").strip()}), 500
-        content = out.replace("__EOF__", "") if "__EOF__" in out else out
+        nl = out.find("\n")
+        size_str = out[:nl] if nl >= 0 else ""
+        body = out[nl + 1:] if nl >= 0 else out
+        content = body.replace("__EOF__", "") if "__EOF__" in body else body
+        try:
+            fsize = int(size_str.strip())
+        except (ValueError, AttributeError):
+            fsize = -1
+        # 截断标记:前端据此强制只读,防止把截断内容保存回去毁掉文件剩余部分
+        truncated = (fsize > 262144 if fsize >= 0
+                     else len(content.encode("utf-8")) >= 262144)
         is_binary = (any(ord(c) < 8 and c not in ('\n', '\r', '\t')
                         for c in content[:4096]) if content else False)
         return jsonify({"ok": True, "content": content, "binary": is_binary,
-                        "path": norm})
+                        "path": norm, "truncated": truncated, "size": fsize})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -871,6 +889,42 @@ def delete_file(name):
     try:
         deploys._rm(name, norm)
         return jsonify({"ok": True, "path": norm})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@pods_bp.route("/<name>/files/move", methods=["POST"])
+@api_pod("owner")
+def move_file(name):
+    """Rename/move a file or dir via `mv`(内容完整保留)。
+    Body: {path, new_path}"""
+    b = _body()
+    path = b.get("path", "")
+    new_path = b.get("new_path", "")
+    if not path or not new_path:
+        return jsonify({"error": "缺少 path 或 new_path"}), 400
+    norm = os.path.normpath(path)
+    new_norm = os.path.normpath(new_path)
+    roots = ("/home/cloud/", "/shared/")
+    if not any(norm.startswith(p) for p in roots) or \
+       not any(new_norm.startswith(p) for p in roots):
+        return jsonify({"error": "仅允许在 /home/cloud/ 或 /shared/ 下移动"}), 403
+    if norm in ("/home/cloud", "/shared"):
+        return jsonify({"error": "不能移动根目录"}), 400
+    if new_norm == norm or new_norm.startswith(norm + "/"):
+        return jsonify({"error": "不能移动到自身或其子目录"}), 400
+    try:
+        # mv 对已存在目标会静默覆盖,先探测拒绝,避免误覆盖丢数据
+        rc, _, _ = deploys._exec(
+            name, f"test -e {shlex.quote(new_norm)}", timeout=10)
+        if rc == 0:
+            return jsonify({"error": f"目标已存在: {new_norm}"}), 409
+        rc, out, err = deploys._exec(
+            name, f"mv {shlex.quote(norm)} {shlex.quote(new_norm)}",
+            timeout=30)
+        if rc != 0:
+            return jsonify({"error": (err or out or "移动失败").strip()}), 500
+        return jsonify({"ok": True, "path": norm, "new_path": new_norm})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1359,3 +1413,35 @@ def browse_deploy_files(name):
     """File browser for deploy script picker. ?path=..."""
     path = request.args.get("path", "/home/cloud")
     return jsonify(deploys.browse(name, path))
+
+
+# ── project profile (maintained by podwatch) ───────────────────
+@pods_bp.route("/<name>/profile", methods=["GET"])
+@api_pod("member")
+def get_pod_profile(name):
+    """Return the podwatch-maintained project profile + recent changes."""
+    try:
+        import podwatch
+        prof = podwatch.get_profile(name)
+    except Exception:
+        prof = None
+    return jsonify({"profile": prof, "changes": (prof or {}).get("changes", [])})
+
+
+@pods_bp.route("/<name>/profile/scan", methods=["POST"])
+@api_pod("member")
+def scan_pod_profile(name):
+    """Force an immediate scan of this pod's home (synchronous)."""
+    try:
+        import podwatch
+        result = podwatch.scan_one(name, force=True)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    if result is None:
+        return jsonify({"error": "该 Pod 没有可扫描的持久目录"}), 404
+    try:
+        import podwatch
+        prof = podwatch.get_profile(name)
+    except Exception:
+        prof = None
+    return jsonify({"result": result, "profile": prof})

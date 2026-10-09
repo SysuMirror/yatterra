@@ -37,8 +37,11 @@ def _vapid_info():
     return {
         "vapid_private_key": keys["private_key_pem"],
         "vapid_claims": {"sub": keys["subject"]},
-        "ttl": 3600,
     }
+
+
+# ttl 按 urgency 分级: high 存一天, normal 一小时, low 十分钟
+_TTL_BY_URGENCY = {"high": 86400, "normal": 3600, "low": 600}
 
 
 def _load_subs():
@@ -138,11 +141,22 @@ def _send_subscriptions(subs, payload):
     sent = errors = 0
     stale = []
     encoded = json.dumps(payload, ensure_ascii=False)
+    urgency = payload.get("urgency") if isinstance(payload, dict) else None
+    if urgency not in _TTL_BY_URGENCY:
+        urgency = "normal"
+    topic = payload.get("topic") if isinstance(payload, dict) else None
+    # pywebpush 不接受 urgency 关键字, Urgency 走 HTTP headers
+    headers = {"Urgency": urgency}
+    if topic:
+        headers["Topic"] = str(topic)
     for sub in subs:
         try:
+            kwargs = dict(vapid)
+            kwargs["ttl"] = _TTL_BY_URGENCY[urgency]
+            kwargs["headers"] = dict(headers)
             webpush(subscription_info={"endpoint": sub["endpoint"],
                                        "keys": sub.get("keys", {})},
-                    data=encoded, **vapid)
+                    data=encoded, **kwargs)
             sent += 1
         except WebPushException as exc:
             logger.warning("Push failed for user %s: %s", sub.get("_user", "?"), exc)
@@ -160,13 +174,73 @@ def _send_subscriptions(subs, payload):
     return {"sent": sent, "total": len(subs), "errors": errors, "stale_removed": len(stale)}
 
 
-def send_to_users(usernames, payload):
-    """Send a notification only to subscriptions owned by these users."""
+def send_to_users(usernames, payload, kind=None):
+    """Send a notification only to subscriptions owned by these users.
+
+    kind 未显式给出时取 payload 的 type/kind 字段; 用户 prefs.push_kinds
+    非空则只发 kind 在列表内的订阅, None 表示全部接收。
+    """
     wanted = {str(u) for u in (usernames or []) if u}
     if not wanted:
         return {"sent": 0, "total": 0, "errors": 0, "stale_removed": 0}
+    if kind is None and isinstance(payload, dict):
+        kind = payload.get("type") or payload.get("kind")
     subs = [s for s in _load_subs() if s.get("_user") in wanted]
+    if kind:
+        prefs_cache = {}
+        import users as users_mod
+        allowed = []
+        for s in subs:
+            u = s.get("_user")
+            if u not in prefs_cache:
+                try:
+                    prefs_cache[u] = users_mod.get_push_kinds(u)
+                except Exception:
+                    logger.exception("读取用户 %s 推送偏好失败, 按全部处理", u)
+                    prefs_cache[u] = None
+            kinds = prefs_cache[u]
+            if kinds is None or kind in kinds:
+                allowed.append(s)
+        skipped = len(subs) - len(allowed)
+        if skipped:
+            logger.info("推送按偏好跳过 %d 条订阅 (kind=%s)", skipped, kind)
+        subs = allowed
     return _send_subscriptions(subs, payload)
+
+
+@push_bp.route("/events", methods=["GET"])
+@require_auth()
+def events():
+    """通知中心:读取最近告警事件(去重表),支持分页与未读过滤。"""
+    try:
+        unread_only = request.args.get("unread_only") in ("1", "true", "yes")
+        limit = int(request.args.get("limit", 20) or 20)
+        offset = int(request.args.get("offset", 0) or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "参数错误"}}), 400
+    kind = request.args.get("kind") or None
+    import pwa_alerts
+    items, total, unread = pwa_alerts.list_events(
+        current_username(), limit=limit, offset=offset,
+        unread_only=unread_only, kind=kind)
+    return jsonify({"events": items, "total": total, "unread": unread,
+                    "limit": limit, "offset": offset})
+
+
+@push_bp.route("/events/read", methods=["POST"])
+@require_auth()
+def events_read():
+    """通知中心:标记已读。body 传 {"keys": [event_key...]} 或 {"all": true}。"""
+    data = request.get_json(silent=True) or {}
+    import pwa_alerts
+    if data.get("all"):
+        n = pwa_alerts.mark_read(current_username(), all=True)
+    elif isinstance(data.get("keys"), list):
+        n = pwa_alerts.mark_read(current_username(), event_keys=data["keys"])
+    else:
+        return jsonify({"error": {"code": "BAD_REQUEST",
+                                  "message": "需要 keys 列表或 all=true"}}), 400
+    return jsonify({"ok": True, "updated": n})
 
 
 @push_bp.route("/status", methods=["GET"])
