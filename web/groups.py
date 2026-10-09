@@ -55,6 +55,17 @@ if [ ! -e /home/cloud/.bashrc ]; then
   cp -a /etc/skel/. /home/cloud/ 2>/dev/null || true
   chown -R cloud:cloud /home/cloud 2>/dev/null || true
 fi
+# Expose the read-only in-pod programming guide (/etc/yatterra/README.md, a
+# ConfigMap mount) into the home dir so humans and AI coding agents that scan the
+# working directory (README.md / AGENTS.md / CLAUDE.md) find it. Never overwrite
+# a real file the user put there — only add the symlink when the path is free.
+if [ -e /etc/yatterra/README.md ]; then
+  for f in README.md AGENTS.md CLAUDE.md; do
+    if [ ! -e "/home/cloud/$f" ] && [ ! -L "/home/cloud/$f" ]; then
+      ln -s /etc/yatterra/README.md "/home/cloud/$f" 2>/dev/null || true
+    fi
+  done
+fi
 su -l cloud -c "mkdir -p ~/deploy/programs ~/deploy/logs ~/logs"
 if [ ! -x /home/cloud/.local/bin/supervisord ]; then
   su -l cloud -c "pip install --user --break-system-packages -q supervisor" >/tmp/sup_install.log 2>&1 || true
@@ -306,6 +317,14 @@ def deployment_yaml(g):
         hostPath:
           path: /usr/local/cuda
           type: Directory"""
+    # read-only in-pod programming guide (ConfigMap, see pod_guide.py). Applies
+    # to every group pod regardless of type.
+    guide_mount = """        - name: pod-guide
+          mountPath: /etc/yatterra
+          readOnly: true"""
+    guide_volume = """      - name: pod-guide
+        configMap:
+          name: yatterra-pod-guide"""
     return f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -352,6 +371,7 @@ spec:
         - name: group-home
           mountPath: /home/cloud
 {mps_mounts}
+{guide_mount}
       volumes:
       - name: shared
         hostPath:
@@ -362,6 +382,7 @@ spec:
           path: {GROUP_DATA_ROOT}/{name}/home
           type: DirectoryOrCreate
 {mps_volumes}
+{guide_volume}
 """
 
 
@@ -505,6 +526,13 @@ def write_manifest(g):
 
 
 def apply_group(g):
+    # Ensure the read-only in-pod guide ConfigMap exists before the Deployment
+    # that mounts it (a missing ConfigMap would leave the pod stuck mounting).
+    try:
+        import pod_guide
+        pod_guide.apply_configmap()
+    except Exception as e:
+        audit.record("pod_guide_configmap_error", detail=str(e))
     path = write_manifest(g)
     kubectl("apply", "-f", path)
     # If the internal-port list is now empty the manifest no longer contains the

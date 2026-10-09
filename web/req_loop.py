@@ -3,17 +3,20 @@
 requests **in-place** via the /resize subresource (k8s ≥1.33).  No restarts.
 
 Every POLL_S seconds:
-  1. Sample ``kubectl top pod`` → actual CPU/mem per group.
+  1. Sample per-group CPU/mem (``cgroup_stats`` if available, else ``top pod``).
   2. Sample each group's persistent home usage from the hostPath.
   3. Update EWMA per group.
   4. For each group with a Running pod: compute the EWMA-derived target
      request.  If it differs from the pod's current request by > DRIFT_PCT,
      patch the pod in-place (``kubectl patch pod --subresource resize``).
      The kubelet updates cgroups live; the scheduler sees the new value.
-     The Deployment template is NOT touched (that would trigger a rollout) —
-     it gets the EWMA-based request on the next user resize/restart via
-     ``deployment_yaml``/``request_for``.  Storage requests are template-only
-     because Kubernetes cannot resize ephemeral-storage in place.
+  5. For each group with NO pod at all: if the Deployment exists, align its
+     pod-template requests to the current target so a later involuntary
+     recreate doesn't resurrect the stale, over-reserved template value.
+     Patching a template only rolls out when a pod exists, so with no pod this
+     is disruption-free; it is skipped whenever a pod (Running or Pending) is
+     present, to never cause a surprise rollout.  Storage requests stay
+     template-time only (Kubernetes cannot resize ephemeral-storage in place).
 
 Logs to /opt/yatterra/req_loop.log.  Never raises out of the main loop.
 """
@@ -36,6 +39,15 @@ LOG = siteconf.path("req_loop.log")
 DRIFT_PCT = 10      # resize if target differs from current by this %
 COOLDOWN_S = 120    # min seconds between resizes for the same group
 MIN_SAMPLES = 4     # EWMA warm-up before resizing
+
+# Absolute deadbands: a change smaller than this is noise, not signal, so we
+# don't patch even when the relative drift exceeds DRIFT_PCT.  A near-idle pod's
+# cgroup CPU rate is noisy at the few-tens-of-millicores level, so without an
+# absolute floor it round-trips its request up and down every cooldown for no
+# benefit (all the while issuing a /resize call).  Both gates must pass on the
+# same dimension (see ``_moved_enough``).
+CPU_DEADBAND = 0.05        # cores  (50m)
+MEM_DEADBAND_GI = 0.0625   # GiB    (64Mi)
 NS = siteconf.GROUP_NS
 CONTAINER = siteconf.GROUP_CONTAINER
 
@@ -88,7 +100,20 @@ def _kubectl(*args, timeout=15):
 
 
 def sample_usage():
-    """Return {group_name: (cpu_cores, mem_gi)} for Running pods."""
+    """Return {group_name: (cpu_cores, mem_gi)} for Running pods.
+
+    Prefers ``cgroup_stats.sample_groups()`` (instantaneous cgroup v2 counters,
+    no metrics-server lag) and falls back to the ``kubectl top pod`` path when
+    cgroup accounting is unavailable.  ``cgroup_stats`` is imported lazily so a
+    missing/broken module degrades gracefully instead of breaking the loop.
+    """
+    try:
+        import cgroup_stats
+        rows = cgroup_stats.sample_groups()
+        if rows:
+            return {str(k): (float(v[0]), float(v[1])) for k, v in rows.items()}
+    except Exception:
+        pass
     try:
         rows = cpu_stats._per_group_raw()
     except Exception:
@@ -114,12 +139,24 @@ def sample_storage_usage(gmap):
 
 
 def get_pod_name(name):
-    """Return the running pod name for a group, or None."""
+    """Return ``(pod_name_or_None, ok)`` for a group's pod.
+
+    ``ok`` is False when the query itself failed (kubectl/API error, timeout),
+    so a caller can tell "the group genuinely has no pod" (ok=True, pod=None)
+    apart from "couldn't ask" (ok=False).  Collapsing the two would let a
+    transient kubectl error masquerade as an empty group and let the
+    deployment-template sync fire while a pod is actually Running.
+
+    The jsonpath uses ``items[*]`` deliberately: ``items[0]`` errors (rc!=0) on
+    an *empty* list, which would be indistinguishable from a real query failure
+    and would silently disable the no-pod template sync.
+    """
     rc, out, _ = _kubectl("get", "pod", "-l", f"app=group-{name}",
-                          "-o", "jsonpath={.items[0].metadata.name}")
-    if rc == 0 and out.strip():
-        return out.strip()
-    return None
+                          "-o", "jsonpath={.items[*].metadata.name}")
+    if rc != 0:
+        return None, False
+    names = out.split()
+    return (names[0] if names else None), True
 
 
 def get_pod_request(pod):
@@ -133,6 +170,105 @@ def get_pod_request(pod):
         return d.get("cpu"), d.get("memory")
     except Exception:
         return None, None
+
+
+def get_deployment(name):
+    """Return the deployment name 'group-<name>' if it exists, else None."""
+    rc, out, _ = _kubectl("get", "deployment", f"group-{name}",
+                          "-o", "jsonpath={.metadata.name}")
+    if rc == 0 and out.strip():
+        return out.strip()
+    return None
+
+
+def get_deployment_requests(name):
+    """Return (cpu_str, mem_str) of the deployment pod-template requests.
+
+    (None, None) when the deployment or its requests are missing.
+    """
+    rc, out, _ = _kubectl("get", "deployment", f"group-{name}", "-o",
+                          "jsonpath="
+                          "{.spec.template.spec.containers[0].resources.requests}")
+    if rc != 0:
+        return None, None
+    try:
+        d = json.loads(out)
+        return d.get("cpu"), d.get("memory")
+    except Exception:
+        return None, None
+
+
+def patch_deployment_requests(name, cpu_str, mem_str):
+    """Strategic-merge-patch the deployment pod-template requests. (ok, error).
+
+    ``--type strategic`` is required, not cosmetic: ``containers`` is a
+    strategic-merge list keyed by ``name``, so a single-container payload merges
+    into the existing container by name and preserves its image/command/env.
+    With ``--type merge`` (RFC-7386 JSON merge) the list would be replaced
+    wholesale, dropping ``image`` → the API rejects the patch
+    ("containers[0].image: Required value").
+
+    Ephemeral-storage is deliberately left alone: the group home is a hostPath,
+    so its byte count must never become a scheduler reservation (see
+    ``req_estimate.request_for``).
+    """
+    patch = json.dumps({"spec": {"template": {"spec": {"containers": [
+        {"name": CONTAINER, "resources": {"requests": {"cpu": cpu_str, "memory": mem_str}}}
+    ]}}}})
+    rc, out, err = _kubectl("patch", "deployment", f"group-{name}",
+                            "--type", "strategic", "-p", patch)
+    if rc == 0:
+        return True, ""
+    return False, err.strip() or out.strip()
+
+
+def _moved_enough(cur_cpu, cur_mem, new_cpu, new_mem):
+    """True when a request change clears DRIFT_PCT *and* the absolute deadband.
+
+    Both gates must pass on the *same* dimension before the change is worth a
+    patch: a large relative jump that amounts to a few millicores is noise on a
+    near-idle pod, while a large absolute jump on a big reservation already
+    clears the relative gate on its own.
+    """
+    dcpu = abs(new_cpu - cur_cpu)
+    dmem = abs(new_mem - cur_mem)
+    cpu_moved = cur_cpu > 0 and dcpu / cur_cpu >= DRIFT_PCT / 100.0 and dcpu >= CPU_DEADBAND
+    mem_moved = cur_mem > 0 and dmem / cur_mem >= DRIFT_PCT / 100.0 and dmem >= MEM_DEADBAND_GI
+    return cpu_moved or mem_moved
+
+
+def sync_deployment_template(name, cpu_str, mem_str):
+    """Align a Deployment's pod-template requests to the target when no pod exists.
+
+    Only reached when the group has no pod, so a merge-patch cannot roll out.
+    Patches only when ``_moved_enough`` says the template really drifted from
+    the target (relative drift *and* absolute deadband) so a steady state
+    doesn't re-patch every poll.  Returns True if patched; never raises.
+    """
+    try:
+        if not get_deployment(name):
+            return False
+        cur_cpu_str, cur_mem_str = get_deployment_requests(name)
+        if not cur_cpu_str or not cur_mem_str:
+            return False
+        cur_cpu = _parse_cpu(cur_cpu_str)
+        cur_mem = _parse_mem_gi(cur_mem_str)
+        new_cpu = _parse_cpu(cpu_str)
+        new_mem = _parse_mem_gi(mem_str)
+        if cur_cpu <= 0 or cur_mem <= 0:
+            return False
+        if not _moved_enough(cur_cpu, cur_mem, new_cpu, new_mem):
+            return False
+        ok, err = patch_deployment_requests(name, cpu_str, mem_str)
+        if ok:
+            log(f"template sync {name}: {cur_cpu_str}->{cpu_str} cpu, "
+                f"{cur_mem_str}->{mem_str} mem (no pod; template only, no rollout)")
+            return True
+        log(f"template sync {name}: FAILED {err[:120]}")
+        return False
+    except Exception as ex:
+        log(f"template sync {name}: error {ex!r}")
+        return False
 
 
 def resize_pod_inplace(pod, cpu_str, mem_str):
@@ -161,9 +297,16 @@ def reconcile(name, g, sample, now):
         name, limit_cpu, limit_mem,
         req_estimate.parse_storage_gi(g.get("storage", "1Gi")))
 
-    # find running pod
-    pod = get_pod_name(name)
+    # find running pod. ok=False means the query failed — do NOT treat it as
+    # an empty group (that could patch a live Deployment's template).
+    pod, ok = get_pod_name(name)
+    if not ok:
+        return False
     if not pod:
+        # No pod at all → keep the Deployment template in sync (a template-only
+        # patch cannot roll out).  If a pod exists (Running *or* Pending) we never
+        # touch the template, to avoid triggering a surprise rollout.
+        sync_deployment_template(name, t_cpu_str, t_mem_str)
         return False
 
     cur_cpu_str, cur_mem_str = get_pod_request(pod)
@@ -174,10 +317,9 @@ def reconcile(name, g, sample, now):
     if cur_cpu <= 0 or cur_mem <= 0:
         return False
 
-    # drift check
-    cpu_drift = abs(t_cpu - cur_cpu) / cur_cpu
-    mem_drift = abs(t_mem - cur_mem) / cur_mem
-    if max(cpu_drift, mem_drift) < DRIFT_PCT / 100.0:
+    # drift check — must clear both the relative drift and an absolute deadband
+    # so near-idle pods don't churn their request on sampling noise
+    if not _moved_enough(cur_cpu, cur_mem, t_cpu, t_mem):
         return False
 
     # cooldown
@@ -202,7 +344,8 @@ def reconcile(name, g, sample, now):
 
 def main():
     log(f"req_loop start (poll={POLL_S}s, drift={DRIFT_PCT}%, cooldown={COOLDOWN_S}s, "
-        f"min_samples={MIN_SAMPLES}) — in-place /resize, no restart")
+        f"min_samples={MIN_SAMPLES}, deadband={int(CPU_DEADBAND*1000)}m/"
+        f"{int(MEM_DEADBAND_GI*1024)}Mi) — in-place /resize, no restart")
     while True:
         try:
             now = time.time()

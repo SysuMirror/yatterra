@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shlex
 import subprocess
@@ -707,9 +708,73 @@ def _health_gate(group, dep, env):
     return False, "健康检查未通过(无 last_good_ref 可回滚)"
 
 
+# --- 部署结果/驱逐推送(全部 best-effort, 绝不影响部署流程本身) ---
+_REDACT_RE1 = re.compile(r"(?i)(token|password|passwd|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+")
+_REDACT_RE2 = re.compile(r"(?i)(https?://)([^/@\s]+):([^/@\s]+)@")
+_REDACT_RE3 = re.compile(r"(?i)(bearer\s+|basic\s+)[A-Za-z0-9._~+/=-]+")
+
+
+def _safe_tail(text, limit=300):
+    """日志摘要脱敏(等价 pwa_alerts._safe_text 语义: 压空白 + 抹凭据, 只留尾部)。"""
+    text = " ".join(str(text or "").split())
+    text = _REDACT_RE1.sub(r"\1=[redacted]", text)
+    text = _REDACT_RE2.sub(r"\1[redacted]@", text)
+    text = _REDACT_RE3.sub(r"\1[redacted]", text)
+    return text[-limit:]
+
+
+def _notify_event(event_key, group, title, body, url, kind, urgency):
+    """pwa_alerts.notify_event 包装: 支持 extra={'urgency'}(包A实现后生效),
+    旧签名下自动降级为普通调用。不抛异常。"""
+    try:
+        import pwa_alerts
+        try:
+            return pwa_alerts.notify_event(event_key, group, title, body,
+                                           url=url, kind=kind,
+                                           extra={"urgency": urgency})
+        except TypeError:
+            return pwa_alerts.notify_event(event_key, group, title, body,
+                                           url=url, kind=kind)
+    except Exception:
+        return False
+
+
+def _notify_deploy_result(group, dep, ok, msg):
+    """部署结束推送(kind='deploy-result')。在独立线程里发, 不阻塞请求。"""
+    try:
+        if ok is None:
+            return  # run() 抛异常的场景: 状态未知, 不推
+        name = dep.get("name") or dep.get("id") or "deploy"
+        bucket = int(time.time() // 1800)  # 30 分钟桶: 同状态短时间重复部署只推一次
+        digest = hashlib.sha256(f"{ok}:{bucket}".encode()).hexdigest()[:12]
+        event_key = f"deploy-result:{group}:{name}:{digest}"
+        if ok:
+            _notify_event(event_key, group, f"部署「{name}」已完成",
+                          "部署成功, 服务已启动。", f"/pods/{group}?tab=deploys",
+                          "deploy-result", "low")
+        else:
+            tail = _safe_tail(msg)
+            body = "部署失败, 尾部日志:" + (f"\n{tail}" if tail else "(无输出)")
+            _notify_event(event_key, group, f"部署「{name}」失败", body,
+                          f"/pods/{group}?tab=deploys", "deploy-result", "high")
+    except Exception:
+        pass
+
+
 def run(group, dep):
     """Clone/pull, (re)write program conf, (re)start via supervisorctl.
-    Returns (ok, msg)."""
+    Returns (ok, msg). 结束(成功/失败)后异步推送部署结果通知。"""
+    ok = None
+    try:
+        ok, msg = _run_impl(group, dep)
+        return ok, msg
+    finally:
+        # 通知绝不阻塞/搞挂部署流程: 独立线程 + 全量吞异常
+        threading.Thread(target=_notify_deploy_result, args=(group, dep, ok),
+                         daemon=True).start()
+
+
+def _run_impl(group, dep):
     if groups.pod_status(group) != "Running":
         msg = "Pod 未运行"
         update(group, dep["id"], last_status="failed", last_msg=msg)
@@ -939,6 +1004,17 @@ def park(group, dep):
         pass
     update(group, dep["id"], last_status="queued",
            last_msg="推理压力,已退让排队(已 checkpoint)")
+    # GPU 压力驱逐通知(kind='gpu-evicted'): park() 只被 gpu_loop 的驱逐路径
+    # 调用。同组 10 分钟桶防风暴。best-effort, 不影响驱逐流程。
+    try:
+        bucket = int(time.time() // 600)
+        _notify_event(f"gpu-evicted:{group}:{dep.get('name', '')}:{bucket}", group,
+                      "GPU 资源紧张,任务被降级",
+                      f"GPU 资源紧张,你的任务「{dep.get('name', '')}」被降级/驱逐,"
+                      f"已保存 checkpoint 并退让排队, 空闲后会自动恢复。",
+                      f"/pods/{group}?tab=deploys", "gpu-evicted", "high")
+    except Exception:
+        pass
 
 
 def stop(group, dep):

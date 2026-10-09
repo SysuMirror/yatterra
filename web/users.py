@@ -182,6 +182,7 @@ def _ensure_init():
                         "display_source": "VARCHAR(32) NULL",
                         "display_updated_at": "TIMESTAMP NULL",
                         "status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
+                        "prefs": "TEXT NULL",
                     },
                     "api_tokens": {"user_id": "CHAR(36) NULL"},
                     "oauth_identities": {"user_id": "CHAR(36) NULL", "updated_at": "TIMESTAMP NULL"},
@@ -741,6 +742,58 @@ def set_display_name(username, display_name):
             changed = cur.rowcount
         cn.commit()
     return changed > 0
+
+
+# --- user prefs (JSON column) ---
+def _get_prefs(cur, username):
+    cur.execute("SELECT prefs FROM users WHERE username=%s", (username,))
+    r = cur.fetchone()
+    if not r or not r.get("prefs"):
+        return {}
+    try:
+        prefs = json.loads(r["prefs"])
+        return prefs if isinstance(prefs, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def get_push_kinds(username):
+    """Return the user's push kind whitelist: None = 全部(默认), or a list of kinds."""
+    _ensure_init()
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            prefs = _get_prefs(cur, username)
+    kinds = prefs.get("push_kinds")
+    if kinds is None:
+        return None
+    if isinstance(kinds, list):
+        return [str(k) for k in kinds if k]
+    return None
+
+
+def set_push_kinds(username, kinds):
+    """Set push kind whitelist. kinds=None 恢复全部; 否则必须是字符串列表。"""
+    _ensure_init()
+    if kinds is not None:
+        if not isinstance(kinds, list):
+            return False, "push_kinds 必须是列表或 null"
+        kinds = sorted({str(k).strip() for k in kinds if str(k).strip()})
+        if len(kinds) > 32:
+            return False, "kind 数量过多"
+    with _conn() as cn:
+        with cn.cursor() as cur:
+            prefs = _get_prefs(cur, username)
+            if kinds is None:
+                prefs.pop("push_kinds", None)
+            else:
+                prefs["push_kinds"] = kinds
+            cur.execute("UPDATE users SET prefs=%s WHERE username=%s",
+                        (json.dumps(prefs, ensure_ascii=False), username))
+            changed = cur.rowcount
+        cn.commit()
+    if not changed:
+        return False, "用户不存在"
+    return True, None
 
 
 def set_user_status(username, active):

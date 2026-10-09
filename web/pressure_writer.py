@@ -276,6 +276,7 @@ def collect():
 
 def write_once():
     payload = collect()
+    _notify_level_switch(payload)
     try:
         os.makedirs(OUT_DIR, exist_ok=True)
         tmp = OUT_FILE + ".tmp"
@@ -296,6 +297,57 @@ def write_once():
             f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] write error: {e!r}\n",
         )
     return payload
+
+
+# --- 压力降级通知(kind='pressure') -------------------------------------------
+# 层级切换点: 任一指标(cpu/gpu/mem/bw)从非 high 跃迁到 high 即视为触发降级
+# (terra→sdpy→app 三层降级由 app 侧按 level 字段执行, 这里只报切换边沿)。
+# 刻意不 import cert_alerts(避免在独立进程里重复拉起检查线程), 本地实现
+# 同款 _claim_alert 去重 + send_to_users(admin) 直发; 全部 lazy + 吞异常,
+# 通知失败绝不影响压力信号写入。
+_prev_levels = {}
+
+
+def _notify_level_switch(payload):
+    try:
+        levels = (payload or {}).get("level") or {}
+        for metric, lvl in levels.items():
+            prev = _prev_levels.get(metric)
+            _prev_levels[metric] = lvl
+            if lvl != "high" or prev == "high" or prev is None:
+                continue  # 只报进入 high 的边沿(首轮静默基线)
+            _push_pressure_alert(metric)
+    except Exception:
+        pass
+
+
+def _push_pressure_alert(metric):
+    try:
+        import pwa_alerts
+        from api.push import send_to_users
+        import users
+        admins = [u["username"] for u in users.list_users()
+                  if (u.get("role") or "") in ("super", "admin")
+                  or users.has_perm(u, "infra.host")]
+        if not admins:
+            return
+        bucket = int(time.time() // 600)  # 10 分钟桶防风暴
+        event_key = f"pressure:{metric}:{bucket}"
+        pwa_alerts.init_db()
+        # 借用内部 _claim_alert: at-most-once 去重 + 通知中心留痕(同 cert_alerts 取舍)
+        # recipients=admins: 中心可见性与实际推送目标一致(非 admin 不可见)
+        if not pwa_alerts._claim_alert(event_key, "pressure", "platform",
+                                       {"title": "主机压力升高", "body": "",
+                                        "url": "/infra/host"}, admins):
+            return
+        send_to_users(admins, {
+            "title": "主机压力升高",
+            "body": f"主机 {metric} 压力升至 high, 已触发降级信号"
+                    f"(阈值 {THRESH_HIGH}), 低优先级任务可能被驱逐。",
+            "url": "/infra/host", "type": "pressure",
+            "event_key": event_key, "urgency": "high"})
+    except Exception:
+        pass
 
 
 def main():

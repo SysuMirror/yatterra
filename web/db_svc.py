@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Shared database service: MySQL + Redis + Qdrant (namespace platform-infra).
+"""Shared database service: MySQL + Redis + Qdrant + PostgreSQL (namespace platform-infra).
 
 One instance of each, shared across groups. Per-group credentials:
   - mysql : a dedicated database + user (password) scoped to that db only.  (real isolation)
   - redis : an ACL user (password) restricted to a key prefix `<prefix>:*`.   (real isolation)
   - qdrant: the shared api key + a collection-name prefix convention.          (convention only)
+  - postgres: a dedicated database + role (password) owned by that role.     (real isolation)
 
 Pods reach:
   mysql  : mysql.platform-infra.svc.cluster.local:3306
   redis  : redis.platform-infra.svc.cluster.local:6379
   qdrant : http://qdrant.platform-infra.svc.cluster.local:6333  (gRPC :6334)
+  postgres: postgres.platform-infra.svc.cluster.local:5432
 
 Root creds in /opt/yatterra/db.conf (root 600). Issued per-group creds
 in /opt/yatterra/db_creds.json (root 600).
@@ -32,8 +34,9 @@ DATA_ROOT = siteconf.DB_DATA_ROOT
 MYSQL_IMAGE = "mysql:8.0"
 REDIS_IMAGE = "redis:7-alpine"
 QDRANT_IMAGE = "qdrant/qdrant:latest"
+POSTGRES_IMAGE = "postgres:16"
 
-SERVICES = ("mysql", "redis", "qdrant")
+SERVICES = ("mysql", "redis", "qdrant", "postgres")
 
 
 def _kubectl(*args, check=False, timeout=60):
@@ -53,11 +56,13 @@ def conf():
         c["redis_password"] = os.environ["REDIS_PASSWORD"]
     if os.environ.get("QDRANT_API_KEY"):
         c["qdrant_api_key"] = os.environ["QDRANT_API_KEY"]
+    if os.environ.get("POSTGRES_PASSWORD"):
+        c["postgres_password"] = os.environ["POSTGRES_PASSWORD"]
     # fill gaps from file
     try:
         with open(CONF_FILE) as f:
             fc = json.load(f)
-        for k in ("mysql_root_password", "redis_password", "qdrant_api_key"):
+        for k in ("mysql_root_password", "redis_password", "qdrant_api_key", "postgres_password"):
             c.setdefault(k, fc.get(k))
     except Exception:
         pass
@@ -66,12 +71,21 @@ def conf():
 
 def _ensure_conf():
     c = conf()
-    if c and c.get("mysql_root_password") and c.get("redis_password") and c.get("qdrant_api_key"):
+    keys = ("mysql_root_password", "redis_password", "qdrant_api_key", "postgres_password")
+    if c and all(c.get(k) for k in keys):
         return c
+    # never rotate existing creds: keep whatever is on file, fill only gaps
+    fc = {}
+    try:
+        with open(CONF_FILE) as f:
+            fc = json.load(f)
+    except Exception:
+        pass
     c = {
-        "mysql_root_password": secrets.token_urlsafe(18),
-        "redis_password": secrets.token_urlsafe(18),
-        "qdrant_api_key": secrets.token_urlsafe(24),
+        "mysql_root_password": fc.get("mysql_root_password") or secrets.token_urlsafe(18),
+        "redis_password": fc.get("redis_password") or secrets.token_urlsafe(18),
+        "qdrant_api_key": fc.get("qdrant_api_key") or secrets.token_urlsafe(24),
+        "postgres_password": fc.get("postgres_password") or secrets.token_urlsafe(18),
     }
     with open(CONF_FILE, "w") as f:
         json.dump(c, f)
@@ -87,6 +101,7 @@ def manifest(creds):
     mrp = creds["mysql_root_password"]
     rp = creds["redis_password"]
     qk = creds["qdrant_api_key"]
+    pp = creds["postgres_password"]
     return f"""apiVersion: v1
 kind: Namespace
 metadata:
@@ -102,6 +117,7 @@ stringData:
   MYSQL_ROOT_PASSWORD: "{mrp}"
   REDIS_PASSWORD: "{rp}"
   QDRANT_API_KEY: "{qk}"
+  POSTGRES_PASSWORD: "{pp}"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -280,6 +296,65 @@ spec:
   - name: grpc
     port: 6334
     targetPort: 6334
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {NS}
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: {POSTGRES_IMAGE}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-creds
+              key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U postgres -h 127.0.0.1"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: data
+        hostPath:
+          path: {DATA_ROOT}/postgres
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {NS}
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
 """
 
 
@@ -379,6 +454,18 @@ def _mysql_exec(sql, timeout=30):
     return r.stdout
 
 
+# --- postgres helpers ---
+def _pg_exec(sql, timeout=30):
+    """Run SQL via psql in the postgres pod (local socket, trust auth)."""
+    r = subprocess.run(
+        ["kubectl", "-n", NS, "exec", "-i", "deploy/postgres", "--",
+         "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-q"],
+        input=sql, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"postgres exec failed: {(r.stderr or r.stdout).strip()}")
+    return r.stdout
+
+
 # --- redis helpers ---
 def _redis_exec(*args, timeout=20):
     c = _ensure_conf()
@@ -447,6 +534,17 @@ def add_cred(service, label):
         _mysql_exec(sql)
         rec.update({"username": uname, "secret": pw, "database": dbname})
 
+    elif service == "postgres":
+        uname = "u" + secrets.token_hex(5)
+        dbname = "db_" + secrets.token_hex(4)
+        pw = secrets.token_urlsafe(16)
+        sql = (
+            f"CREATE ROLE \"{uname}\" LOGIN PASSWORD '{pw}'; "
+            f"CREATE DATABASE \"{dbname}\" OWNER \"{uname}\";"
+        )
+        _pg_exec(sql)
+        rec.update({"username": uname, "secret": pw, "database": dbname})
+
     elif service == "redis":
         uname = "u" + secrets.token_hex(5)
         pw = secrets.token_urlsafe(16)
@@ -480,6 +578,14 @@ def remove_cred(kid):
             _mysql_exec(
                 f"DROP USER IF EXISTS '{rec['username']}'@'%'; "
                 f"DROP DATABASE IF EXISTS `{rec['database']}`; FLUSH PRIVILEGES;"
+            )
+        except Exception:
+            pass  # best-effort
+    elif svc == "postgres":
+        try:
+            _pg_exec(
+                f"DROP DATABASE IF EXISTS \"{rec['database']}\"; "
+                f"DROP ROLE IF EXISTS \"{rec['username']}\";"
             )
         except Exception:
             pass  # best-effort

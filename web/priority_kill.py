@@ -34,7 +34,8 @@ Log:   /opt/yatterra/priority_kill.log.
 Tunables (env)
 --------------
 PRIORITY_KILL_POLL_S (5), PRIORITY_KILL_HIGH (0.80), PRIORITY_KILL_CRIT (0.92),
-PRIORITY_KILL_RECOVER_LOW (0.40), PRIORITY_KILL_RECOVER_S (30),
+PRIORITY_KILL_RECOVER_LOW (0.40), PRIORITY_KILL_GPU_MEM_HARD (0.97),
+PRIORITY_KILL_RECOVER_S (30),
 PRIORITY_KILL_COOLDOWN_S (60), PRIORITY_KILL_STALE_S (30),
 PRIORITY_KILL_FILE (/mnt/sdb/shared/pressure/pressure.json).
 """
@@ -56,6 +57,10 @@ POLL_S = float(os.environ.get("PRIORITY_KILL_POLL_S", "5"))
 THRESH_HIGH = float(os.environ.get("PRIORITY_KILL_HIGH", "0.80"))
 THRESH_CRIT = float(os.environ.get("PRIORITY_KILL_CRIT", "0.92"))
 RECOVER_LOW = float(os.environ.get("PRIORITY_KILL_RECOVER_LOW", "0.40"))
+# Near-OOM VRAM guard, deliberately high: co-located GPU workloads keep a high
+# permanent gpu_mem baseline (~0.7-0.93), so only genuine near-OOM VRAM forces a
+# GPU eviction to the top tier. Kept symmetric with metric_low() below.
+GPU_MEM_HARD = float(os.environ.get("PRIORITY_KILL_GPU_MEM_HARD", "0.97"))
 RECOVER_S = float(os.environ.get("PRIORITY_KILL_RECOVER_S", "30"))
 # Grace before a victim is restarted because its deploy record vanished: the
 # record is briefly absent while deploys.run() rewrites it, and we must not
@@ -241,10 +246,15 @@ def relevant_metrics(rec):
 
 def pressure_value(metric, p):
     if metric == "gpu":
-        a = p.get("gpu")
-        b = p.get("gpu_mem")
-        vals = [v for v in (a, b) if isinstance(v, (int, float))]
-        return max(vals) if vals else 0.0
+        # SM utilisation drives the tier, but genuine near-OOM VRAM (gpu_mem >=
+        # GPU_MEM_HARD) escalates to the top tier regardless of SM. Normal
+        # co-located gpu_mem (~0.93) is intentionally ignored so it cannot evict
+        # on its own; this mirrors metric_low()'s symmetric gate.
+        base = p.get("gpu")
+        base = base if isinstance(base, (int, float)) else 0.0
+        if (p.get("gpu_mem") or 0) >= GPU_MEM_HARD:
+            return 1.0
+        return base
     v = p.get(metric)
     return v if isinstance(v, (int, float)) else 0.0
 
@@ -400,15 +410,22 @@ def do_evict(cands, st, dry):
 def metric_low(p, m):
     """Is metric m relaxed below RECOVER_LOW?
 
-    For 'gpu' we look at SM utilisation only, NOT gpu_mem: a host running any
-    co-resident GPU workload sits at a permanent high gpu_mem baseline (0.7+),
-    so folding gpu_mem in would pin the gate shut forever. That was the bug
-    that left rag (and every other evicted program) stopped indefinitely.
+    For 'gpu' we gate on SM utilisation only, NOT the permanent gpu_mem
+    baseline: a host running any co-resident GPU workload sits at a high
+    gpu_mem baseline (0.7+), so folding gpu_mem into the gate would pin it shut
+    forever. But the gate must stay SYMMETRIC with pressure_value(): if we ever
+    evicted on genuine near-OOM VRAM (gpu_mem >= GPU_MEM_HARD), we must not
+    recover until that VRAM actually drops back below GPU_MEM_HARD. So 'gpu' is
+    relaxed only when SM < RECOVER_LOW AND gpu_mem < GPU_MEM_HARD.
     """
     if m == "gpu":
         v = p.get("gpu")
-    else:
-        v = p.get(m)
+        if not isinstance(v, (int, float)):
+            return True  # missing SM can't block recovery
+        if (p.get("gpu_mem") or 0) >= GPU_MEM_HARD:
+            return False  # still near-OOM: symmetric with pressure_value()
+        return v < RECOVER_LOW
+    v = p.get(m)
     if not isinstance(v, (int, float)):
         return True  # missing metric can't block recovery
     return v < RECOVER_LOW
