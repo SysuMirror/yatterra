@@ -23,6 +23,11 @@
   --blur-md: blur(12px);
   --blur-lg: blur(16px);
 
+  /* Frosted-glass button surfaces (semi-transparent, sit on the blur above) */
+  --glass-bg: rgba(255, 255, 255, 0.62);
+  --glass-bg-strong: rgba(255, 255, 255, 0.8);
+  --glass-bg-weak: rgba(255, 255, 255, 0.42);
+
   /* Safe area insets (PWA / notched devices) */
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
@@ -74,6 +79,17 @@
   --ink: #e8eef5;
   --ink-soft: #c0cddd;
   --muted-foreground: #99aabd;
+
+  --glass-bg: rgba(32, 44, 59, 0.55);
+  --glass-bg-strong: rgba(32, 44, 59, 0.72);
+  --glass-bg-weak: rgba(32, 44, 59, 0.38);
+}
+
+/* Shared frosted-glass backdrop: blur + a touch of saturation so colors behind
+   the surface stay vivid instead of going grey. */
+.glass-blur {
+  backdrop-filter: blur(14px) saturate(170%);
+  -webkit-backdrop-filter: blur(14px) saturate(170%);
 }
 
 html[data-theme='dark'] :is(.bg-white, [class*='bg-white/']):not(header, header *) {

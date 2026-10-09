@@ -5,7 +5,7 @@ import { useDrag } from '@use-gesture/react'
 import TopBar from './TopBar'
 import Sidebar from './Sidebar'
 import { MobileTabBar } from './MobileTabBar'
-import { AgentWidget } from '@/components/domain/AgentWidget'
+import { GlobalAiAssistant } from '@/components/domain/GlobalAiAssistant'
 import { useSidebarStore } from '@/stores/sidebar'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 
@@ -75,7 +75,7 @@ export default function AppShell() {
       {/* Mobile bottom tab bar */}
       {!isDesktop && <MobileTabBar />}
 
-      <AgentWidget />
+      <GlobalAiAssistant />
     </div>
   )
 }

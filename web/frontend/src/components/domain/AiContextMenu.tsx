@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Bot, X, Loader2, Sparkles, Languages, Search, Code, HelpCircle } from 'lucide-react'
+import { Bot, X, Loader2, Sparkles, Languages, Search, Code, HelpCircle, StopCircle } from 'lucide-react'
 import { streamAi, collectStream } from '@/api/ai'
 import { MarkdownContent } from '@/components/ai'
 
@@ -57,8 +57,10 @@ export function AiContextMenu() {
   const [selectedText, setSelectedText] = useState('')
   const [result, setResult] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [showResult, setShowResult] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   // Listen for right-click on selected text
   useEffect(() => {
@@ -76,6 +78,7 @@ export function AiContextMenu() {
       setVisible(true)
       setShowResult(false)
       setResult('')
+      setError('')
     }
 
     const handleClick = (e: MouseEvent) => {
@@ -95,20 +98,36 @@ export function AiContextMenu() {
     setLoading(true)
     setShowResult(true)
     setResult('')
+    setError('')
 
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     let content = ''
-    for await (const ev of streamAi(action.endpoint, action.buildBody(selectedText))) {
-      if (ev.type === 'content') {
-        content += ev.data
-        setResult(content)
+    try {
+      for await (const ev of streamAi(action.endpoint, action.buildBody(selectedText), ctrl.signal)) {
+        if (ev.type === 'content') {
+          content += ev.data
+          setResult(content)
+        }
       }
+    } catch (e) {
+      // An aborted stream is a user action, not a failure — only report real errors.
+      if (!ctrl.signal.aborted) setError('AI 请求失败,请重试')
+    } finally {
+      abortRef.current = null
+      setLoading(false)
     }
-    setLoading(false)
   }, [selectedText])
 
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setLoading(false)
+  }, [])
+
   // Clamp position to viewport
-  const x = Math.min(position.x, window.innerWidth - 280)
-  const y = Math.min(position.y, window.innerHeight - 300)
+  const x = Math.min(position.x, window.innerWidth - 420)
+  const y = Math.min(position.y, window.innerHeight - 460)
 
   return (
     <AnimatePresence>
@@ -124,7 +143,7 @@ export function AiContextMenu() {
         >
           {/* Selected text preview */}
           <div className="px-3 py-2 border-b border-black/[0.06] bg-black/[0.02]">
-            <p className="text-xs text-muted truncate max-w-[240px]">
+            <p className="text-xs text-muted truncate max-w-[380px]">
               "{selectedText.slice(0, 60)}{selectedText.length > 60 ? '…' : ''}"
             </p>
           </div>
@@ -144,17 +163,27 @@ export function AiContextMenu() {
               ))}
             </div>
           ) : (
-            <div className="p-3 max-w-[280px] max-h-[200px] overflow-y-auto overflow-x-auto">
+            <div className="p-3 w-[min(420px,calc(100vw-24px))] max-h-[420px] overflow-y-auto overflow-x-auto">
               {loading && !result ? (
                 <div className="flex items-center gap-2 text-sm text-muted">
                   <Loader2 size={14} className="animate-spin" />
                   <span>AI 思考中…</span>
                 </div>
+              ) : error ? (
+                <p role="alert" className="text-sm text-bad">{error}</p>
               ) : (
                 <div className="text-sm"><MarkdownContent content={result} /></div>
               )}
               <div className="flex items-center justify-end gap-2 mt-2">
-                {result && (
+                {loading && (
+                  <button
+                    onClick={handleStop}
+                    className="inline-flex items-center gap-1 text-xs text-bad hover:underline"
+                  >
+                    <StopCircle size={12} />停止
+                  </button>
+                )}
+                {result && !loading && (
                   <button
                     onClick={() => { navigator.clipboard.writeText(result) }}
                     className="text-xs text-accent hover:underline"
@@ -163,7 +192,7 @@ export function AiContextMenu() {
                   </button>
                 )}
                 <button
-                  onClick={() => { setShowResult(false); setResult('') }}
+                  onClick={() => { handleStop(); setShowResult(false); setResult(''); setError('') }}
                   className="text-xs text-muted hover:text-ink"
                 >
                   返回

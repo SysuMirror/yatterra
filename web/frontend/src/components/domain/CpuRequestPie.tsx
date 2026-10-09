@@ -4,7 +4,7 @@ import {
 } from 'recharts'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
-import { Cpu, Loader2 } from 'lucide-react'
+import { Cpu, MemoryStick, Loader2 } from 'lucide-react'
 import { api } from '@/api/client'
 
 const tooltipStyle = {
@@ -31,7 +31,7 @@ interface PodReq {
   phase: string
 }
 
-interface CpuReqData {
+interface ReqData {
   allocatable_cpu: number
   allocatable_mem_gi: number
   used_cpu: number
@@ -39,8 +39,59 @@ interface CpuReqData {
   pods: PodReq[]
 }
 
-export function CpuRequestPie() {
-  const { data, isLoading } = useQuery<CpuReqData>({
+type Metric = 'cpu' | 'mem'
+
+// Per-metric view of the shared /infra/cpu-requests payload. Requests are the
+// EWMA-derived values stamped into each pod spec (see req_estimate.py), read
+// live from k8s so in-place /resize is reflected without a restart.
+const CFG: Record<Metric, {
+  title: string
+  unit: string
+  icon: typeof Cpu
+  loading: string
+  value: (p: PodReq) => number
+  limit: (p: PodReq) => number
+  total: (d: ReqData) => number
+  alloc: (d: ReqData) => number
+  fmtValue: (v: number) => string
+  fmtLimit: (v: number) => string
+  fmtTotal: (v: number) => string
+  fmtAlloc: (v: number) => string
+}> = {
+  cpu: {
+    title: 'CPU 预留分布',
+    unit: '核',
+    icon: Cpu,
+    loading: '加载 CPU 预留…',
+    value: p => p.cpu_request,
+    limit: p => p.cpu_limit,
+    total: d => d.used_cpu,
+    alloc: d => d.allocatable_cpu,
+    fmtValue: v => v.toFixed(2),
+    fmtLimit: v => v.toFixed(1),
+    fmtTotal: v => v.toFixed(1),
+    fmtAlloc: v => v.toFixed(0),
+  },
+  mem: {
+    title: '内存预留分布',
+    unit: 'Gi',
+    icon: MemoryStick,
+    loading: '加载内存预留…',
+    value: p => p.mem_request_gi,
+    limit: p => p.mem_limit_gi,
+    total: d => d.used_mem_gi,
+    alloc: d => d.allocatable_mem_gi,
+    fmtValue: v => v.toFixed(1),
+    fmtLimit: v => v.toFixed(0),
+    fmtTotal: v => v.toFixed(1),
+    fmtAlloc: v => v.toFixed(0),
+  },
+}
+
+function ResourceRequestPie({ metric }: { metric: Metric }) {
+  const c = CFG[metric]
+  const Icon = c.icon
+  const { data, isLoading } = useQuery<ReqData>({
     queryKey: ['infra-cpu-requests'],
     queryFn: () => api.get('/infra/cpu-requests'),
     staleTime: 15_000,
@@ -48,10 +99,10 @@ export function CpuRequestPie() {
 
   if (isLoading) {
     return (
-      <Card padding="lg" className="mb-6">
+      <Card padding="lg">
         <div className="flex items-center gap-2 text-muted">
           <Loader2 size={16} className="animate-spin" />
-          <span className="text-sm">加载 CPU 预留…</span>
+          <span className="text-sm">{c.loading}</span>
         </div>
       </Card>
     )
@@ -62,20 +113,20 @@ export function CpuRequestPie() {
   // only Running/Pending pods consume scheduling requests
   const pods = data.pods.filter(p => p.phase === 'Running' || p.phase === 'Pending')
   const chartData = pods
-    .filter(p => p.cpu_request > 0)
-    .map(p => ({ name: p.name, value: p.cpu_request, limit: p.cpu_limit, phase: p.phase }))
-  const totalReq = data.used_cpu
-  const alloc = data.allocatable_cpu || 1
+    .filter(p => c.value(p) > 0)
+    .map(p => ({ name: p.name, value: c.value(p), limit: c.limit(p), phase: p.phase }))
+  const totalReq = c.total(data)
+  const alloc = c.alloc(data) || 1
   const freePct = Math.max(0, (1 - totalReq / alloc) * 100)
   const usedPct = Math.min(100, totalReq / alloc * 100)
 
   return (
-    <Card padding="lg" className="mb-6">
+    <Card padding="lg">
       <div className="flex items-center gap-2 mb-4">
-        <Cpu size={16} className="text-accent" />
-        <h3 className="text-sm font-semibold">CPU 预留分布</h3>
+        <Icon size={16} className="text-accent" />
+        <h3 className="text-sm font-semibold">{c.title}</h3>
         <span className="text-xs text-muted ml-auto">
-          {totalReq.toFixed(1)} / {alloc.toFixed(0)} 核
+          {c.fmtTotal(totalReq)} / {c.fmtAlloc(alloc)} {c.unit}
         </span>
       </div>
 
@@ -105,7 +156,7 @@ export function CpuRequestPie() {
                 {...tooltipStyle}
                 formatter={(v: any, _n: any, entry: any) => {
                   const limit = entry?.payload?.limit
-                  return [`${Number(v).toFixed(2)} 核 (limit ${limit})`, entry?.payload?.name]
+                  return [`${c.fmtValue(Number(v))} ${c.unit} (limit ${c.fmtLimit(Number(limit))})`, entry?.payload?.name]
                 }}
               />
             </PieChart>
@@ -141,8 +192,8 @@ export function CpuRequestPie() {
                       <span className="font-mono text-[11px] truncate" title={p.name}>{p.name}</span>
                     </div>
                   </td>
-                  <td className="text-right py-1.5 px-2 tnum font-medium">{p.cpu_request.toFixed(2)}</td>
-                  <td className="text-right py-1.5 px-2 tnum text-muted">{p.cpu_limit.toFixed(1)}</td>
+                  <td className="text-right py-1.5 px-2 tnum font-medium">{c.fmtValue(c.value(p))}</td>
+                  <td className="text-right py-1.5 px-2 tnum text-muted">{c.fmtLimit(c.limit(p))}</td>
                   <td className="py-1.5 pl-2">
                     <Badge
                       variant={p.phase === 'Running' ? 'ok' : p.phase === 'Pending' ? 'warn' : 'muted'}
@@ -161,9 +212,21 @@ export function CpuRequestPie() {
       {/* footer summary */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 pt-3 border-t border-black/[0.05] text-xs text-muted">
         <span>{pods.length} 个 Pod</span>
-        <span>内存预留 {data.used_mem_gi.toFixed(1)} / {data.allocatable_mem_gi.toFixed(0)} Gi</span>
+        {metric === 'cpu' ? (
+          <span>内存预留 {CFG.mem.fmtTotal(data.used_mem_gi)} / {CFG.mem.fmtAlloc(data.allocatable_mem_gi)} Gi</span>
+        ) : (
+          <span>CPU 预留 {CFG.cpu.fmtTotal(data.used_cpu)} / {CFG.cpu.fmtAlloc(data.allocatable_cpu)} 核</span>
+        )}
         <span className="ml-auto">requests 由 EWMA 自动估算 · 原地 /resize 无重启</span>
       </div>
     </Card>
   )
+}
+
+export function CpuRequestPie() {
+  return <ResourceRequestPie metric="cpu" />
+}
+
+export function MemRequestPie() {
+  return <ResourceRequestPie metric="mem" />
 }

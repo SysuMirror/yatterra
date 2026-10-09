@@ -76,7 +76,9 @@ export type AiPageType =
   | 'dashboard' | 'pod' | 'terminal' | 'audit'
   | 'llm' | 'users' | 'threat-map' | 'storage' | 'databases'
   | 'proxy' | 'shared' | 'profile' | 'mcp' | 'harness' | 'docs'
-  | 'dev' | 'infra' | 'ops' | 'gpu' | 'host'
+  | 'dev' | 'infra' | 'ops' | 'gpu' | 'host' | 'fleet'
+  | 'pod_ide'
+  | `pod:${string}`
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
@@ -98,6 +100,19 @@ export interface ToolResult {
 export interface AiSseEvent {
   type: 'reasoning' | 'content' | 'tool_call' | 'tool_result' | 'done'
   data: string | ToolCall | ToolResult
+}
+
+/** 进行中/历史的页面助手后台 run(见 web/page_ai_runs.py)。 */
+export interface PageRunInfo {
+  run_id: string
+  username?: string
+  page: string
+  question: string
+  session_id?: string
+  route?: string
+  status: 'running' | 'done' | 'error' | 'stopped' | 'interrupted'
+  created: number
+  finished?: number
 }
 
 // ── Non-streaming calls ──────────────────────────────────────
@@ -135,9 +150,29 @@ export const aiApi = {
   explain: (text: string) =>
     api.post<{ content: string }>('/ai/explain', { text, stream: false }),
 
-  /** Page-level AI assistant */
+  /** Page-level AI assistant (已废弃的同步入口, 仅 AiInsightPanel 等一次性调用) */
   page: (req: AiPageRequest) =>
     api.post<{ content: string }>('/ai/page', { ...req, stream: false }),
+
+  /** 起一个后台页面助手 run, 立即返回 run_id(前端统一入口) */
+  startPageRun: (req: AiPageRequest & { images?: string[]; route?: string }) =>
+    api.post<{ run_id: string; session_id: string | null }>('/ai/page/run', req),
+
+  /** 当前用户进行中的 run 列表(刷新后找回任务) */
+  activePageRuns: () =>
+    api.get<{ runs: PageRunInfo[] }>('/ai/page/runs?active=1'),
+
+  /** 当前用户全部 run 列表(含已结束;重挂载时回放卸载期间完成的 run) */
+  pageRuns: () =>
+    api.get<{ runs: PageRunInfo[] }>('/ai/page/runs'),
+
+  /** 协作式停止一个 run */
+  stopPageRun: (run_id: string) =>
+    api.post<{ ok: boolean }>('/ai/page/stop', { run_id }),
+
+  /** 回传一批页面动作(browser_control)的执行结果 */
+  submitPageActionResult: (run_id: string, results: unknown[], action_id?: string) =>
+    api.post<{ ok: boolean }>('/ai/page/action_result', { run_id, results, action_id }),
 
   /** List the current user's page-assistant conversations (newest first) */
   pageSessions: () =>

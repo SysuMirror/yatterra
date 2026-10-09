@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Sparkles, Loader2 } from 'lucide-react'
 import { aiApi } from '@/api/ai'
+import { useToastStore } from '@/stores/toast'
 
 interface AiFormHelperProps {
   /** What kind of form this is */
@@ -54,6 +55,7 @@ const FORM_CONTEXTS: Record<string, string> = {
 /** AI-powered form completion helper button. */
 export function AiFormHelper({ type, partial, context, onApply, size = 'sm', className }: AiFormHelperProps) {
   const [loading, setLoading] = useState(false)
+  const toast = useToastStore((s) => s.add)
 
   const handleComplete = useCallback(async () => {
     if (loading || !partial) return
@@ -68,11 +70,13 @@ export function AiFormHelper({ type, partial, context, onApply, size = 'sm', cla
         onApply(result.completion)
       }
     } catch {
-      // Silently fail — form completion is nice-to-have
+      // Form completion is nice-to-have, but a silent failure looks like the
+      // button is broken — tell the user it was the AI that failed.
+      toast({ type: 'error', message: 'AI 补全失败,请重试' })
     } finally {
       setLoading(false)
     }
-}, [partial, context, type, loading, onApply])
+}, [partial, context, type, loading, onApply, toast])
 
   return (
     <button

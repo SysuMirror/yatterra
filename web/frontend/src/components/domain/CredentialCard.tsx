@@ -3,6 +3,7 @@ import { Database, HardDrive, Sparkles, Loader2 } from 'lucide-react'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { Badge } from '@/components/ui/Badge'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 
 interface CredentialCardProps {
   service: string
@@ -49,9 +50,9 @@ export function CredentialCard({ service, type, host, port, username, password, 
         </button>
       </div>
       {aiTip && (
-        <div className="p-2 rounded-lg bg-accent/5 border border-accent/10 text-xs whitespace-pre-wrap">
+        <div className="p-2 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-0.5 text-[10px] font-semibold text-accent"><Sparkles size={9} /> AI 建议</div>
-          {aiTip}
+          <MarkdownContent content={aiTip} size="xs" />
         </div>
       )}
 

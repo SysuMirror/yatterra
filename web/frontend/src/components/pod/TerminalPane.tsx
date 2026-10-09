@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal as TermIcon, RotateCw, Sparkles, Loader2, Maximize2, Minimize2, Minus, Plus, Rotate3d } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { cn } from '@/lib/cn'
 
 declare global {
@@ -651,15 +652,15 @@ export function TerminalPane({ podName, running, className }: TerminalPaneProps)
           <button
             onClick={handleAiAsk}
             disabled={!aiInput.trim() || aiLoading}
-            className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-accent text-white disabled:opacity-40 transition-colors"
+            className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-accent/85 glass-blur text-white disabled:opacity-40 transition-colors"
           >
             {aiLoading ? <Loader2 size={12} className="animate-spin" /> : '问'}
           </button>
         </div>
         {aiTip && (
-          <div className="mt-1.5 p-2.5 rounded-lg bg-accent/5 border border-accent/10 text-xs whitespace-pre-wrap max-h-48 overflow-y-auto">
+          <div className="mt-1.5 p-2.5 rounded-lg bg-accent/5 border border-accent/10 max-h-48 overflow-y-auto">
             <div className="flex items-center gap-1 mb-1 text-[10px] font-semibold text-accent"><Sparkles size={9} /> AI 回答</div>
-            {aiTip}
+            <MarkdownContent content={aiTip} size="xs" />
           </div>
         )}
       </div>

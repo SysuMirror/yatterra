@@ -5,6 +5,7 @@ import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { Sparkles, Loader2 } from 'lucide-react'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 
 interface CodeEditorProps {
   value: string
@@ -89,9 +90,9 @@ export function CodeEditor({ value, language = 'text', readOnly = false, onChang
         </button>
       )}
       {aiTip && (
-        <div className="mt-2 p-3 rounded-lg bg-accent/5 border border-accent/10 text-xs whitespace-pre-wrap max-h-60 overflow-y-auto">
+        <div className="mt-2 p-3 rounded-lg bg-accent/5 border border-accent/10 max-h-60 overflow-y-auto">
           <div className="flex items-center gap-1 mb-1 text-[10px] font-semibold text-accent"><Sparkles size={9} /> AI 解释</div>
-          {aiTip}
+          <MarkdownContent content={aiTip} size="xs" />
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { formatRelativeTime } from '@/lib/format'
 import { Play, Square, Trash2, Sparkles, Loader2 } from 'lucide-react'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 
 interface DeployRowProps {
   name: string
@@ -66,9 +67,9 @@ export function DeployRow({ name, status, createdAt, lastRun, onRun, onStop, onD
         </div>
       </div>
       {aiTip && (
-        <div className="mt-2 p-2 rounded-lg bg-accent/5 border border-accent/10 text-xs whitespace-pre-wrap">
+        <div className="mt-2 p-2 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-0.5 text-[10px] font-semibold text-accent"><Sparkles size={9} /> AI 分析</div>
-          {aiTip}
+          <MarkdownContent content={aiTip} size="xs" />
         </div>
       )}
     </div>

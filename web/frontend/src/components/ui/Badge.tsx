@@ -2,7 +2,7 @@ import { cn } from '@/lib/cn'
 
 type Variant = 'default' | 'ok' | 'warn' | 'bad' | 'accent' | 'muted'
 
-interface BadgeProps {
+interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: Variant
   dot?: boolean
   children: React.ReactNode
@@ -27,9 +27,10 @@ const dotColors: Record<Variant, string> = {
   muted: 'bg-muted',
 }
 
-export function Badge({ variant = 'default', dot, children, className }: BadgeProps) {
+export function Badge({ variant = 'default', dot, children, className, ...rest }: BadgeProps) {
   return (
     <span
+      {...rest}
       className={cn(
         'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium tnum',
         variants[variant],

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Folder, File, FilePlus, FolderPlus, Trash2, Save, ArrowLeft, RefreshCw, Sparkles, Loader2 } from 'lucide-react'
 import { api } from '@/api/client'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { CodeEditor } from '@/components/terminal/CodeEditor'
@@ -11,7 +12,8 @@ import { cn } from '@/lib/cn'
 
 const HOME = '/home/cloud'
 const TEXT_EXT = /\.(txt|md|json|ya?ml|toml|ini|conf|cfg|env|sh|bash|py|js|ts|jsx|tsx|css|html|htm|xml|sql|c|h|cpp|go|rs|java|log|gitignore|dockerfile)$/i
-const MAX_EDIT_BYTES = 512 * 1024
+/** 与后端 GET files/content 的 head -c 262144 截断上限一致,超过即拒绝编辑 */
+const MAX_EDIT_BYTES = 256 * 1024
 
 interface Entry { name: string; path: string; is_dir: boolean; is_exec: boolean }
 
@@ -165,8 +167,11 @@ function FileEditor({ podName, path, onBack }: { podName: string; path: string; 
       .then((text: any) => {
         if (cancelled) return
         const t = typeof text === 'string' ? text : (text?.content ?? JSON.stringify(text, null, 2))
-        if (t.length > MAX_EDIT_BYTES) {
-          setError(`文件过大（${(t.length / 1024).toFixed(0)} KB），仅支持编辑 512 KB 以内的文本文件`)
+        // 后端 head -c 256KB 截断标记;再按字节(而非字符)兜底,防止把截断内容保存回去
+        const truncated = text?.truncated === true
+        const byteLen = truncated ? Infinity : new TextEncoder().encode(t).length
+        if (truncated || byteLen > MAX_EDIT_BYTES) {
+          setError('文件超过 256 KB，内容已被截断，为防覆盖丢失已禁止在线编辑')
         } else if (!TEXT_EXT.test(path) && /\0/.test(t.slice(0, 4096))) {
           setError('二进制文件不支持在线编辑')
         } else {
@@ -214,9 +219,9 @@ function FileEditor({ podName, path, onBack }: { podName: string; path: string; 
         )}
       </div>
       {aiExplain && (
-        <div className="mb-3 p-3 rounded-lg bg-accent/5 border border-accent/10 text-sm whitespace-pre-wrap">
+        <div className="mb-3 p-3 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-accent"><Sparkles size={12} /> AI 解释</div>
-          {aiExplain}
+          <MarkdownContent content={aiExplain} />
         </div>
       )}
       {error ? (

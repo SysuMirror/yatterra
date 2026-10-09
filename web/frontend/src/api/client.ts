@@ -90,6 +90,13 @@ export async function apiFetch<T = unknown>(
       credentials: 'same-origin',
     })
 
+    // 全局 401 上报:非 /auth/* 的接口收到 401 说明 session 可能已失效,
+    // 广播给 AuthGuard 触发 /auth/me 复查(带双查防 cookie 竞态)。
+    // 登录接口自身的 401(密码错误)不算。
+    if (res.status === 401 && !path.startsWith('/auth/')) {
+      window.dispatchEvent(new CustomEvent('api:unauthorized'))
+    }
+
     if (res.status === 204) return undefined as T
     const contentType = res.headers.get('content-type') || ''
     if (contentType.includes('application/json')) {

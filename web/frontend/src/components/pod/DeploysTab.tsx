@@ -10,6 +10,7 @@ import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { AiFormHelper } from '@/components/domain/AiFormHelper'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 import { cn } from '@/lib/cn'
@@ -336,9 +337,9 @@ function DeployLogs({ podName, deployId }: { podName: string; deployId: string }
         <span className="text-xs text-muted/60">{lines.length} 行</span>
       </div>
       {aiExplain && (
-        <div className="mb-2 p-3 rounded-lg bg-accent/5 border border-accent/10 text-sm whitespace-pre-wrap">
+        <div className="mb-2 p-3 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-accent"><Sparkles size={12} /> AI 分析</div>
-          {aiExplain}
+          <MarkdownContent content={aiExplain} />
         </div>
       )}
       <div className="h-56 overflow-y-auto overflow-x-auto rounded-lg p-3 font-mono text-xs leading-5 bg-[#1d1d1f] text-[#f5f5f7]">

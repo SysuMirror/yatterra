@@ -10,9 +10,11 @@ import { useAuth } from '@/hooks/useAuth'
 export const PAGE_PERMS: Record<string, string | null> = {
   dashboard: 'infra.host',
   pod: 'group.view',
+  pod_ide: 'group.view',
   gpu: 'infra.host',
   host: 'infra.host',
   infra: 'infra.host',
+  fleet: 'infra.host',
   storage: 'infra.storage.read',
   databases: 'infra.db.read',
   db: 'infra.db.read',
@@ -34,7 +36,9 @@ export const PAGE_PERMS: Record<string, string | null> = {
 /** True if the current user may use the AI assistant/insight on this page. */
 export function usePageAiAllowed(page: string): boolean {
   const { hasPerm } = useAuth()
-  if (!(page in PAGE_PERMS)) return false
-  const perm = PAGE_PERMS[page]
+  // Dynamic per-pod keys ("pod:<name>") fall back to their base page ("pod").
+  const base = page.split(':')[0] ?? page
+  if (!(page in PAGE_PERMS) && !(base in PAGE_PERMS)) return false
+  const perm = PAGE_PERMS[page] ?? PAGE_PERMS[base]
   return perm === null || (typeof perm === 'string' && hasPerm(perm))
 }

@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { GpuCard } from '@/components/domain/GpuCard'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { api } from '@/api/client'
 import { formatBytes, formatRelativeTime } from '@/lib/format'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -59,7 +60,7 @@ export function MonitorTab({ metrics, history, pod }: { metrics: any; history: a
       {aiAnalysis && (
         <Card padding="lg">
           <div className="flex items-center gap-1 mb-2 text-xs font-semibold text-accent"><Sparkles size={12} /> AI 分析</div>
-          <div className="text-sm whitespace-pre-wrap">{aiAnalysis}</div>
+          <MarkdownContent content={aiAnalysis} />
         </Card>
       )}
 

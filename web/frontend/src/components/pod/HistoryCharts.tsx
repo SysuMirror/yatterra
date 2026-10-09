@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Sparkles, Loader2 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
@@ -45,9 +46,9 @@ export default function HistoryCharts({ cpu, mem }: { cpu: number[]; mem: number
   return (
     <div className="space-y-3">
       {aiAnalysis && (
-        <div className="p-3 rounded-lg bg-accent/5 border border-accent/10 text-sm whitespace-pre-wrap">
+        <div className="p-3 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-accent"><Sparkles size={12} /> AI 趋势分析</div>
-          {aiAnalysis}
+          <MarkdownContent content={aiAnalysis} />
         </div>
       )}
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { Sparkles, Loader2 } from 'lucide-react'
 import { useSSE } from '@/hooks/useSSE'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { cn } from '@/lib/cn'
 
 interface LogViewerProps {
@@ -79,9 +80,9 @@ export function LogViewer({ podName, streamUrl, initialLogs = '', className }: L
       </div>
 
       {aiExplain && (
-        <div className="mb-2 p-3 rounded-lg bg-accent/5 border border-accent/10 text-sm whitespace-pre-wrap">
+        <div className="mb-2 p-3 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-accent"><Sparkles size={12} /> AI 分析</div>
-          {aiExplain}
+          <MarkdownContent content={aiExplain} />
         </div>
       )}
 
@@ -104,7 +105,7 @@ export function LogViewer({ podName, streamUrl, initialLogs = '', className }: L
 
       {!autoScroll && (
         <motion.button
-          className="absolute bottom-4 right-4 px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-accent shadow-2"
+          className="absolute bottom-4 right-4 px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-accent/85 glass-blur shadow-2"
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           onClick={() => {

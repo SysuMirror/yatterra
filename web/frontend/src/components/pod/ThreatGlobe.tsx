@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Sparkles, Loader2 } from 'lucide-react'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { cn } from '@/lib/cn'
 
 declare global {
@@ -409,9 +410,9 @@ export function ThreatGlobe({ data, className }: ThreatGlobeProps) {
         AI 分析
       </button>
       {aiTip && (
-        <div className="absolute bottom-11 left-3 right-3 z-20 pointer-events-auto p-3 rounded-lg bg-black/80 backdrop-blur-md border border-white/10 text-xs text-white/90 whitespace-pre-wrap max-h-44 overflow-y-auto shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
+        <div className="absolute bottom-11 left-3 right-3 z-20 pointer-events-auto p-3 rounded-lg bg-black/80 backdrop-blur-md border border-white/10 text-white/90 max-h-44 overflow-y-auto shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
           <div className="flex items-center gap-1 mb-1.5 text-[10px] font-semibold tracking-wider text-[#a78bfa]"><Sparkles size={9} /> AI 分析</div>
-          {aiTip}
+          <MarkdownContent content={aiTip} size="xs" />
         </div>
       )}
     </div>

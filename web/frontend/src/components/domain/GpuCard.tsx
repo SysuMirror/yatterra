@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Sparkles, Loader2 } from 'lucide-react'
 import { Progress } from '@/components/ui/Progress'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { formatBytes } from '@/lib/format'
 
 interface GpuCardProps {
@@ -52,9 +53,9 @@ export function GpuCard({ index, util, memUsed, memTotal, temp, name, ownMemUsed
         </div>
       </div>
       {aiTip && (
-        <div className="p-2 rounded-lg bg-accent/5 border border-accent/10 text-xs whitespace-pre-wrap">
+        <div className="p-2 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-0.5 text-[10px] font-semibold text-accent"><Sparkles size={9} /> AI 建议</div>
-          {aiTip}
+          <MarkdownContent content={aiTip} size="xs" />
         </div>
       )}
 

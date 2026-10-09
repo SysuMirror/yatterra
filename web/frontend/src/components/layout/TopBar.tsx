@@ -1,14 +1,21 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Bell, Menu, LogOut, User, ChevronRight, HelpCircle } from 'lucide-react'
+import { Bell, Menu, LogOut, User, ChevronRight, HelpCircle, CheckCheck } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSidebarStore } from '@/stores/sidebar'
 import { useAuthStore } from '@/stores/auth'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 import { Dialog } from '@/components/ui/Dialog'
 import { authApi } from '@/api/auth'
+import { pushApi, type PushEvent } from '@/api/notifications'
 import { useLocation, useNavigate } from 'react-router'
 import { haptic } from '@/lib/haptic'
 import { ThemePicker } from '@/components/ui/ThemePicker'
+import { formatRelativeTime } from '@/lib/format'
+
+function eventTime(ts: number): string {
+  try { return formatRelativeTime(new Date(ts * 1000).toISOString()) } catch { return '' }
+}
 
 export default function TopBar() {
   const { toggle, setMobileOpen } = useSidebarStore()
@@ -92,11 +99,104 @@ export default function TopBar() {
 
   const shownName = displayName || username || user || '?'; const initial = shownName.trim().charAt(0).toUpperCase() || '?'
 
+  // ── 通知中心数据 ──
+  const qc = useQueryClient()
+  const [notifKind, setNotifKind] = useState<string>('')
+  const { data: notifData } = useQuery({
+    queryKey: ['push-events', notifKind],
+    queryFn: () => pushApi.events({ limit: 20, kind: notifKind || undefined }),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  })
+  const notifEvents: PushEvent[] = notifData?.events ?? []
+  const unreadCount = notifData?.unread ?? 0
+
+  const markRead = useMutation({
+    mutationFn: (keys: string[]) => pushApi.markRead(keys),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['push-events'] }),
+  })
+  const markAllRead = useMutation({
+    mutationFn: () => pushApi.markAllRead(),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['push-events'] }),
+  })
+
+  const NOTIF_KIND_CHIPS: { label: string; kind: string }[] = [
+    { label: '全部', kind: '' },
+    { label: '故障', kind: 'pod-down' },
+    { label: '部署', kind: 'deploy-result' },
+    { label: '审批', kind: 'approval-pending' },
+    { label: '系统', kind: 'broadcast' },
+  ]
+
+  const openEvent = (ev: PushEvent) => {
+    if (!ev.read) markRead.mutate([ev.event_key])
+    setNotifOpen(false)
+    if (ev.url) navigate(ev.url)
+  }
+
+  const NotifList = ({ compact }: { compact?: boolean }) => (
+    <>
+      <div className={`flex items-center justify-between ${compact ? 'px-5 py-3 border-b border-black/[0.06]' : 'mb-3'}`}>
+        <span className="text-xs text-muted">
+          {unreadCount > 0 ? `${unreadCount} 条未读` : notifEvents.length > 0 ? '最近通知' : '通知'}
+        </span>
+        {unreadCount > 0 && (
+          <button
+            data-onboarding-target="notifications-read-all"
+            onClick={() => { haptic('light'); markAllRead.mutate() }}
+            disabled={markAllRead.isPending}
+            className="flex items-center gap-1 text-xs text-accent hover:underline disabled:opacity-50"
+          >
+            <CheckCheck size={13} /> 全部已读
+          </button>
+        )}
+      </div>
+      <div data-onboarding-target="notifications-filter" className={`flex items-center gap-1.5 overflow-x-auto ${compact ? 'px-5 py-2 border-b border-black/[0.06]' : 'mb-2'}`}>
+        {NOTIF_KIND_CHIPS.map((c) => (
+          <button
+            key={c.kind}
+            onClick={() => { haptic('light'); setNotifKind(c.kind) }}
+            className={`px-2.5 py-1 rounded-full text-xs whitespace-nowrap transition-colors ${
+              notifKind === c.kind
+                ? 'bg-accent text-white font-semibold'
+                : 'bg-black/[0.05] text-ink-2 hover:bg-black/[0.08]'
+            }`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      {notifEvents.length === 0 ? (
+        <div className="py-8 text-sm text-muted text-center">暂无通知</div>
+      ) : (
+        <div className={compact ? '' : 'max-h-[360px] overflow-y-auto'}>
+          {notifEvents.map((ev) => (
+            <button
+              key={ev.event_key}
+              onClick={() => { haptic('light'); openEvent(ev) }}
+              className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left hover:bg-black/[0.03] active:bg-black/[0.06] transition-colors"
+            >
+              <span className={`mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${ev.read ? 'bg-black/15' : 'bg-accent'}`} />
+              <span className="min-w-0 flex-1">
+                <span className={`block text-sm truncate ${ev.read ? 'text-ink-2' : 'text-ink font-semibold'}`}>{ev.title}</span>
+                <span className="block text-xs text-muted line-clamp-2">{ev.body}</span>
+                <span className="block text-[10px] text-muted/70 mt-0.5 tnum">{eventTime(ev.ts)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  )
+
   const handleLogout = async () => {
     try {
       await authApi.logout()
     } catch { /* best effort */ }
     logout()
+    // 清掉 React Query 缓存:auth-check 里还缓存着 is_logged_in=true,
+    // 不清的话退出后再进受保护页会被缓存"复活"成死 session 的假登录态。
+    qc.clear()
     setProfileOpen(false)
     navigate('/login')
   }
@@ -146,11 +246,17 @@ export default function TopBar() {
           {/* Notification bell */}
           <button
             ref={notifRef}
+            data-onboarding-target="notifications-bell"
             aria-label="通知"
             onClick={() => { haptic('light'); openNotif() }}
-            className="flex items-center justify-center w-10 h-10 rounded-lg text-white/50 hover:bg-white/10 hover:text-white/90 active:bg-white/15 active:scale-95 transition-all duration-100"
+            className="relative flex items-center justify-center w-10 h-10 rounded-lg text-white/50 hover:bg-white/10 hover:text-white/90 active:bg-white/15 active:scale-95 transition-all duration-100"
           >
             <Bell size={20} />
+            {unreadCount > 0 && (
+              <span className="absolute top-1.5 right-1.5 min-w-[16px] h-[16px] px-1 rounded-full bg-bad text-white text-[10px] font-bold flex items-center justify-center tnum">
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </span>
+            )}
           </button>
 
           {/* Avatar button */}
@@ -173,7 +279,9 @@ export default function TopBar() {
           (which would pin the bottom sheet to the top of the viewport). */}
       {!isDesktop && (
         <Dialog open={notifOpen} onClose={() => setNotifOpen(false)} title="通知">
-          <div className="py-8 text-sm text-muted text-center">暂无通知</div>
+          <div className="-mx-4 -mt-2">
+            <NotifList compact />
+          </div>
         </Dialog>
       )}
       {!isDesktop && (
@@ -228,10 +336,11 @@ export default function TopBar() {
           {isDesktop && notifOpen && (
             <div
               id="notif-dropdown"
-              className="absolute w-64 rounded-xl bg-white shadow-2 border border-black/[0.06] p-4 text-sm text-ink-2 text-center"
+              data-onboarding-target="notifications-panel"
+              className="absolute w-80 rounded-xl bg-white shadow-2 border border-black/[0.06] p-4 text-sm text-ink-2"
               style={{ top: notifPosRef.current.top, right: notifPosRef.current.right, pointerEvents: 'auto' }}
             >
-              暂无通知
+              <NotifList />
             </div>
           )}
 

@@ -15,14 +15,14 @@ interface ButtonProps extends Omit<HTMLMotionProps<'button'>, 'children'> {
 
 const variants: Record<Variant, string> = {
   primary:
-    'text-white bg-accent shadow-[0_0_0_0.5px_rgba(10,132,255,0.3),0_2px_8px_rgba(10,132,255,0.2)] hover:bg-accent-dark active:bg-accent-dark',
+    'text-white bg-accent/85 glass-blur shadow-[0_0_0_0.5px_rgba(10,132,255,0.35),0_2px_10px_rgba(10,132,255,0.28)] hover:bg-accent/95 active:bg-accent',
   secondary:
-    'text-ink bg-white/72 border-[0.5px] border-black/8 shadow-1 hover:bg-white/85 active:bg-white/90',
+    'text-ink bg-[var(--glass-bg)] glass-blur border-[0.5px] border-black/8 shadow-1 hover:bg-[var(--glass-bg-strong)] active:bg-[var(--glass-bg-strong)]',
   outline:
-    'text-ink-2 bg-transparent border border-black/12 hover:bg-black/[0.03] hover:text-ink active:bg-black/[0.06]',
+    'text-ink-2 bg-[var(--glass-bg-weak)] glass-blur border border-black/12 hover:bg-[var(--glass-bg)] hover:text-ink active:bg-[var(--glass-bg-strong)]',
   ghost: 'text-ink-2 hover:bg-black/[0.04] active:bg-black/[0.06]',
   danger:
-    'text-white bg-bad shadow-[0_0_0_0.5px_rgba(255,69,58,0.3),0_2px_8px_rgba(255,69,58,0.2)] hover:bg-[#e03e34] active:bg-[#d63630]',
+    'text-white bg-bad/85 glass-blur shadow-[0_0_0_0.5px_rgba(255,69,58,0.35),0_2px_10px_rgba(255,69,58,0.25)] hover:bg-bad/95 active:bg-bad',
 }
 
 const sizes: Record<Size, string> = {
@@ -36,7 +36,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     <motion.button
       ref={ref}
       className={cn(
-        'inline-flex items-center justify-center font-semibold transition-colors duration-100 select-none',
+        'inline-flex shrink-0 items-center justify-center whitespace-nowrap font-semibold transition-colors duration-100 select-none',
         'focus-visible:outline-none focus-visible:ring-[3.5px] focus-visible:ring-accent/25',
         variants[variant],
         sizes[size],

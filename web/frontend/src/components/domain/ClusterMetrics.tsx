@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Cpu, HardDrive, Monitor, Sparkles, Loader2, Network } from 'lucide-react'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 
 const tooltipStyle = {
   contentStyle: { borderRadius: 10, border: '0.5px solid rgba(0,0,0,0.1)', fontSize: 12, background: 'rgba(255,255,255,0.95)' },
@@ -116,9 +117,9 @@ export function ClusterMetrics({ data }: Props) {
         </button>
       </div>
       {aiAnalysis && (
-        <div className="p-3 rounded-lg bg-accent/5 border border-accent/10 text-sm whitespace-pre-wrap">
+        <div className="p-3 rounded-lg bg-accent/5 border border-accent/10">
           <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-accent"><Sparkles size={12} /> AI 分析</div>
-          {aiAnalysis}
+          <MarkdownContent content={aiAnalysis} />
         </div>
       )}
       {/* Host CPU + Mem */}

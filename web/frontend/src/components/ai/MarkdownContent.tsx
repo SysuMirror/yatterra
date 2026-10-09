@@ -26,9 +26,9 @@ function MarkdownCode({ className, children }: { className?: string; children?: 
   )
 }
 
-export function MarkdownContent({ content }: { content: string }) {
+export function MarkdownContent({ content, size = 'sm' }: { content: string; size?: 'sm' | 'xs' }) {
   return (
-    <div className="prose-sm prose-neutral max-w-none text-sm leading-relaxed overflow-x-auto [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_ul]:mb-1.5 [&_ol]:mb-1.5 [&_li]:mb-0.5 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mb-0.5 [&_strong]:font-semibold [&_a]:text-accent [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-accent/30 [&_blockquote]:pl-3 [&_blockquote]:text-muted [&_table]:text-xs [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1 [&_table]:w-full [&_pre]:overflow-x-auto">
+    <div className={`prose-sm prose-neutral max-w-none ${size === 'xs' ? 'text-xs' : 'text-sm'} leading-relaxed overflow-x-auto [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_ul]:mb-1.5 [&_ol]:mb-1.5 [&_li]:mb-0.5 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mb-0.5 [&_strong]:font-semibold [&_a]:text-accent [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-accent/30 [&_blockquote]:pl-3 [&_blockquote]:text-muted [&_table]:text-xs [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1 [&_table]:w-full [&_pre]:overflow-x-auto`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

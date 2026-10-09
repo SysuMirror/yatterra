@@ -1,16 +1,17 @@
 import { motion } from 'framer-motion'
 import { haptic } from '@/lib/haptic'
 
-interface SwitchProps {
+type SwitchProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onChange'> & {
   checked: boolean
   onChange: (checked: boolean) => void
   disabled?: boolean
   label?: string
 }
 
-export function Switch({ checked, onChange, disabled, label }: SwitchProps) {
+export function Switch({ checked, onChange, disabled, label, ...rest }: SwitchProps) {
   return (
     <button
+      {...rest}
       role="switch"
       aria-checked={checked}
       disabled={disabled}

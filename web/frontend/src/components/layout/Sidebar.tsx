@@ -4,8 +4,8 @@ import { motion, AnimatePresence, useMotionValue, animate } from 'framer-motion'
 import { useDrag } from '@use-gesture/react'
 import {
   LayoutDashboard, Box, Server, HardDrive, Database, Globe, Monitor, Network,
-  Workflow, Plug, Bot, ShieldCheck, FolderOpen, Users, User,
-  BookOpen, Swords, ChevronLeft, ChevronRight, X,
+  Workflow, Plug, Bot, Code2, ShieldCheck, FolderOpen, Users, User,
+  BookOpen, Swords, ChevronLeft, ChevronRight, X, ShieldQuestion,
 } from 'lucide-react'
 import { useSidebarStore } from '@/stores/sidebar'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
@@ -19,7 +19,7 @@ interface NavItem {
   to: string
   icon: React.ReactNode
   label: string
-  perm?: string  // required permission; undefined = visible to all logged-in users
+  perm?: string | string[]  // required permission(s) — any-of; undefined = visible to all
 }
 
 interface NavGroup {
@@ -52,6 +52,7 @@ const navGroups: NavGroup[] = [
     label: '开发',
     to: '/dev',
     items: [
+      { to: '/ide', icon: <Code2 size={18} />, label: 'IDE', perm: 'group.view' },
       { to: '/dev/harness', icon: <Workflow size={18} />, label: '编排', perm: 'dev.harness' },
       { to: '/dev/mcp', icon: <Plug size={18} />, label: 'MCP', perm: 'dev.mcp' },
       { to: '/dev/llm', icon: <Bot size={18} />, label: 'LLM', perm: 'dev.llm' },
@@ -62,6 +63,7 @@ const navGroups: NavGroup[] = [
     to: '/ops',
     items: [
       { to: '/ops/audit', icon: <ShieldCheck size={18} />, label: '审计', perm: 'ops.audit' },
+      { to: '/ops/approvals', icon: <ShieldQuestion size={18} />, label: 'AI 审批', perm: ['infra.host', 'admin.users'] },
       { to: '/ops/shared', icon: <FolderOpen size={18} />, label: '共享', perm: 'ops.shared.read' },
       { to: '/threat-map', icon: <Swords size={18} />, label: '攻防', perm: 'ops.threat' },
     ],
@@ -78,11 +80,13 @@ const navGroups: NavGroup[] = [
 
 function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const location = useLocation()
-  const { hasPerm } = useAuth()
+  const { hasPerm, hasAnyPerm } = useAuth()
   // Permission-filtered nav: drop items the user lacks perms for,
   // then drop whole groups whose items are all hidden.
+  const allowed = (p?: string | string[]) =>
+    !p || (Array.isArray(p) ? hasAnyPerm(p) : hasPerm(p))
   const visibleGroups = navGroups
-    .map((group) => ({ ...group, items: group.items.filter((i) => !i.perm || hasPerm(i.perm)) }))
+    .map((group) => ({ ...group, items: group.items.filter((i) => allowed(i.perm)) }))
     .filter((group) => group.items.length > 0)
   return (
     <nav className="flex-1 py-3" aria-label="主导航">

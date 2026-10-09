@@ -1,6 +1,6 @@
 import { useLocation, useNavigate } from 'react-router'
 import { motion } from 'framer-motion'
-import { LayoutDashboard, Box, Server, Workflow, Swords } from 'lucide-react'
+import { LayoutDashboard, Box, Server, Code2, Swords } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { haptic } from '@/lib/haptic'
 
@@ -8,7 +8,7 @@ const tabs = [
   { key: 'home', path: '/console', icon: LayoutDashboard, label: '概览' },
   { key: 'pods', path: '/pods', icon: Box, label: 'Pod' },
   { key: 'host', path: '/infra/host', icon: Server, label: '主机' },
-  { key: 'harness', path: '/dev/harness', icon: Workflow, label: '编排' },
+  { key: 'ide', path: '/ide', icon: Code2, label: 'IDE' },
   { key: 'threat', path: '/threat-map', icon: Swords, label: '攻防' },
 ] as const
 

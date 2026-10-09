@@ -7,6 +7,7 @@ import { ActionSheet, type ActionSheetItem } from '@/components/ui/ActionSheet'
 import { useLongPress } from '@/hooks/useLongPress'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 import { aiApi } from '@/api/ai'
+import { MarkdownContent } from '@/components/ai'
 import { cn } from '@/lib/cn'
 import { formatSpec, podStatusLabel } from '@/lib/format'
 import { motionBind } from '@/lib/gesture'
@@ -207,9 +208,9 @@ export function PodCard({ name, status, cpu, mem, gpus, storage, owner, members,
           )}
 
           {aiTip && (
-            <div className="mt-2 p-2 rounded-lg bg-accent/5 border border-accent/10 text-xs whitespace-pre-wrap" onClick={(e) => e.stopPropagation()}>
+            <div className="mt-2 p-2 rounded-lg bg-accent/5 border border-accent/10" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center gap-1 mb-0.5 text-[10px] font-semibold text-accent"><Sparkles size={9} /> AI 分析</div>
-              {aiTip}
+              <MarkdownContent content={aiTip} size="xs" />
             </div>
           )}
         </motion.div>

@@ -306,10 +306,10 @@ export function AiInsightPanel({
           )}
           {summary && (
             <div
-              className="text-sm text-ink-2 whitespace-pre-wrap leading-relaxed"
+              className="text-ink-2"
               style={{ maxHeight: `${maxHeight}px`, overflowY: maxHeight > 0 ? 'auto' : 'visible' }}
             >
-              {summary.trim()}
+              <MarkdownContent content={summary.trim()} />
             </div>
           )}
 
