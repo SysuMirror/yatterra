@@ -50,6 +50,97 @@ _samples = []          # list of sample dicts, newest appended at the end
 _started = False
 _thread = None
 
+# ── LLM / AI observability counters ───────────────────────────────────────────
+# Process-local counters incremented by llm.py on every request outcome, so the
+# previously swallowed LLM failures become visible. Kept deliberately simple
+# (a lock + plain dicts/lists) and, like every other public surface here, the
+# accessors never raise. Exposed via llm_metrics().
+_llm_lock = threading.Lock()
+_LLM_LATENCY_MAX = 200       # keep the last 200 successful-call latencies
+_llm_requests = {}           # {"<provider>|<model>|<status>": count}
+_llm_errors = {}             # {"<provider>|<model>": count}  provider-level failures
+_llm_fallbacks = {}          # {"<provider>": count}          fallback transitions
+_llm_latencies = []          # list of recent successful-call latency_ms
+
+
+def _llm_key(*parts):
+    """Join counter label parts into a stable key ('-' for empty)."""
+    return "|".join(str(p) if p not in (None, "") else "-" for p in parts)
+
+
+def llm_inc_request(provider, model, status):
+    """Count one LLM attempt outcome: requests_total{provider,model,status}.
+
+    status is a short label: ``ok`` / ``429`` / ``5xx`` / ``error`` /
+    ``http<code>`` / ``retry_exhausted``. Never raises.
+    """
+    try:
+        key = _llm_key(provider, model, status)
+        with _llm_lock:
+            _llm_requests[key] = _llm_requests.get(key, 0) + 1
+    except Exception:
+        pass
+
+
+def llm_inc_error(provider, model):
+    """Count one provider-level failure: llm_errors_total{provider,model}."""
+    try:
+        key = _llm_key(provider, model)
+        with _llm_lock:
+            _llm_errors[key] = _llm_errors.get(key, 0) + 1
+    except Exception:
+        pass
+
+
+def llm_inc_fallback(provider):
+    """Count one fallback transition: llm_fallbacks_total{provider}."""
+    try:
+        key = _llm_key(provider)
+        with _llm_lock:
+            _llm_fallbacks[key] = _llm_fallbacks.get(key, 0) + 1
+    except Exception:
+        pass
+
+
+def llm_observe_latency(ms):
+    """Record a successful-call latency (milliseconds) in a short ring buffer."""
+    try:
+        val = round(float(ms), 1)
+        with _llm_lock:
+            _llm_latencies.append(val)
+            if len(_llm_latencies) > _LLM_LATENCY_MAX:
+                del _llm_latencies[: len(_llm_latencies) - _LLM_LATENCY_MAX]
+    except Exception:
+        pass
+
+
+def llm_metrics():
+    """Return the LLM observability counters. Never raises.
+
+    Shape::
+
+        {"requests_total": {"<provider>|<model>|<status>": int, ...},
+         "errors_total":   {"<provider>|<model>": int, ...},
+         "fallbacks_total": {"<provider>": int, ...},
+         "latency_ms": {"count", "avg", "last", "max"}}
+    """
+    try:
+        with _llm_lock:
+            lat = list(_llm_latencies)
+            return {
+                "requests_total": dict(_llm_requests),
+                "errors_total": dict(_llm_errors),
+                "fallbacks_total": dict(_llm_fallbacks),
+                "latency_ms": {
+                    "count": len(lat),
+                    "avg": round(sum(lat) / len(lat), 1) if lat else None,
+                    "last": lat[-1] if lat else None,
+                    "max": max(lat) if lat else None,
+                },
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
 
 # --------------------------------------------------------------------------- #
 # Low-level collectors — each returns None / {} on failure, never raises.      #
@@ -553,6 +644,45 @@ def _build_snapshot():
         "gpus": gpus,
         "groups": groups,
     }
+
+
+def group_gpu_history(gpu_ids, to=DOWNSAMPLE_TO):
+    """Return per-group GPU series ``{"gpu_util": [...], "gpu_mem": [...]}``.
+
+    ``gpu_ids`` is the group's assigned GPU index list (ints/strs). For each
+    downsampled sample the util/mem values of the assigned GPUs are averaged,
+    so a multi-GPU group gets one representative series. Samples where none
+    of the assigned GPUs reported are skipped. Never raises; returns empty
+    series on any failure.
+    """
+    empty = {"gpu_util": [], "gpu_mem": []}
+    try:
+        ids = {str(i) for i in (gpu_ids or [])}
+        if not ids:
+            return empty
+        with _lock:
+            snap = list(_samples)
+        if not snap:
+            return empty
+        ds = _downsample(snap, to)
+        utils, mems = [], []
+        for s in ds:
+            us, ms_ = [], []
+            for idx in ids:
+                g = (s.get("gpus") or {}).get(idx)
+                if not g:
+                    continue
+                if g.get("util") is not None:
+                    us.append(g["util"])
+                if g.get("mem") is not None:
+                    ms_.append(g["mem"])
+            if us:
+                utils.append(round(sum(us) / len(us), 1))
+            if ms_:
+                mems.append(round(sum(ms_) / len(ms_), 1))
+        return {"gpu_util": utils, "gpu_mem": mems}
+    except Exception:
+        return empty
 
 
 def metrics_snapshot():

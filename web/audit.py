@@ -8,6 +8,7 @@ yield an empty list on read.
 
 import json
 import os
+from collections import deque
 
 import siteconf
 
@@ -112,22 +113,52 @@ def audit_entries(limit=100):
     Reads the tail of the log, parses each JSON line, and returns the list
     in reverse chronological order. On any failure returns [].
     """
+    entries, _total = audit_query(limit=limit)
+    return entries
+
+
+def audit_query(limit=100, offset=0, actor=None, action=None, since=None, until=None):
+    """Return ``(entries, total)`` for a filtered, paginated audit window.
+
+    Single forward pass over the log file (line-by-line, no readlines), so
+    memory stays bounded to the ``offset + limit`` window kept in a deque.
+    ``total`` is the real number of entries matching the filters. Entries
+    are returned newest first; ``offset`` skips that many newest matches.
+    On any failure returns ``([], 0)``.
+    """
     try:
         if not os.path.exists(AUDIT_FILE):
-            return []
-        results = []
+            return [], 0
+        limit = max(0, int(limit or 0))
+        offset = max(0, int(offset or 0))
+        keep = deque(maxlen=(offset + limit) if (offset + limit) > 0 else 1)
+        total = 0
         with open(AUDIT_FILE, "r", encoding="utf-8") as fh:
-            lines = fh.readlines()
-        for raw in reversed(lines):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                results.append(json.loads(raw))
-            except Exception:
-                continue
-            if len(results) >= limit:
-                break
-        return results
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    e = json.loads(raw)
+                except Exception:
+                    continue
+                if actor and e.get("actor") != actor:
+                    continue
+                if action and action not in (e.get("action") or ""):
+                    continue
+                if since and (e.get("ts") or "") < since:
+                    continue
+                if until and (e.get("ts") or "") > until:
+                    continue
+                total += 1
+                keep.append(e)
+        # deque holds the newest (offset+limit) matches in chronological
+        # order (oldest first). Page 1 is the newest `limit` entries, so
+        # drop the newest `offset` (at the tail), then reverse to newest-first.
+        window = list(keep)
+        if offset:
+            window = window[: max(len(window) - offset, 0)]
+        window.reverse()
+        return window[:limit] if limit else [], total
     except Exception:
-        return []
+        return [], 0

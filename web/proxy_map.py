@@ -10,6 +10,7 @@
 import json
 import os
 import re
+import time
 import base64
 import secrets
 from datetime import datetime
@@ -22,6 +23,8 @@ STATE_FILE = siteconf.path("proxy_mappings.json")
 REMOTE_HOST = siteconf.RELAY_HOST_NAME
 NGINX_CONF = siteconf.NGINX_PROXY_CONF
 CONTAINER = siteconf.NGINX_PROXY_CONTAINER
+CONF_IN_CONTAINER = siteconf.NGINX_PROXY_CONTAINER_CONF
+CHECK_CONF = "/etc/nginx/.yatterra-check.conf"  # 容器内临时校验文件(与 custom.conf 同目录,相对 include 才能解析)
 
 MARK_BEGIN = "# === yatterra managed subdomains BEGIN ==="
 MARK_END = "# === yatterra managed subdomains END ==="
@@ -189,6 +192,14 @@ def _run(cmd, sudo=True, timeout=30):
     return remote_hosts.run_remote(REMOTE_HOST, cmd, sudo=sudo, timeout=timeout)
 
 
+def _write_path(path, text, timeout=30):
+    """把 text 原样写到远端的 path(经 base64 传输,避免引号/换行问题)。"""
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    ok, out = _run(f"echo {b64} | base64 -d | tee {path} > /dev/null", timeout=timeout)
+    if not ok:
+        raise RuntimeError(out)
+
+
 def _read_conf():
     ok, out = _run(f"cat {NGINX_CONF}", timeout=20)
     if not ok:
@@ -197,19 +208,41 @@ def _read_conf():
 
 
 def _write_conf(text):
-    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    cmd = f"echo {b64} | base64 -d | tee {NGINX_CONF} > /dev/null"
-    ok, out = _run(cmd, timeout=30)
+    _write_path(NGINX_CONF, text)
+
+
+def _container_conf_text():
+    """读容器内**实际生效**的 conf(用于探测宿主机文件 inode 漂移)。"""
+    ok, out = _run(f"docker exec {CONTAINER} cat {CONF_IN_CONTAINER}", timeout=20)
     if not ok:
         raise RuntimeError(out)
+    return out
 
 
 def _backup_conf():
     _run(f"cp {NGINX_CONF} {NGINX_CONF}.bak.$(date +%Y%m%d_%H%M%S)", timeout=15)
 
 
-def _nginx_test():
-    ok, out = _run(f"docker exec {CONTAINER} nginx -t", timeout=25)
+def _nginx_test(text=None):
+    """校验 nginx 配置。**必须带 `-c`,否则测的是镜像默认 /etc/nginx/nginx.conf(永远成功)**。
+
+    text=None: 校验容器当前加载的 custom.conf。
+    text=候选配置: 先把候选拷进容器(与 custom.conf 同目录,相对 include 才解析)再 -t,不碰线上文件。
+    """
+    if text is None:
+        ok, out = _run(f"docker exec {CONTAINER} nginx -t -c {CONF_IN_CONTAINER}", timeout=25)
+        return ok and "test is successful" in out, out
+    host_tmp = f"/tmp/yatterra-check-{secrets.token_hex(8)}.conf"
+    try:
+        _write_path(host_tmp, text)
+    except RuntimeError as e:
+        return False, f"[写临时配置失败: {e}]"
+    cmd = (
+        f"docker cp {host_tmp} {CONTAINER}:{CHECK_CONF} && "
+        f"docker exec {CONTAINER} nginx -t -c {CHECK_CONF}; "
+        f"rc=$?; rm -f {host_tmp}; docker exec {CONTAINER} rm -f {CHECK_CONF}; exit $rc"
+    )
+    ok, out = _run(cmd, timeout=45)
     return ok and "test is successful" in out, out
 
 
@@ -218,9 +251,38 @@ def _nginx_reload():
     return ok, out
 
 
+def _sync_container(new_text):
+    """让容器**实际加载**的配置等于 new_text。返 (ok, msg)。
+
+    单文件 bind mount 绑的是 inode:宿主机文件被整份替换(tee/新 inode)后,容器内仍指向旧
+    inode,`reload` 无效 —— 这种情况必须 `docker restart` 重新解析挂载。这里读容器内实际
+    内容来判断:一致 → reload;不一致 → restart + 复核。
+    """
+    try:
+        cur = _container_conf_text()
+    except RuntimeError as e:
+        return False, f"读容器内 conf 失败: {e}"
+    if cur.strip() == new_text.strip():
+        ok, out = _nginx_reload()
+        if not ok:
+            return False, f"reload 失败: {out}"
+        return True, "已 reload"
+    ok, out = _run(f"docker restart {CONTAINER}", timeout=60)
+    if not ok:
+        return False, f"docker restart 失败: {out}"
+    time.sleep(3)
+    try:
+        after = _container_conf_text()
+    except RuntimeError as e:
+        return False, f"重启后读容器内 conf 失败: {e}"
+    if after.strip() != new_text.strip():
+        return False, "重启后容器内 conf 仍不一致(请检查宿主机 bind mount 路径/挂载是否变更)"
+    return True, "检测到 inode 漂移,已重启容器使配置生效"
+
+
 # ---------------------------------------------------------------- apply
 def apply():
-    """根据状态重写 nginx 托管段,test 通过才 reload,失败回滚。返 (ok, msg)。"""
+    """根据状态重写 nginx 托管段:先校验候选配置,通过才落盘并让容器生效(inode 漂移自动重启),失败回滚。返 (ok, msg)。"""
     state = _load()
     section = _section_text(state)
     subs = [m["subdomain"] for m in state]
@@ -230,25 +292,35 @@ def apply():
         return False, f"读 nginx.conf 失败: {e}"
     new = _splice(old, section, subs)
     if new == old:
-        # 无变化也要确认段在位;但仍 reload 一次以保险?跳过,无变化直接 ok。
-        return True, "无变化"
+        # 段没变,但宿主机文件可能已被换 inode、容器还钉在旧文件上 —— 仍对齐一次容器。
+        ok, msg = _sync_container(old)
+        return (True, "无变化") if ok else (False, msg)
+
+    # 1) 先校验候选配置(拷进容器 -t,不碰线上文件)
+    ok, out = _nginx_test(new)
+    if not ok:
+        tail = out.strip().splitlines()[-1] if out.strip() else "未知"
+        return False, f"候选配置 nginx -t 失败(未改动线上): {tail}"
+
+    # 2) 备份 + 落盘宿主机文件
     try:
         _backup_conf()
         _write_conf(new)
     except RuntimeError as e:
         return False, f"写 nginx.conf 失败: {e}"
-    ok, out = _nginx_test()
-    if not ok:
-        # 回滚
-        try:
-            _write_conf(old)
-        except Exception:
-            pass
-        return False, f"nginx -t 失败已回滚: {out.strip().splitlines()[-1] if out.strip() else '未知'}"
-    ok, out = _nginx_reload()
-    if not ok:
-        return False, f"reload 失败: {out}"
-    return True, "已应用并 reload"
+
+    # 3) 让容器生效(reload,或 inode 漂移时 restart)
+    ok, msg = _sync_container(new)
+    if ok:
+        return True, f"已应用并生效({msg})"
+
+    # 4) 同步失败 → 回滚宿主机文件并让容器回到旧配置
+    try:
+        _write_conf(old)
+        _sync_container(old)
+    except Exception:
+        pass
+    return False, f"应用失败已回滚: {msg}"
 
 
 # ---------------------------------------------------------------- ops

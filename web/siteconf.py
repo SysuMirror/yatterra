@@ -126,6 +126,11 @@ NGINX_PROXY_CONF = _env("YATTERRA_NGINX_PROXY_CONF",
                         "/etc/nginx/conf.d/relay-proxy.conf")
 NGINX_PROXY_CONTAINER = _env("YATTERRA_NGINX_PROXY_CONTAINER",
                              "nginx-proxy")
+# Path the proxy conf is mounted at *inside* the container. The container runs
+# `nginx -c <this>`, so -t/-T checks must target it explicitly (the default
+# /etc/nginx/nginx.conf is the unused image default).
+NGINX_PROXY_CONTAINER_CONF = _env("YATTERRA_NGINX_PROXY_CONTAINER_CONF",
+                                  "/etc/nginx/custom.conf")
 NGINX_WEB_CONF = _env("YATTERRA_NGINX_WEB_CONF",
                       "/etc/nginx/sites-available/https-web.conf")
 NGINX_SSL_CERT = _env("YATTERRA_NGINX_SSL_CERT",
