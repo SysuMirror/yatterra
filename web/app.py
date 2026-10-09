@@ -11,6 +11,7 @@ from flask_compress import Compress
 import groups
 import agent
 import agent_runs
+import cert_alerts  # noqa: F401 模块级 start() 拉起证书到期/攻击激增巡检线程
 import harness_runs
 import agent_conf
 import users
@@ -23,6 +24,7 @@ import cpu_stats, gpu_stats
 import oauth2_login
 import metrics, host_health, audit, lifecycle
 import insight
+import podwatch
 import remote_hosts
 import proxy_map
 import mcp_client
@@ -181,6 +183,9 @@ def route_perm(path):
         return None, (name, "view")
     if path.startswith("/terminal/"):
         return None, (path.split("/")[2], "terminal")
+    # SPA Web IDE 深链 /pods/<name>/ide — 与 Pod 详情同级:member/view
+    if path.startswith("/pods/") and path.endswith("/ide"):
+        return None, (path.split("/")[2], "view")
     # non-pod module routes
     if path.startswith("/scheduler"):
         return "infra.scheduler", None
@@ -246,6 +251,11 @@ def guard():
         # Health check — must reach Flask route handler
         elif path == '/health':
             pass  # fall through to Flask route handler
+        # Harness(编排)管理:SPA dev/harness 页面直接 fetch 无 /api 前缀的
+        # 裸路径(/harness/list|def|store|delete)。若不放行会被下面的 SPA
+        # 兜底吞成 index.html → 前端解析 JSON 失败。放行后仍走 login+route_perm。
+        elif path.startswith('/harness/'):
+            pass  # fall through to Flask route handlers / legacy auth+perm gate
         # Flask /static/ files — let Flask's built-in static handler serve them
         elif path.startswith('/static/'):
             return None
@@ -316,12 +326,43 @@ def csrf_protect():
     # token-authed external endpoints — exempt from CSRF
     if request.path in ("/deploy/webhook", "/deploy-internal/report", "/login/guest"):
         return
+    # harness 删除由 SPA dev 页用裸 fetch POST(不带 CSRF token);与 webhook
+    # 同理豁免,权限仍由 route_perm 的 dev.harness 把关。
+    if request.path == "/harness/delete":
+        return
     form_token = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
     session_token = session.get("csrf_token")
     if not form_token or not session_token or form_token != session_token:
         flash("表单已过期,请重试", "error")
         dest = request.referrer or "/"
         return redirect(dest)
+
+@app.before_request
+def block_unauth_api_options():
+    """Reject unauthenticated OPTIONS on /api/*.
+
+    Flask answers OPTIONS automatically and echoes an ``Allow:`` header, which
+    lets anonymous callers enumerate the exact HTTP methods (incl. write verbs
+    like POST/PUT/DELETE) every endpoint accepts — part of the unauth
+    self-description finding.  The SPA is served same-origin so it never issues
+    a CORS preflight; authenticated callers (session cookie or bearer token)
+    still receive the normal automatic answer.
+    """
+    if request.method != "OPTIONS" or not request.path.startswith("/api/"):
+        return
+    if login_required():
+        return
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else None
+    if token:
+        try:
+            if users.verify_token(token):
+                return
+        except Exception:
+            pass
+    return jsonify({"error": {"code": "UNAUTHORIZED",
+                              "message": "Authentication required"}}), 401
+
 
 @app.after_request
 def security_headers(resp):
@@ -336,6 +377,14 @@ socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*',
 
 # --- REST API (all API blueprints) ---
 register_all_blueprints(app)
+
+# --- 审批蓝图(approvals.py,agent.py 已在顶部 import approvals) ---
+import approvals as _approvals
+if _approvals.approvals_bp is not None:
+    app.register_blueprint(_approvals.approvals_bp)
+else:
+    __import__("logging").getLogger("approvals").error(
+        "approvals_bp 为 None,审批端点(/api/agents/approvals 等)未注册")
 
 # --- Unified JSON error handler for API endpoints ---
 from middleware.error_handler import register_error_handlers
@@ -400,6 +449,12 @@ def _term_reader(sid, master):
     _term_cleanup(sid)
 
 # --- OAuth2 external login (ssemarket & unisso) ---
+# 注意:这两个 /oauth/callback/* 是**线上真正接收 IdP 回调**的路由——
+# oauth2_login 生成的 redirect_uri 即 /oauth/callback/<provider>(已注册到
+# ssemarket IdP 与 UniSSO client 配置),浏览器 302 落在这里。
+# api/auth.py 里的 /api/auth/callback/* 是同逻辑的重复实现,但其路径从未被
+# 用作 redirect_uri,属死代码;该文件归其他模块管,勿在此删,也不要把
+# redirect_uri 改成 /api/auth/callback/*(会与已注册的 URI 不符导致 code 交换失败)。
 
 @app.route("/oauth/callback/ssemarket")
 def oauth_callback_ssemarket():
@@ -621,16 +676,6 @@ def deploy_webhook():
             app.logger.exception("webhook notification enqueue failed for %s", group)
     return jsonify({"triggered": len(matches), "branch": branch})
 
-def _send_webhook_alert(group, dep, repo_url, branch, payload):
-    """Best-effort asynchronous webhook summary; never changes deploy outcome."""
-    try:
-        import pwa_alerts
-        key = pwa_alerts.webhook_event_key(repo_url, branch, payload) + ":" + group
-        if pwa_alerts.claim_webhook(key):
-            pwa_alerts.notify_webhook(group, dep, repo_url, branch, payload)
-    except Exception:
-        app.logger.exception("webhook notification failed for %s", group)
-
 
 # --- pod app → host status report (token auth) ---
 @app.route("/deploy-internal/report", methods=["POST"])
@@ -651,6 +696,64 @@ def deploy_internal_report():
     if ok:
         audit.record("deploy_report", detail=f"id={deploy_id} state={state}", actor="app")
     return jsonify({"ok": ok, "msg": msg}), (200 if ok else 403)
+
+
+# --- Harness(编排)管理:SPA dev/harness 页使用的裸路径 ---
+# frontend/src/routes/dev/harness.tsx 与 dev/index.tsx 直接用 fetch 拉取这些
+# 无 /api 前缀的路径。guard() 已放行 /harness/ 到 Flask 处理器,权限由
+# route_perm() 收口(/harness/store 任意登录用户可读,其余需 dev.harness)。
+# 运行/商店导入走 api 蓝图(/api/harnesses/*,见 api/agents.py)。
+@app.route("/harness/list")
+def harness_list():
+    """当前用户的 harness 名称列表。返回 {"names": [...]}。"""
+    try:
+        names = agent_conf.list_harnesses(current_user())
+    except Exception:
+        names = []
+    return jsonify({"names": names})
+
+
+@app.route("/harness/def")
+def harness_def():
+    """读取一个 harness 定义(JSON)。"""
+    name = request.args.get("name", "")
+    doc = agent_conf.load_harness(name, current_user()) if name else None
+    if not doc:
+        return jsonify({"error": f"harness 不存在: {name}"}), 404
+    return jsonify(doc)
+
+
+@app.route("/harness/store")
+def harness_store():
+    """公开商店中可导入的 harness 列表。返回 {"published": [...]}。"""
+    try:
+        items = agent_conf.list_public_harnesses()
+    except Exception:
+        items = []
+    published = [{"name": it.get("name", ""),
+                  "description": it.get("title") or "",
+                  "author": it.get("author", ""),
+                  "published_at": it.get("published_at", 0)} for it in items]
+    return jsonify({"published": published})
+
+
+@app.route("/harness/delete", methods=["POST", "GET"])
+def harness_delete():
+    """删除当前用户的一个 harness。"""
+    if request.method == "GET":
+        # 状态变更应走 POST;GET 仅为兼容旧前端保留,前端迁移后删除
+        __import__("logging").getLogger("deprecation").warning(
+            "GET /harness/delete 已废弃,请改用 POST(前端 dev/harness 页迁移后移除兼容)")
+    body = request.get_json(silent=True) or {}
+    name = request.args.get("name", "") or body.get("name", "")
+    if not name:
+        return jsonify({"error": "缺少 name"}), 400
+    try:
+        agent_conf.delete_harness(name, current_user())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
 
 # --- Socket.IO 事件: web 终端 ---
 @socketio.on('connect')
