@@ -264,7 +264,7 @@ def _summarize(prompt, fallback):
         import ai_service
         return ai_service.analyze_text(prompt[:MAX_TEXT], task="summarize", user="system-notification")
     try:
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError
+        from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=1) as ex:
             text = ex.submit(call).result(timeout=LLM_TIMEOUT)
         text = _safe_text(text, 600)

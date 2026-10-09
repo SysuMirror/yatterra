@@ -214,7 +214,7 @@ def start(username: str, session_id: str, message: str, page: str = "", context:
                     s["turns"] = s["turns"][-MAX_TURNS:]; s["updated"] = time.time()
                     if s.get("title") == "New conversation": s["title"] = message.strip()[:60]
                     _save(data)
-        except Exception as exc:
+        except Exception:
             run.add({"type": "error", "data": "Assistant unavailable"})
         finally:
             run.finish()

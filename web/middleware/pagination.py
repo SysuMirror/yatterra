@@ -1,6 +1,5 @@
 """Pagination utilities for API endpoints."""
 from flask import request
-from functools import wraps
 
 
 def get_pagination_params():

@@ -576,7 +576,6 @@ def rewrite_frpc(state):
     # strip existing managed block
     if FRPC_MARK_BEGIN in content:
         pre = content.split(FRPC_MARK_BEGIN)[0]
-        post = content.split(FRPC_MARK_END)[1] if FRPC_MARK_END in content else ""
         content = pre.rstrip() + "\n\n"
     else:
         content = content.rstrip() + "\n\n"

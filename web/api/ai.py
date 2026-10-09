@@ -8,7 +8,7 @@ import os
 import re as _re
 import time
 from flask import Blueprint, request, jsonify, Response, stream_with_context, g
-from middleware.error_handler import ApiError, bad_request, not_found
+from middleware.error_handler import bad_request, not_found
 
 import ai_service
 import ai_chat_store

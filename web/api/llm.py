@@ -6,14 +6,13 @@ import os
 from urllib.parse import urlparse
 
 import requests
-from flask import Blueprint, request, jsonify, g, session
-from middleware.error_handler import ApiError, bad_request, not_found, forbidden
+from flask import Blueprint, request, jsonify
+from middleware.error_handler import bad_request, not_found, forbidden
 
 import llm_conf
 import llm_usage
 import metrics
 import audit
-import users
 
 from api._auth import require_auth, current_username, current_user_obj
 

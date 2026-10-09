@@ -83,7 +83,6 @@ def analyze_text(text, task="summarize", categories=None, extract_type=None, tar
             [{"role": "user", "content": f"类别：{cats}\n\n请分类：\n\n{text}"}],
             system=_SYS_CLASSIFY, max_tokens=256, caller=component, user=user)
     elif task == "extract":
-        et = extract_type or "关键信息"
         return llm.chat(
             [{"role": "user", "content": f"提取{text}：\n\n{text}"}],
             system=_SYS_EXTRACT, max_tokens=2048, caller=component, user=user)
@@ -198,7 +197,6 @@ def smart_complete(partial, schema=None, context="", user=None):
 
 # ── Tool-use support for page assistant ─────────────────────────
 
-import shlex
 import subprocess
 
 AGENT_TOOLS = [
@@ -1647,7 +1645,7 @@ def _execute_tool_inner(name, arguments, user=None):
                         lines.append(f"  {k}: {v}")
                 # Per-day breakdown
                 day_data = llm_usage.day_summary(days=days)
-                lines.append(f"\n=== 按天 ===")
+                lines.append("\n=== 按天 ===")
                 if isinstance(day_data, list):
                     for d in day_data[:days]:
                         lines.append(f"  {d}")
@@ -1659,7 +1657,7 @@ def _execute_tool_inner(name, arguments, user=None):
                 # exposes platform-wide top users to non-admins).
                 caller = (user or {}).get("username") if isinstance(user, dict) else None
                 top = llm_usage.top_users(days=days, limit=10)
-                lines.append(f"\n=== Top 用户 ===")
+                lines.append("\n=== Top 用户 ===")
                 if isinstance(top, list):
                     for u in top[:10]:
                         if isinstance(u, dict):
@@ -1671,7 +1669,7 @@ def _execute_tool_inner(name, arguments, user=None):
                             lines.append(f"  {u}")
                 # Component breakdown
                 comp = llm_usage.component_summary(days=days)
-                lines.append(f"\n=== 按组件 ===")
+                lines.append("\n=== 按组件 ===")
                 if isinstance(comp, list):
                     for c in comp[:10]:
                         lines.append(f"  {c}")

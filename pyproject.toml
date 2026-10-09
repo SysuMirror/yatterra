@@ -1,0 +1,29 @@
+# ── ruff: lightweight static analysis for the Python side ───────────────────
+# The SPA under web/frontend is type-checked separately (tsc --noEmit); ruff
+# only covers our own Python.
+#
+#   ruff check web            # lint
+#   ruff check web --fix      # apply safe fixes
+#
+# Install (no venv needed):  pip3 install --user ruff
+[tool.ruff]
+target-version = "py313"
+# Never lint vendored / generated / third-party trees.
+extend-exclude = [
+    "web/frontend",
+    "web/static",
+    "web/.spa-staging",
+    "node_modules",
+]
+
+[tool.ruff.lint]
+# Deliberately narrow & high-signal: pyflakes (real bugs / dead code) + the
+# syntax-error group. No style bikeshedding — keep the report actionable.
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# web/app.py imports many modules purely for import-time side effects: they
+# register blueprints and start background daemon threads (podwatch, metrics,
+# insight, …). The imported names are intentionally "unused" — do NOT delete
+# these imports, and do NOT "fix" the F401s it triggers.
+"web/app.py" = ["F401"]

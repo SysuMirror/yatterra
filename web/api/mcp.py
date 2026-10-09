@@ -2,8 +2,8 @@
 
 MCP server CRUD and toggle.
 """
-from flask import Blueprint, request, jsonify, g
-from middleware.error_handler import ApiError, bad_request, not_found
+from flask import Blueprint, request, jsonify
+from middleware.error_handler import bad_request, not_found
 
 import mcp_client
 import audit

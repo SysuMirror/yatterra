@@ -96,7 +96,7 @@ def _g_dashboard():
     audit_entries = audit.audit_entries(limit=5)
     threat = _honeypot_feed("1d")
 
-    lines = [f"集群概览:"]
+    lines = ["集群概览:"]
     lines.append(f"Pod: 总 {len(pods)}, 运行 {running}, 停止 {stopped}, 失败 {failed}")
     mem = hh.get("mem", {}) if hh else {}
     disk = (hh.get("disk") or [{}])
@@ -410,7 +410,6 @@ def _g_ops():
     hh = _safe(host_health.host_health) or {}
     load = hh.get("load", {})
     st = threat.get("stats", {})
-    attacks = threat.get("attacks", []) if threat else []
     lines = [
         f"运维概览: 审计 {len(entries)} 条, 威胁 {st.get('total_attacks',0)} 次攻击/{st.get('total_banned',0)} 封禁, 主机负载 {load.get('load1','?')}",
         "最近审计:",

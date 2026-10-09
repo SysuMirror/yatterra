@@ -3,7 +3,6 @@
 Audit log entries with filtering.
 """
 from flask import Blueprint, request, jsonify
-from middleware.error_handler import bad_request
 
 import audit as audit_mod
 import users as users_mod

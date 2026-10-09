@@ -9,7 +9,7 @@ Endpoints:
   POST /api/push/notify-all   → Send push to all subscribers (admin only)
 """
 import json, os, logging, threading
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify
 from pywebpush import webpush, WebPushException
 from api._auth import require_auth, current_username
 

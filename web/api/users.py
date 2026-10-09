@@ -2,9 +2,9 @@
 
 User CRUD for admin management.
 """
-from flask import Blueprint, request, jsonify, g, session
+from flask import Blueprint, request, jsonify
 from importlib import import_module
-from middleware.error_handler import ApiError, bad_request, not_found, forbidden
+from middleware.error_handler import bad_request, not_found, forbidden
 
 users_mod = import_module("users")
 import audit

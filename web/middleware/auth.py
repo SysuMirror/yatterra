@@ -1,7 +1,7 @@
 """Authentication middleware for API endpoints.
 Supports both session-based (browser) and token-based (API) auth.
 """
-from flask import request, session, jsonify, g
+from flask import session, jsonify, g
 from functools import wraps
 
 
@@ -62,7 +62,7 @@ def require_any_perm(*perms):
                 return jsonify({"error": {"code": "FORBIDDEN", "message": "One of permissions required: " + ", ".join(perms)}}), 403
             return f(*args, **kwargs)
         return decorated
-    return decorated
+    return decorator
 
 
 def inject_auth_context(app):

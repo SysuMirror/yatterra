@@ -7,7 +7,7 @@ import subprocess as _sp
 from importlib import import_module
 from urllib.parse import quote
 from flask import Blueprint, request, jsonify, g, Response, stream_with_context
-from middleware.error_handler import ApiError, not_found, bad_request
+from middleware.error_handler import not_found, bad_request
 
 import siteconf
 import host_health, remote_hosts, metrics

@@ -4,7 +4,7 @@ File browser, file read, mkdir, upload, delete, download for the shared weights 
 """
 import os
 from flask import Blueprint, request, jsonify, Response
-from middleware.error_handler import bad_request, not_found
+from middleware.error_handler import bad_request
 
 import shared as shared_mod
 import audit

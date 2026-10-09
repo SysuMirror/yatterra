@@ -721,7 +721,6 @@ def _exec_platform_tool(tool, args, cfg, user=None):
     """Dispatch a platform-management tool. Returns (ok, output)."""
     if not users.has_perm(user, "dev.harness"):
         return False, "【无 dev.harness 权限,不能调用平台管理工具】"
-    out_max = cfg["limits"]["out_max_kb"] * 1024
     try:
         _uname = (user or {}).get("username", "")
         if tool == "list_harnesses":

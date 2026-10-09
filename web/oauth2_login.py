@@ -11,7 +11,6 @@ import time
 import secrets
 import hashlib
 import base64
-import json
 import urllib.parse
 import logging
 

@@ -15,7 +15,6 @@ dict even if every collector failed.
 import json
 import os
 import shutil
-import socket
 import subprocess
 
 import groups

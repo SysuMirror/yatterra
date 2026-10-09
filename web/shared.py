@@ -4,7 +4,6 @@ group pod at /shared (so pods see /shared/weights, /shared/datasets, ...).
 Teacher manages contents via the platform UI. readOnly volumeMount keeps the
 whole tree read-only inside the pod even with sudo."""
 import os
-import shutil
 from datetime import datetime
 
 import siteconf

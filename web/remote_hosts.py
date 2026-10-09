@@ -16,7 +16,6 @@ SSH yields a dict with an ``error`` key, never raises.
 """
 import base64
 import json
-import os
 import subprocess
 
 import siteconf
@@ -245,7 +244,6 @@ def collect(cfg, timeout=20):
 
     Returns a dict matching host_health shape (plus ``vllm``). Never raises.
     """
-    name = cfg.get("name", "?")
     try:
         script_b64 = _b64(_COLLECT)
         sudo_b64 = _b64(cfg.get("sudo_password", ""))

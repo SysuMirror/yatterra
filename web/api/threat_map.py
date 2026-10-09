@@ -5,7 +5,6 @@ not guests; matches the frontend 攻防 page gating).
 """
 import time, os, json
 from flask import Blueprint, request, jsonify
-from middleware.error_handler import bad_request
 
 import siteconf
 

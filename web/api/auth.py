@@ -21,8 +21,8 @@ from flask import Blueprint, request, session, jsonify, redirect
 import oauth2_login
 users = import_module("users")
 import audit
-from middleware.error_handler import ApiError, unauthorized, bad_request, forbidden
-from middleware.csrf import generate_csrf_token, require_csrf
+from middleware.error_handler import unauthorized, bad_request, forbidden
+from middleware.csrf import generate_csrf_token
 
 log = logging.getLogger("auth_api")
 
