@@ -129,3 +129,12 @@ k3s.yaml
 image/rootfs/
 *.iso
 *.img
+
+# ── 运行时/备份目录（含凭证与用户数据，禁止入库）──────────────────────────────
+backups/
+backups/**
+.page_ai_runs/
+.page_ai_runs/**
+podwatch/
+podwatch/**
+*.tsbuildinfo
