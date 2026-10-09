@@ -27,6 +27,7 @@ class Run:
         self.name = name
         self.message = message
         self.username = username or ""
+        self.t0 = time.time()
         self.events = []
         self.cond = threading.Condition()
         self.done = False
@@ -90,6 +91,17 @@ def start(mode, name, message, history, run_id, session_id=None, user=None,
         finally:
             run.finish()
             agent._RUNS.pop(run_id, None)
+            # 长任务(>60s)完成 → 推送发起人(kind='agent-done')。收件人是单个
+            # 用户, notify_event 按组解析发不到, 走 cert_alerts.notify_user 直发
+            # (_claim_alert 去重留痕 + send_to_users([username]))。best-effort。
+            try:
+                if run.username and time.time() - run.t0 > 60:
+                    threading.Thread(
+                        target=_notify_done,
+                        args=(run.username, run_id, mode, name, message),
+                        daemon=True).start()
+            except Exception:
+                pass
             final = assistant_text if got_done else assistant_text.strip()
             if session_id:
                 save_session_turn(session_id, mode, message, final)
@@ -100,6 +112,20 @@ def start(mode, name, message, history, run_id, session_id=None, user=None,
     run.thread = t
     t.start()
     return run
+
+
+def _notify_done(username, run_id, mode, name, message):
+    """长任务完成推送发起人。不抛异常。"""
+    try:
+        import cert_alerts
+        brief = " ".join(str(message or "").split())[:60] or (name or mode or "任务")
+        cert_alerts.notify_user(
+            username, f"agent-done:{run_id}", "agent-done",
+            "AI 任务已完成",
+            f"AI 任务已完成:{brief}",
+            url="/dev", urgency="normal")
+    except Exception:
+        pass
 
 
 def get(run_id):

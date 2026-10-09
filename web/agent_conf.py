@@ -30,9 +30,18 @@ _DEFAULTS = {
                "sub_max_iters": "12", "sub_max_wall": "300"},
 }
 
+# 核心工具:每个 agent 的 tools 字典里都会补齐这些键(未显式给出 = False/禁用)。
 _ALL_TOOLS = ["run", "run_remote", "read_file", "write_file", "spawn", "web_search",
               "fetch_url", "edit_file", "grep", "list_dir",
               "inspect", "memory_save", "memory_load", "memory_list"]
+
+# 处理器在 _ALL_TOOLS 之外、但 agent.py 仍会执行(并经 _tool_enabled 判定)的工具:
+# 纯 LLM 工具(vision/ai_chat)与 Playwright 闸门工具(screenshot/browser_*)。
+# 它们**不**被补齐(缺省时 agent.py 的 _tool_enabled 视为 True=启用,与旧行为一致);
+# 但只要在 tools 字典里显式出现,就会被保留,因此"显式关闭"可持久化。
+_EXTRA_TOOLS = ["vision", "ai_chat", "screenshot",
+                "browser_navigate", "browser_click", "browser_fill", "browser_screenshot"]
+_KNOWN_TOOLS = _ALL_TOOLS + _EXTRA_TOOLS
 
 
 def _default_agents():
@@ -107,6 +116,36 @@ def save(cfg):
 
 
 # --- agent registry ---
+def _normalize_tools(raw):
+    """规范化某个 agent 的 tools 开关表,使"显式关闭"可持久化。
+
+    旧实现 {t: bool(raw.get(t, False)) for t in _ALL_TOOLS} 只重建 _ALL_TOOLS 的键,
+    会丢掉 _ALL_TOOLS 之外的 vision/ai_chat/screenshot/browser_* → 而 agent.py 的
+    _tool_enabled 对缺失键默认 True → 在 UI 里关掉这些工具后保存会被"复活"。
+
+    语义:
+      1. 保留传入字典里**所有已出现**的键(含 _ALL_TOOLS 之外的已知工具),值转 bool;
+         因此显式 false(关闭)会被写入并持久化。未知键也一并保留(前向兼容,避免
+         未来新增工具重蹈"被丢弃→默认 True 复活"覆辙)。
+      2. _ALL_TOOLS 中出现但未显式给出的键补 False(沿用旧语义:核心工具缺省即禁用)。
+      3. 既未出现、也不在 _ALL_TOOLS 的键不补齐:agent.py(_tool_enabled)按默认 True
+         处理,即"未出现 = 启用"——与本改动前对额外工具的行为一致。
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for t in _KNOWN_TOOLS:            # 已知工具:出现则取显式值
+        if t in raw:
+            out[t] = bool(raw[t])
+    for k, v in raw.items():          # 其余键(未知/未来工具)原样保留
+        ks = str(k).strip()
+        if ks and ks not in out:
+            out[ks] = bool(v)
+    for t in _ALL_TOOLS:              # 核心工具未出现 → 显式禁用
+        if t not in out:
+            out[t] = False
+    return out
+
+
 def _normalize_agent(a):
     """Coerce a loaded agent dict to canonical form (all tools present, typed)."""
     a = dict(a)
@@ -114,8 +153,7 @@ def _normalize_agent(a):
     a["label"] = str(a.get("label", a["id"] or "agent"))
     a["icon"] = str(a.get("icon", "🤖"))
     a["runner"] = "pod" if a.get("runner") == "pod" else "host"
-    tools = a.get("tools") or {}
-    a["tools"] = {t: bool(tools.get(t, False)) for t in _ALL_TOOLS}
+    a["tools"] = _normalize_tools(a.get("tools"))
     a["system_prompt"] = str(a.get("system_prompt", "") or "")
     a["mcp"] = [str(s).strip() for s in (a.get("mcp") or []) if str(s).strip()]
     return a

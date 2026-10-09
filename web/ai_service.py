@@ -3,6 +3,7 @@
 Wraps llm.chat / llm.stream_chat with task-specific prompts and post-processing.
 All calls go through the active LLM provider (Qwen on platform.ssemarket.cn).
 """
+import hashlib
 import json
 import os
 import llm
@@ -61,40 +62,43 @@ def stream_chat(prompt, system="", context=None, max_tokens=4096, caller="ai_cha
     yield from llm.stream_chat(messages, system=system, max_tokens=max_tokens, caller=caller, user=user)
 
 
-def analyze_text(text, task="summarize", categories=None, extract_type=None, target=None, user=None):
+def analyze_text(text, task="summarize", categories=None, extract_type=None, target=None, user=None, component="ai_analyze"):
     """Analyze text: summarize, classify, extract, translate, explain.
 
     task: summarize | classify | extract | translate | explain
     categories: list of category names (for classify)
     extract_type: what to extract (for extract)
     target: target language code for translate (zh, en, ja, ko)
+    component: usage-attribution label for the caller (default "ai_analyze").
+               Internal callers (e.g. insight) override it so their usage is
+               not mixed with user-initiated analyze calls.
     """
     if task == "summarize":
         return llm.chat(
             [{"role": "user", "content": f"请总结以下内容：\n\n{text}"}],
-            system=_SYS_SUMMARIZE, max_tokens=2048, caller="ai_analyze", user=user)
+            system=_SYS_SUMMARIZE, max_tokens=2048, caller=component, user=user)
     elif task == "classify":
         cats = "、".join(categories or ["技术", "业务", "运维", "安全"])
         return llm.chat(
             [{"role": "user", "content": f"类别：{cats}\n\n请分类：\n\n{text}"}],
-            system=_SYS_CLASSIFY, max_tokens=256, caller="ai_analyze", user=user)
+            system=_SYS_CLASSIFY, max_tokens=256, caller=component, user=user)
     elif task == "extract":
         et = extract_type or "关键信息"
         return llm.chat(
             [{"role": "user", "content": f"提取{text}：\n\n{text}"}],
-            system=_SYS_EXTRACT, max_tokens=2048, caller="ai_analyze", user=user)
+            system=_SYS_EXTRACT, max_tokens=2048, caller=component, user=user)
     elif task == "translate":
         lang_map = {"zh": "中文", "en": "英文", "ja": "日文", "ko": "韩文"}
         target_name = lang_map.get(target or "zh", target or "中文")
         return llm.chat(
             [{"role": "user", "content": f"翻译为{target_name}：\n\n{text}"}],
-            system=_SYS_TRANSLATE, max_tokens=4096, caller="ai_analyze", user=user)
+            system=_SYS_TRANSLATE, max_tokens=4096, caller=component, user=user)
     elif task == "explain":
         return llm.chat(
             [{"role": "user", "content": f"请解释以下内容：\n\n{text}"}],
-            system=_SYS_EXPLAIN, max_tokens=4096, caller="ai_analyze", user=user)
+            system=_SYS_EXPLAIN, max_tokens=4096, caller=component, user=user)
     else:
-        return quick_chat(text, caller="ai_analyze", user=user)
+        return quick_chat(text, caller=component, user=user)
 
 
 def analyze_image(image_base64, prompt, user=None):
@@ -247,7 +251,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "shell_exec",
-            "description": "执行安全的只读命令(kubectl get/describe/logs, cat, ls, df, free, nvidia-smi 等)",
+            "description": "在宿主机上执行命令(可读可写, 支持管道/命令链/脚本/重定向)。仅极危险且不可逆的操作会被拒: 关停/重启主机、rm 根目录、mkfs/dd 擦盘、curl|sh、集群级 kubectl delete、drain、关闭 k3s/frps/frpc/yatterra-web、清空防火墙等",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -564,6 +568,110 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "pod_file",
+            "description": "浏览/读取某个 Pod 持久目录(/home/cloud)里的文件——查看容器内的项目代码、脚本、配置。name 传 Pod/组名；path 传相对 /home/cloud 的路径(如 'deploy/supervisord.conf')，省略则列出根目录。需要该 Pod 的组成员权限(比 shell_exec/read_file 宽松，普通成员即可用)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pod 或组名"},
+                    "path": {"type": "string", "description": "相对 /home/cloud 的路径；省略=列出根目录，目录=列表，文件=内容"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pod_edit_file",
+            "description": (
+                "修改某个 Pod 持久目录(/home/cloud)里的已有文本文件(≤512KB)。"
+                "修改会以 diff 卡片呈现给用户, 须等用户接受后才真正写入; "
+                "用户拒绝或超时则不写任何文件。pod 传 Pod/组名, path 传相对 "
+                "/home/cloud 的文件路径。修改方式二选一: new_content=整文件"
+                "新内容, 或 search+replace=精确替换(search 须在文件中唯一, "
+                "不唯一时请带更多上下文重试)。reason 用一句话说明修改原因"
+                "(会展示给用户)。默认仅 Pod owner 可用, member 需组设置 "
+                "ai_member_edit=true 放开。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pod": {"type": "string", "description": "Pod 或组名"},
+                    "path": {"type": "string", "description": "相对 /home/cloud 的文件路径(须已存在)"},
+                    "new_content": {"type": "string", "description": "整文件新内容(与 search/replace 二选一)"},
+                    "search": {"type": "string", "description": "要替换的原文(须在文件中唯一)"},
+                    "replace": {"type": "string", "description": "替换后的文本"},
+                    "reason": {"type": "string", "description": "修改原因(展示给用户)"},
+                },
+                "required": ["pod", "path", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pod_code_outline",
+            "description": "查看某个 Pod 项目代码的**结构与符号大纲**（哪个文件定义了哪些类/函数、目录里有哪些文件），数据来自平台维护的代码索引，一次调用即得，比逐个 pod_file 浏览快得多。name 传 Pod/组名；path 省略=顶层概览(目录树+核心文件)，传目录=该目录下文件与符号，传文件=该文件的符号表+文件头。需要该 Pod 的组成员权限。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pod 或组名"},
+                    "path": {"type": "string", "description": "相对 /home/cloud 的目录或文件路径；省略=顶层概览"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pod_code_find_symbol",
+            "description": "在某个 Pod 的代码索引里按符号名(函数/类/方法，支持部分匹配、不区分大小写)**定位定义位置**，返回 文件:行号: 类型 符号名。当用户问「login 在哪 / X 函数定义在哪 / 授权逻辑在哪个文件」时优先用它。需要该 Pod 的组成员权限。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pod 或组名"},
+                    "symbol": {"type": "string", "description": "要查找的符号名(可为片段)"},
+                },
+                "required": ["name", "symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pod_code_grep",
+            "description": "在某个 Pod 的代码文件里做**正则全文检索**，返回 文件:行号: 该行内容。当已知关键字/字符串(如某个路由、报错文本、配置项)但不知道在哪个文件时使用；也可用 path 限定在某目录/文件内检索。需要该 Pod 的组成员权限。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pod 或组名"},
+                    "pattern": {"type": "string", "description": "正则表达式(如 'def login' / 'oauth' / 'csrf')"},
+                    "path": {"type": "string", "description": "可选的目录/文件前缀，限定检索范围"},
+                },
+                "required": ["name", "pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pod_code_search",
+            "description": "对某个 Pod 的代码做**语义检索**(向量)，用于「XX 逻辑是怎么实现的 / 在哪里处理 YY」这类不知道确切符号名、只能用自然语言描述的问题。返回最相关的代码片段及出处(文件)。需要该 Pod 的组成员权限。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pod 或组名"},
+                    "query": {"type": "string", "description": "自然语言描述，如「用户登录时怎么校验密码」"},
+                },
+                "required": ["name", "query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_knowledge",
             "description": "检索平台文档与运维知识库(平台使用方法、API 用法、连接方式、排障知识等)。当问题涉及平台自身用法或运维知识时优先使用。",
             "parameters": {
@@ -597,6 +705,41 @@ AGENT_TOOLS = [
             "name": "get_llm_providers",
             "description": "获取 LLM Provider 配置列表(名称/类型/Base URL/是否默认/是否启用)",
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_control",
+            "description": (
+                "在用户当前的前端页面上执行页面操作(打开页面/点击按钮/填写输入框/"
+                "高亮标记元素)。动作由用户浏览器执行: 受限模式下用户逐批确认, "
+                "完全权限模式下自动执行。actions 里的 target_id 必须是页面快照中"
+                "登记过的控件 id, 不要凭空编造; navigate 的 route 必须是站内以 / "
+                "开头的路由。每批最多 5 个动作, 执行完等结果返回后再决定下一步。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "actions": {
+                        "type": "array",
+                        "description": "要执行的动作列表(最多 5 个, 顺序执行)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string",
+                                         "description": "navigate|click|fill|inspect"},
+                                "target_id": {"type": "string",
+                                              "description": "页面控件 id(navigate 可省略)"},
+                                "value": {"type": "string",
+                                          "description": "fill 要填的文本 / navigate 的站内路由"},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                },
+                "required": ["actions"],
+            },
         },
     },
 ]
@@ -642,17 +785,41 @@ TOOL_PERMS = {
     "get_agent_sessions": "dev.agent",
     "get_mcp_servers":    "dev.mcp",
     "analyze_yaml":       "",                  # pure LLM, no data access
+    # login-only, but scoped by the member check in _POD_TARGET_TOOLS: a plain
+    # group member may read *their own* pod's home without infra.host.
+    "pod_file":           "",
+    # Code-index tools: same member-scoped model as pod_file (login-only global
+    # perm, real gate is the pod member check in _POD_TARGET_TOOLS).
+    "pod_code_outline":     "",
+    "pod_code_find_symbol": "",
+    "pod_code_grep":        "",
+    "pod_code_search":      "",
+    # 写入类工具: 全局层面登录即可, 真正的闸门在执行处——pod 角色 owner
+    # (member 需组设置 ai_member_edit=true 放开) + 账号角色下限 user
+    # (见 _TOOL_MIN_ROLE) + 用户 diff 卡片确认后才落盘(见 _pod_edit_file)。
+    "pod_edit_file":      "",
     "search_knowledge":   "",                  # kb_service routes by perms
     # tuple = any-of; plus a min-role floor (see _TOOL_MIN_ROLE) so the
     # guest role (which carries infra.host for viewing) cannot write KB docs
     "save_knowledge":     ("infra.host", "ops.audit"),
+    # 页面操作工具: 动作最终由用户自己的浏览器执行(且受 browser_assistant 的
+    # 敏感/危险目标规则约束), 不触碰服务端数据, 登录即可用。
+    "browser_control":    "",
 }
+
+# 交互式/有状态工具: 不进 _run_tools_parallel 的线程池(池线程不继承
+# contextvars, 且 browser_control/pod_edit_file 需要与前端 rendezvous),
+# 一律在调用线程串行。pod_edit_file 是唯一的写入类工具, 也因此绝不并发。
+_SERIAL_TOOLS = {"browser_control", "pod_edit_file"}
 
 # Tools that target a specific pod/group: beyond the global perm, the caller
 # must have member+ access to that pod (users.pod_role). Pods that are not
 # groups (platform-infra pods) require infra.host instead.
 _POD_TARGET_TOOLS = {"get_pod", "pod_logs", "get_pod_events",
-                     "get_pod_env", "get_group_events"}
+                     "get_pod_env", "get_group_events", "pod_file",
+                     "pod_code_outline", "pod_code_find_symbol",
+                     "pod_code_grep", "pod_code_search",
+                     "pod_edit_file"}
 
 # Host-command tools run as root on the server (shell_exec/read_file).
 # The guest role carries infra.host for *viewing* host health, but must not
@@ -662,7 +829,9 @@ _POD_TARGET_TOOLS = {"get_pod", "pod_logs", "get_pod_events",
 # floored at admin (rank 2) — tighter than any read-only perm.
 _ROLE_RANK = {"guest": 0, "user": 1, "admin": 2, "super": 3}
 _TOOL_MIN_ROLE = {"shell_exec": 2, "read_file": 2, "get_configmaps": 2,
-                  "save_knowledge": 1}
+                  "save_knowledge": 1,
+                  # 写 pod 文件的工具: guest 账号即使被列进组成员也不放开
+                  "pod_edit_file": 1}
 
 # Paths read_file must never return, even for admin: cluster admin kubeconfig,
 # platform secrets, and private keys. Matched as substring on the realpath.
@@ -697,14 +866,15 @@ def _tool_allowed(name, perms, user=None):
     req = TOOL_PERMS.get(name)
     if req is None:
         return False   # unknown tool — never expose
-    if not req:
-        return True    # login-only tool
-    if isinstance(req, (tuple, list)):
-        # any-of permission set
-        if not ("*" in perms or any(r in perms for r in req)):
+    if req:
+        if isinstance(req, (tuple, list)):
+            # any-of permission set
+            if not ("*" in perms or any(r in perms for r in req)):
+                return False
+        elif not ("*" in perms or req in perms):
             return False
-    elif not ("*" in perms or req in perms):
-        return False
+    # login-only tools fall through to the min-role floor below —
+    # pod_edit_file is login-only globally but must not be usable by guests.
     floor = _TOOL_MIN_ROLE.get(name)
     if floor is not None:
         rank = _ROLE_RANK.get((user or {}).get("role", "guest"), 0) \
@@ -818,41 +988,132 @@ def _check_pod_access(arguments, user, perms):
     Checked server-side against the real user dict, so prompt injection
     cannot bypass it.
     """
-    target = (arguments.get("name") or "").strip()
+    # 大多数工具用 "name" 传目标; pod_edit_file 按任务契约用 "pod"。
+    target = (arguments.get("name") or arguments.get("pod") or "").strip()
     if not target:
         return None
     _group, err = _resolve_target_group(target, user)
     return err
 
 
-# Safe command prefixes for shell_exec
-_SHELL_SAFE_PREFIXES = (
-    "kubectl get ", "kubectl describe ", "kubectl logs ", "kubectl top ",
-    "k3s ", "cat ", "head ", "tail ", "ls ", "df ", "free ",
-    "top -bn1", "nvidia-smi", "hostname", "uptime", "whoami",
-)
-
-
+# shell_exec 的命令闸门。策略(2026-10 起)由"只读白名单"改为"默认放行、只拦
+# 极其危险的破坏性命令":复用 agent.py 的 ops 黑名单(agent._ops_denied),它是
+# 唯一策略源——根目录/顶层系统目录的 rm、mkfs/dd 擦盘、reboot/shutdown、fork
+# bomb、curl|sh、chmod/chown -R /、重定向覆盖系统目录、集群级 kubectl delete、
+# drain、关掉 k3s/frps/frpc/yatterra-web、网络自锁(iptables -F / ip link down)等。
+# 除此之外的一切命令(管道、命令链、子shell、重定向、sed -i、tee、任意脚本)都
+# 放行,以便 AI 真正能干活。execution 走 shell=True。
+#
+# 注意: shell_exec 以宿主机 root 运行, 属于高权限面; 收紧请改 agent._DENY_PATTERNS。
 def _is_shell_safe(cmd):
-    """Check that every segment of a compound command starts with a safe prefix.
-    Splits on ;, &&, ||, |, and rejects $() subshells."""
-    if '$(' in cmd or '`' in cmd:
+    if not cmd or not cmd.strip():
         return False
-    import re as _re
-    segments = _re.split(r'\s*(?:;|&&|\|\|)\s*', cmd)
-    expanded = []
-    for seg in segments:
-        expanded.extend(_re.split(r'\s*\|\s*', seg))
-    for seg in expanded:
-        seg = seg.strip()
-        if not seg:
-            continue
-        if not any(seg.startswith(p) or seg == p.strip() for p in _SHELL_SAFE_PREFIXES):
+    try:
+        import agent
+        if agent._ops_denied(cmd):
             return False
+    except Exception:
+        # 宁可兜底拒绝也不放行未校验的命令
+        return False
     return True
 
 
+def _audit_scrub(text):
+    """Redact likely credentials/tokens before writing an audit line.
+
+    Mirrors pwa_alerts._safe_text so the audit log never records secrets
+    that a tool argument or result may carry. Never raises.
+    """
+    try:
+        import re as _re
+        text = str(text or "")
+        text = _re.sub(
+            r"(?i)(token|password|passwd|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,;\"}]+",
+            r"\1=[redacted]", text)
+        text = _re.sub(r"(?i)(https?://)([^/@\s]+):([^/@\s]+)@", r"\1[redacted]@", text)
+        text = _re.sub(r"(?i)(bearer\s+|basic\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", text)
+        return text
+    except Exception:
+        return str(text or "")
+
+
+# Short TTL cache for the heavy read tools. These shell out (kubectl /
+# nvidia-smi) or walk a pod's source, and a single conversation re-asks them
+# constantly ("看下这个 pod" → status, events, env, logs). A few seconds of
+# reuse removes the repeat cost without serving visibly stale data. Tools not
+# listed here are never cached (pod_logs deliberately so — it is time-critical).
+_TOOL_TTL = {
+    "get_pod": 15,
+    "get_pod_events": 20,
+    "get_pod_env": 30,
+    "cluster_status": 20,
+    "get_gpu_status": 10,
+    "get_resource_usage": 15,
+    "pod_code_grep": 300,      # heaviest: reads up to 400 source files
+}
+
+
+def _cache_scope(user):
+    """Cache partition key. Tool results are permission-scoped, so they must
+    never be shared across callers — partition by username."""
+    if isinstance(user, dict):
+        return str(user.get("username") or "")
+    return ""
+
+
+def _execute_tool_cached(name, arguments, user=None):
+    """_execute_tool_inner wrapped in a short TTL cache for heavy read tools."""
+    ttl = _TOOL_TTL.get(name, 0)
+    if ttl <= 0:
+        return _execute_tool_inner(name, arguments, user=user)
+    try:
+        import kvcache
+        try:
+            blob = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            blob = str(arguments)
+        digest = hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+        key = f"ai:tool:{name}:{_cache_scope(user)}:{digest}"
+        cached = kvcache.get(key)
+        if isinstance(cached, str):
+            return cached
+        result = _execute_tool_inner(name, arguments, user=user)
+        # Never cache a refusal: a transient access error would stick for the
+        # whole TTL and look like a permanent denial.
+        if isinstance(result, str) and not result.startswith("权限不足"):
+            kvcache.set(key, result, ttl)
+        return result
+    except Exception:
+        # Redis down / serialisation quirk — behave exactly as if uncached.
+        return _execute_tool_inner(name, arguments, user=user)
+
+
 def _execute_tool(name, arguments, user=None):
+    """Execute a tool call, audit it, and return the result string.
+
+    Auditing mirrors agent.py (one record per tool call, ~:2012). It is
+    strictly best-effort: a lazy import + try/except guarantee an audit
+    failure can never affect tool execution. Args/result are truncated and
+    scrubbed of likely secrets before being written.
+    """
+    result = _execute_tool_cached(name, arguments, user=user)
+    try:
+        import audit as audit_mod
+        try:
+            args_str = json.dumps(arguments, ensure_ascii=False)
+        except Exception:
+            args_str = str(arguments)
+        detail = (f"tool={name} "
+                  f"args={_audit_scrub(args_str)[:300]} "
+                  f"result={_audit_scrub(result)[:300]}")
+        actor = user.get("username") if isinstance(user, dict) else None
+        audit_mod.record("ai_tool", detail=detail, actor=actor)
+    except Exception:
+        pass
+    return result
+
+
+def _execute_tool_inner(name, arguments, user=None):
     """Execute a tool call and return the result string.
 
     `user` is the caller's user dict (or a perm set). Permission is
@@ -865,8 +1126,13 @@ def _execute_tool(name, arguments, user=None):
             req = TOOL_PERMS.get(name)
             if isinstance(req, (tuple, list)):
                 req = " 或 ".join(req)
-            return (f"权限不足: 工具 {name} 需要 {req} 权限" if req
-                    else f"权限不足: 未知工具 {name}")
+            if req:
+                return f"权限不足: 工具 {name} 需要 {req} 权限"
+            floor = _TOOL_MIN_ROLE.get(name)
+            if floor is not None:
+                _need = {v: k for k, v in _ROLE_RANK.items()}.get(floor, "?")
+                return f"权限不足: 工具 {name} 需要不低于 {_need} 的账号角色"
+            return f"权限不足: 未知工具 {name}"
         if name in _POD_TARGET_TOOLS:
             denied = _check_pod_access(arguments, user, perms)
             if denied:
@@ -963,9 +1229,13 @@ def _execute_tool(name, arguments, user=None):
                 return "空命令"
             # Security check: validate each segment of compound commands
             if not _is_shell_safe(cmd):
-                return "安全限制: 仅允许只读命令 (kubectl get/describe/logs/top, cat, ls, head, tail, df, free, nvidia-smi); 禁止命令链(;, &&, ||, |)和子shell"
+                return ("安全限制: 该命令命中危险操作黑名单(仅拦截极危险且不可逆的命令: "
+                        "rm 根/顶层系统目录、mkfs/dd 擦盘、reboot/shutdown、curl|sh、"
+                        "重定向覆盖系统目录、集群级 kubectl delete、drain、关闭 "
+                        "k3s/frps/frpc/yatterra-web、iptables -F/ip link down 等)。"
+                        "换一种方式重试")
             r = subprocess.run(
-                shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=15,
+                cmd, shell=True, capture_output=True, text=True, timeout=15,
             )
             output = r.stdout[:4000]
             if r.stderr:
@@ -1418,7 +1688,18 @@ def _execute_tool(name, arguments, user=None):
             try:
                 import agent_runs
                 lines = []
-                modes = [mode] if mode else ["ops", "build", "db", "storage", "net", "gpu", "web", "train"]
+                if mode:
+                    modes = [mode]
+                else:
+                    # Derive the mode list from the agent registry (which
+                    # includes custom agents) instead of a hardcoded list
+                    # that drifts out of sync with agent_conf.
+                    try:
+                        import agent_conf
+                        modes = [a["id"] for a in agent_conf.load_agents()
+                                 if a.get("id")]
+                    except Exception:
+                        modes = []
                 for m in modes:
                     try:
                         # Scope to the caller — the HTTP endpoint
@@ -1674,24 +1955,132 @@ def _execute_tool(name, arguments, user=None):
             except Exception as e:
                 return f"获取 Pod 环境变量失败: {e}"
 
+        elif name == "pod_file":
+            # Browse/read a group pod's persistent home (/home/cloud) on the
+            # host. Member-scoped: any member of the group may read their own
+            # pod's files (unlike read_file/shell_exec which need infra.host).
+            _g, _err = _resolve_target_group(arguments.get("name", ""), user)
+            if _err:
+                return _err
+            if _g is None:
+                return "该目标没有可浏览的持久目录(仅组容器支持 /home/cloud)"
+            try:
+                import groups as groups_mod
+                root = os.path.realpath(
+                    os.path.join(groups_mod.GROUP_DATA_ROOT, _g, "home"))
+            except Exception as e:
+                return f"读取失败: {e}"
+            rel = (arguments.get("path") or "").strip().replace("\\", "/").lstrip("/")
+            target = os.path.realpath(os.path.join(root, rel))
+            if target != root and not target.startswith(root + os.sep):
+                return "安全限制: 路径越界(不允许访问 /home/cloud 之外)"
+            _low = target.lower()
+            if any(d in _low for d in _READ_FILE_DENY):
+                return "安全限制: 该文件在禁止读取列表内"
+            try:
+                if os.path.isdir(target):
+                    names = sorted(os.listdir(target))[:200]
+                    if not names:
+                        return f"/home/cloud/{rel} 是空目录" if rel else "/home/cloud 是空目录"
+                    lines = []
+                    for fn in names:
+                        fp = os.path.join(target, fn)
+                        try:
+                            st = os.stat(fp)
+                            kind = "d" if os.path.isdir(fp) else "-"
+                            lines.append(f"  {kind} {st.st_size:>9}  {fn}")
+                        except OSError:
+                            lines.append(f"  ?         ?  {fn}")
+                    where = f"/home/cloud/{rel}" if rel else "/home/cloud"
+                    return f"{where} 目录({len(lines)} 项):\n" + "\n".join(lines)
+                if not os.path.exists(target):
+                    return f"路径不存在: /home/cloud/{rel}"
+                size = os.path.getsize(target)
+                if size > 512 * 1024:
+                    return f"文件过大({size} 字节),仅支持读取 ≤512KB 的文本文件"
+                with open(target, "rb") as f:
+                    raw = f.read(8000)
+                if b"\x00" in raw:
+                    return f"二进制文件({size} 字节),不展示内容"
+                text = raw.decode("utf-8", errors="replace")
+                more = f"(仅显示前 {len(text)} 字节,文件共 {size} 字节)" if size > len(text) else ""
+                return f"/home/cloud/{rel} ({size} 字节{more}):\n{text}"
+            except OSError as e:
+                return f"读取失败: {e}"
+
+        elif name == "pod_edit_file":
+            # 唯一的写入类工具: 校验/算 diff 后经 _pod_edit_file 与前端
+            # rendezvous, 用户在 diff 卡片上接受才备份并写入。
+            return _pod_edit_file(arguments, user)
+
+        elif name in ("pod_code_outline", "pod_code_find_symbol",
+                      "pod_code_grep", "pod_code_search"):
+            # Code-index tools over the pod's hostPath home (member-scoped).
+            _g, _err = _resolve_target_group(arguments.get("name", ""), user)
+            if _err:
+                return _err
+            if _g is None:
+                return "该目标没有代码索引(仅组容器支持 /home/cloud)"
+            try:
+                import podcode
+            except Exception as e:
+                return f"代码索引不可用: {e}"
+            if name == "pod_code_outline":
+                out = podcode.outline(_g, arguments.get("path", "") or "")
+                return out or ("该 Pod 暂无代码索引(podwatch 下一轮会自动建立，"
+                               "或请管理员触发重建)")
+            if name == "pod_code_find_symbol":
+                sym = (arguments.get("symbol") or "").strip()
+                if not sym:
+                    return "缺少 symbol 参数"
+                out, _n = podcode.find_symbol(_g, sym)
+                return out if out is not None else _n
+            if name == "pod_code_grep":
+                pat = (arguments.get("pattern") or "").strip()
+                if not pat:
+                    return "缺少 pattern 参数"
+                if len(pat) > 200:
+                    return "正则过长(限 200 字符)"
+                out, _n = podcode.grep(_g, pat, arguments.get("path", "") or "")
+                return out if out is not None else _n
+            # pod_code_search
+            q = (arguments.get("query") or "").strip()
+            if not q:
+                return "缺少 query 参数"
+            hits = podcode.semantic(_g, q, k=6)
+            if not hits:
+                return ("代码语义检索无结果(索引可能尚未建立，"
+                        "可先用 pod_code_outline / pod_code_grep)")
+            lines = []
+            for i, h in enumerate(hits, 1):
+                lines.append(f"[{i}] {h['rel']} (相关度 {h['score']})\n{h['text']}")
+            return "\n\n".join(lines)
+
         elif name == "get_llm_providers":
             try:
-                import llm
-                conf = llm.load_conf()
-                providers = conf.get("providers", []) if isinstance(conf, dict) else []
+                # llm.load_conf() never carries a "providers" key — the real
+                # registry lives in llm_conf. Only echo non-sensitive fields;
+                # api_key / base_url must never be surfaced here.
+                import llm_conf
+                providers = llm_conf.list_providers()
                 if not providers:
                     return "暂无 LLM Provider"
+                try:
+                    active_id = (llm_conf.load() or {}).get("active_id")
+                except Exception:
+                    active_id = None
                 lines = [f"LLM Providers: {len(providers)} 个"]
                 for p in providers:
-                    if isinstance(p, dict):
-                        name_p = p.get("name", "?")
-                        ptype = p.get("type", p.get("model", "?"))
-                        base_url = p.get("base_url", "?")
-                        is_default = p.get("is_default", False)
-                        enabled = p.get("enabled", True)
-                        lines.append(f"  {name_p} [{ptype}] {base_url} {'(默认)' if is_default else ''} {'(禁用)' if not enabled else ''}")
-                    else:
-                        lines.append(f"  {p}")
+                    if not isinstance(p, dict):
+                        continue
+                    pid = p.get("id", "?")
+                    pname = p.get("name", pid)
+                    model = p.get("model", "?")
+                    enabled = p.get("enabled", True)
+                    mark = " (当前)" if pid == active_id else ""
+                    lines.append(
+                        f"  {pid} / {pname} [{model}] "
+                        f"{'启用' if enabled else '禁用'}{mark}")
                 return "\n".join(lines)
             except Exception as e:
                 return f"查询 LLM Providers 失败: {e}"
@@ -1736,6 +2125,9 @@ def _execute_tool(name, arguments, user=None):
             except Exception as e:
                 return f"知识库入库失败: {e}"
 
+        elif name == "browser_control":
+            return _browser_control(arguments)
+
         else:
             return f"未知工具: {name}"
     except subprocess.TimeoutExpired:
@@ -1744,8 +2136,390 @@ def _execute_tool(name, arguments, user=None):
         return f"执行失败: {e}"
 
 
+# ── browser_control: 与前端 rendezvous 的页面操作工具 ───────────
+# 当前 run 上下文: page_ai_runs 的 worker 线程在消费 stream_agent 生成器前
+# set_browser_run(run), browser_control 执行时(串行, 同一线程)即可取回。
+# 生成器体在迭代线程中执行, 且 browser_control 在 _SERIAL_TOOLS 里不进
+# 线程池, 所以 contextvar 一定可见 —— 这是侵入最小的 run 传递方案。
+import contextvars
+
+_BROWSER_RUN_CTX = contextvars.ContextVar("browser_run_ctx", default=None)
+
+
+def set_browser_run(run):
+    """在当前线程登记 page_ai_runs.Run 对象(供 browser_control 使用)。"""
+    return _BROWSER_RUN_CTX.set(run)
+
+
+def _rendezvous_reset(run):
+    """清空上一轮 rendezvous 的结果槽(action_event/action_result)。
+
+    必须在 run.add(发出新事件)**之前**调用: 前端只有收到事件后才知道新的
+    action_id, 不可能更早回传; 而不清空的话, 同一 run 里第二次等待会立刻
+    读到上一批动作的旧结果(browser_control 连续两批 / pod_edit_file 紧跟
+    browser_control 都会踩中)。
+    """
+    with run.cond:
+        run.action_event.clear()
+        run.action_result = None
+
+
+# 每批动作上限: 与系统提示词一致, 防止模型一次塞一长串
+_BROWSER_MAX_ACTIONS = 5
+# 等前端回传执行结果的超时(受限模式下等用户点确认, 给足时间)
+_BROWSER_WAIT_TIMEOUT = 300
+
+
+def _browser_validate_actions(actions):
+    """校验模型给出的动作批, 返回 (ok_actions, errors)。
+
+    规则沿用 browser_assistant: 只允许 navigate/click/fill/inspect;
+    target_id 必须是简单标识符; 敏感(password/token/credential...)与危险
+    (delete/submit/deploy...)目标直接拒绝, 不产生 page_action 事件。
+    """
+    import re as _re
+    from browser_assistant import _SENSITIVE, _BLOCKED
+    if not isinstance(actions, list) or not actions:
+        return [], ["actions 必须是非空数组"]
+    if len(actions) > _BROWSER_MAX_ACTIONS:
+        return [], [f"一次最多 {_BROWSER_MAX_ACTIONS} 个动作, 请分批小步执行"]
+    ok, errors = [], []
+    for i, item in enumerate(actions, 1):
+        if not isinstance(item, dict):
+            errors.append(f"动作{i}: 不是对象")
+            continue
+        atype = item.get("type")
+        target = item.get("target_id") or ""
+        if atype not in ("navigate", "click", "fill", "inspect"):
+            errors.append(f"动作{i}: 未知类型 {atype!r}")
+            continue
+        if atype != "navigate":
+            if not isinstance(target, str) \
+                    or not _re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", target):
+                errors.append(f"动作{i}: target_id 非法")
+                continue
+            if _SENSITIVE.search(target):
+                errors.append(f"动作{i}: 目标 {target} 被安全策略禁止(敏感字段)")
+                continue
+            # 危险目标: pod-tab- 前缀的 tab 切换除外(与 browser_assistant 一致)
+            if _BLOCKED.search(target) and not target.startswith("pod-tab-"):
+                errors.append(f"动作{i}: 目标 {target} 被安全策略禁止(危险操作)")
+                continue
+        action = {"type": atype, "target_id": target}
+        if atype == "fill":
+            value = item.get("value", "")
+            if not isinstance(value, str) or len(value) > 2000 \
+                    or _SENSITIVE.search(value):
+                errors.append(f"动作{i}: fill 的 value 非法或含敏感内容")
+                continue
+            action["value"] = value
+        elif atype == "navigate":
+            # 两种形态: ① target_id="route:<站内路径>"(推荐, 走前端路由注册表,
+            # 不依赖当前页渲染的控件); ② target_id=当前页登记的控件 id + value/route。
+            if target.startswith("route:"):
+                route = target[len("route:"):]
+                if not route.startswith("/") or route.startswith("//") \
+                        or "\\" in route or len(route) > 300:
+                    errors.append(f"动作{i}: navigate 的 route 路径非法")
+                    continue
+                action["target_id"] = "route:" + route
+                action["route"] = route
+            else:
+                route = item.get("value") or item.get("route") or ""
+                if not isinstance(route, str) or not route.startswith("/") \
+                        or route.startswith("//") or "\\" in route or len(route) > 300:
+                    errors.append(f"动作{i}: navigate 的 route 必须是站内 / 开头路由")
+                    continue
+                action["route"] = route
+        ok.append(action)
+    return ok, errors
+
+
+def _browser_control(arguments):
+    """browser_control 工具体: 发 page_action 事件给前端, 等执行结果回传。
+
+    run 对象(page_ai_runs.Run)需提供: add(event) / action_event(Event) /
+    action_result(结果槽) / action_ids(已回传去重) / stop_event。超时或
+    run 被停止时返回中文提示, 让模型自行决定下一步。
+    """
+    run = _BROWSER_RUN_CTX.get()
+    if run is None:
+        return ("当前会话不支持页面操作(仅页面助手后台 run 可用), "
+                "请改用文字回答或查询类工具。")
+    actions, errors = _browser_validate_actions(arguments.get("actions"))
+    if errors:
+        return "动作被拒绝, 未执行任何页面操作:\n- " + "\n- ".join(errors)
+    if not actions:
+        return "动作列表为空, 未执行任何页面操作。"
+    import uuid
+    action_id = uuid.uuid4().hex
+    _rendezvous_reset(run)
+    run.add({"type": "page_action",
+             "data": {"action_id": action_id, "actions": actions}})
+    # 等前端 POST /api/ai/page/action_result 填结果槽(最长 300s)
+    waited = 0.0
+    while waited < _BROWSER_WAIT_TIMEOUT:
+        if run.action_event.wait(timeout=min(5.0, _BROWSER_WAIT_TIMEOUT - waited)):
+            break
+        waited += 5.0
+        if run.stop_event.is_set():
+            return "用户已停止本次任务, 页面操作未执行。"
+    results = run.action_result
+    if results is None:
+        return ("用户未确认这批页面操作(等待超时), 未执行。"
+                "请总结当前进展或换一种方式继续。")
+    # 格式化成文本喂给模型
+    lines = []
+    for r in results if isinstance(results, list) else []:
+        if not isinstance(r, dict):
+            continue
+        target = str(r.get("target_id", "?"))
+        if r.get("ok"):
+            lines.append(f"已执行: {r.get('detail') or target} ({target})")
+        else:
+            lines.append(f"失败: {target} — {r.get('detail') or '未知原因'}")
+    return "\n".join(lines) if lines else "页面操作已处理, 但未返回具体结果。"
+
+
+# ── pod_edit_file: 经用户 diff 卡片确认的 Pod 文件修改工具 ──────
+_POD_EDIT_MAX_BYTES = 512 * 1024      # 与 pod_file 读取上限一致
+_POD_EDIT_DIFF_MAX = 20000            # diff 卡片展示的截断长度
+# 组设置键: 置 true 时 member 也可用 AI 改本组文件(默认仅 owner)
+_POD_EDIT_MEMBER_OPTIN = "ai_member_edit"
+
+
+def _pod_edit_file(arguments, user):
+    """pod_edit_file 工具体: 校验 + 算 diff → 发 file_edit 事件给前端 →
+    等用户在 diff 卡片上接受/拒绝 → 仅接受时备份原文件并写入。
+
+    拒绝 / 超时 / run 被停止 / 无 run 上下文(同步会话)一律不写文件。
+    前端回传契约(POST /api/ai/page/action_result):
+      {run_id, action_id, results: [{"accepted": true|false, "detail": "..."}]}
+    """
+    import difflib
+    import time as _time
+
+    _g, _err = _resolve_target_group(arguments.get("pod", ""), user)
+    if _err:
+        return _err
+    if _g is None:
+        return "该目标没有可编辑的持久目录(仅组容器支持 /home/cloud)"
+    # 角色闸门: 默认 owner; member 需组设置 ai_member_edit=true 放开
+    try:
+        import groups as groups_mod
+        import users as users_mod
+        pod_dict = groups_mod.load_state()["groups"].get(_g) or {}
+    except Exception:
+        return "权限校验失败(无法加载组状态)"
+    role = users_mod.pod_role(user, pod_dict)
+    _optin = bool(pod_dict.get(_POD_EDIT_MEMBER_OPTIN)
+                  or (pod_dict.get("settings") or {})
+                  .get(_POD_EDIT_MEMBER_OPTIN))
+    if not (role == "owner" or (role == "member" and _optin)):
+        if role == "member":
+            return ("权限不足: pod_edit_file 默认仅 owner 可用, "
+                    "member 需在组设置中开启 ai_member_edit=true")
+        return "权限不足: 无权修改该 Pod 的文件"
+
+    rel = (arguments.get("path") or "").strip().replace("\\", "/").lstrip("/")
+    if not rel:
+        return "缺少 path 参数"
+    try:
+        import groups as groups_mod
+        root = os.path.realpath(
+            os.path.join(groups_mod.GROUP_DATA_ROOT, _g, "home"))
+    except Exception as e:
+        return f"执行失败: {e}"
+    target = os.path.realpath(os.path.join(root, rel))
+    if target != root and not target.startswith(root + os.sep):
+        return "安全限制: 路径越界(不允许访问 /home/cloud 之外)"
+    if any(d in target.lower() for d in _READ_FILE_DENY):
+        return "安全限制: 该文件在禁止修改列表内"
+    if not os.path.isfile(target):
+        return f"文件不存在: /home/cloud/{rel} (仅支持修改已有文件)"
+    size = os.path.getsize(target)
+    if size > _POD_EDIT_MAX_BYTES:
+        return f"文件过大({size} 字节), 仅支持修改 ≤512KB 的文本文件"
+    try:
+        with open(target, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        return f"读取失败: {e}"
+    if b"\x00" in raw:
+        return f"二进制文件({size} 字节), 不支持修改"
+    old_text = raw.decode("utf-8", errors="replace")
+
+    # 修改方式二选一: 整文件覆盖 或 唯一匹配的 search/replace
+    new_content = arguments.get("new_content")
+    search = arguments.get("search")
+    replace = arguments.get("replace")
+    _has_sr = isinstance(search, str) and bool(search) \
+        and isinstance(replace, str)
+    _has_full = isinstance(new_content, str)
+    if _has_sr and _has_full:
+        return "参数冲突: new_content 与 search/replace 只能二选一"
+    if _has_sr:
+        n = old_text.count(search)
+        if n == 0:
+            return "search 文本在文件中未找到, 未做任何修改"
+        if n > 1:
+            return (f"search 文本在文件中出现 {n} 次, "
+                    "请带上更多上下文使其唯一后再试")
+        new_text = old_text.replace(search, replace, 1)
+    elif _has_full:
+        new_text = new_content
+    else:
+        return ("缺少修改内容: 需提供 new_content(整文件新内容) 或 "
+                "search+replace(精确替换)")
+    if len(new_text.encode("utf-8", errors="ignore")) > _POD_EDIT_MAX_BYTES:
+        return "新内容超过 512KB, 拒绝写入"
+
+    # 统一 diff(给前端 diff 卡片 + 行数摘要)
+    diff_lines = list(difflib.unified_diff(
+        old_text.splitlines(keepends=True),
+        new_text.splitlines(keepends=True),
+        fromfile=f"a/{rel}", tofile=f"b/{rel}"))
+    added = sum(1 for l in diff_lines
+                if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in diff_lines
+                  if l.startswith("-") and not l.startswith("---"))
+    diff_summary = f"+{added} -{removed} 行"
+    diff_text = "".join(diff_lines)
+    if len(diff_text) > _POD_EDIT_DIFF_MAX:
+        diff_text = diff_text[:_POD_EDIT_DIFF_MAX] + "\n…(diff 过长已截断)"
+
+    # 与前端 rendezvous: 无 run 上下文(同步会话)拿不到用户确认, 直接拒绝
+    run = _BROWSER_RUN_CTX.get()
+    if run is None:
+        return ("当前会话不支持文件修改确认(仅页面助手后台 run 可用), "
+                "未写入任何文件。")
+    import uuid
+    action_id = uuid.uuid4().hex
+    backup_rel = f"{rel}.bak-{int(_time.time())}"
+    _rendezvous_reset(run)
+    run.add({"type": "file_edit",
+             "data": {"action_id": action_id, "pod": _g, "path": rel,
+                      "reason": str(arguments.get("reason") or "")[:500],
+                      "diff": diff_text, "diff_summary": diff_summary,
+                      "old_size": size,
+                      "new_size": len(new_text.encode("utf-8",
+                                                      errors="ignore")),
+                      "backup_path": f"/home/cloud/{backup_rel}"}})
+    # 等前端 POST /api/ai/page/action_result 填结果槽(最长 300s)
+    waited = 0.0
+    while waited < _BROWSER_WAIT_TIMEOUT:
+        if run.action_event.wait(
+                timeout=min(5.0, _BROWSER_WAIT_TIMEOUT - waited)):
+            break
+        waited += 5.0
+        if run.stop_event.is_set():
+            return "用户已停止本次任务, 文件未修改。"
+    results = run.action_result
+    if results is None:
+        return ("用户未确认本次文件修改(等待超时), 未写入。"
+                "请总结当前进展或换一种方式继续。")
+    accepted, detail = False, ""
+    if isinstance(results, dict):
+        accepted = results.get("accepted") is True
+        detail = str(results.get("detail") or "")
+    else:
+        for r in results if isinstance(results, list) else []:
+            if not isinstance(r, dict):
+                continue
+            accepted = accepted or r.get("accepted") is True
+            detail = detail or str(r.get("detail") or "")
+    if not accepted:
+        return ("用户拒绝了本次文件修改, 未写入任何文件。"
+                + (f"理由: {detail[:200]}" if detail else ""))
+
+    # 用户已接受: 先备份原文件(<path>.bak-<ts>), 再写入新内容
+    # TOCTOU 防护: 上面的校验与读取发生在等待用户确认(最长 300s)之前,
+    # 期间 pod 内进程(hostPath 可写)可能已把文件换成指向宿主机文件的符号
+    # 链接。因此写入前必须重新校验 realpath, 且全程不跟随符号链接:
+    #   - 备份/读取用 os.open(O_NOFOLLOW), 目标是符号链接直接报错;
+    #   - 写入走同目录临时文件 + os.replace, rename 替换符号链接本身
+    #     而非跟随, 即使校验后被瞬间篡改也写不出 /home/cloud 之外。
+    target_now = os.path.realpath(os.path.join(root, rel))
+    if target_now != target:
+        return ("安全限制: 文件在等待确认期间被改动(路径指向已变化), "
+                "已拒绝写入; 请重新发起修改。")
+    backup_abs = os.path.join(root, backup_rel)
+    tmp_abs = os.path.join(
+        os.path.dirname(target),
+        f".{os.path.basename(target)}.tmp-{uuid.uuid4().hex}")
+    try:
+        import shutil
+        import stat as stat_mod
+        # 备份: O_NOFOLLOW 打开原文件, 不跟随符号链接
+        with open(os.open(target, os.O_RDONLY | os.O_NOFOLLOW), "rb") as src:
+            st = os.fstat(src.fileno())
+            if not stat_mod.S_ISREG(st.st_mode):
+                raise OSError("目标已不是普通文件")
+            with open(os.open(
+                    backup_abs,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o644), "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        # 写入: 同目录临时文件(O_EXCL 防抢占) + rename 原子替换
+        with open(os.open(
+                tmp_abs,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                stat_mod.S_IMODE(st.st_mode)), "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp_abs, target)
+    except OSError as e:
+        try:
+            if os.path.lexists(tmp_abs):
+                os.unlink(tmp_abs)
+        except OSError:
+            pass
+        return (f"写入失败: {e} "
+                f"(原文件备份在 /home/cloud/{backup_rel}, 可据此恢复)")
+    return json.dumps({"path": f"/home/cloud/{rel}",
+                       "diff_summary": diff_summary,
+                       "backup_path": f"/home/cloud/{backup_rel}"},
+                      ensure_ascii=False)
+
+
+_TOOL_POOL = 4      # gunicorn runs gthread threads=4 — keep the fan-out small
+
+
+def _run_tools_parallel(tool_calls, user=None):
+    """Execute this turn's tool calls concurrently, preserving call order.
+
+    A single turn frequently carries several independent reads (pod status +
+    events + a code grep). Running them one-by-one is what made multi-step
+    questions crawl and burn the iteration budget. Every tool that may run in
+    the pool is read-only — the one mutating tool (pod_edit_file) is in
+    _SERIAL_TOOLS and always runs in the calling thread, never here.
+
+    Returns a list of result strings aligned with *tool_calls*. Each call is
+    isolated: an exception becomes that call's result, never a crash.
+
+    _SERIAL_TOOLS 里的工具(如 browser_control)不进线程池: 池线程不继承
+    contextvars(拿不到当前 run 上下文), 且它们本身要与前端交互, 必须在
+    调用线程里串行执行。
+    """
+    def _one(tc):
+        try:
+            return _execute_tool(tc["name"], tc["arguments"], user=user)
+        except Exception as e:
+            return f"执行失败: {e}"
+
+    if len(tool_calls) <= 1 or any(tc["name"] in _SERIAL_TOOLS
+                                   for tc in tool_calls):
+        return [_one(tc) for tc in tool_calls]
+    import concurrent.futures as _cf
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=min(_TOOL_POOL, len(tool_calls))) as ex:
+            return list(ex.map(_one, tool_calls))    # ex.map keeps input order
+    except Exception:
+        # Pool creation failed — degrade to serial rather than drop tools.
+        return [_one(tc) for tc in tool_calls]
+
+
 def stream_agent(messages, system="", max_tokens=4096, max_iterations=6,
-                 caller="ai_agent", user=None, perms=None):
+                 caller="ai_agent", user=None, perms=None, max_wall=None):
     """Agentic loop: stream LLM with tools, execute tools, continue.
 
     Yields (kind, data) chunks where kind is:
@@ -1758,9 +2532,32 @@ def stream_agent(messages, system="", max_tokens=4096, max_iterations=6,
     or an iterable of permission strings. Tools are filtered by TOOL_PERMS
     before being offered to the LLM, and re-checked in _execute_tool.
     With perms=None only login-free tools are available.
+
+    max_wall: hard wall-clock cap in seconds for the whole loop. When None,
+    agent_conf limits.max_wall is used (fallback 300s). On timeout the loop
+    ends gracefully with a Chinese notice instead of hanging forever.
     """
     allowed_tools = tools_for(perms)
+    # Resolve the wall-clock cap: explicit arg > agent_conf > 300s default.
+    if not max_wall or max_wall <= 0:
+        try:
+            import agent_conf
+            max_wall = int(agent_conf.load().get("limits", {}).get("max_wall", 300))
+        except Exception:
+            max_wall = 300
+    if not max_wall or max_wall <= 0:
+        max_wall = 300
+    import time as _time
+    _start = _time.monotonic()
+
+    def _wall_exceeded():
+        return _time.monotonic() - _start > max_wall
+
     for iteration in range(max_iterations):
+        if _wall_exceeded():
+            yield ("content", f"\n\n[已达到最大耗时 {max_wall}s，自动停止。"
+                              "可继续提问或缩小任务范围。]")
+            return
         tool_calls_pending = []
         content_parts = []
 
@@ -1781,7 +2578,11 @@ def stream_agent(messages, system="", max_tokens=4096, max_iterations=6,
                 return
 
         has_tool_calls = False
+        _timed_out = False
         for kind, data in stream:
+            if _wall_exceeded():
+                _timed_out = True
+                break
             if kind == "reasoning":
                 yield ("reasoning", data)
             elif kind == "content":
@@ -1791,6 +2592,11 @@ def stream_agent(messages, system="", max_tokens=4096, max_iterations=6,
                 has_tool_calls = True
                 tool_calls_pending.append(data)
                 yield ("tool_call", data)
+
+        if _timed_out:
+            yield ("content", f"\n\n[已达到最大耗时 {max_wall}s，自动停止。"
+                              "可继续提问或缩小任务范围。]")
+            return
 
         # If no tool calls, the agent is done
         if not has_tool_calls:
@@ -1812,9 +2618,9 @@ def stream_agent(messages, system="", max_tokens=4096, max_iterations=6,
             ]
         messages.append(assistant_msg)
 
-        # Execute each tool call and yield results
-        for tc in tool_calls_pending:
-            result = _execute_tool(tc["name"], tc["arguments"], user=perms)
+        # Execute each tool call (concurrently) and yield results in call order.
+        for tc, result in zip(tool_calls_pending,
+                              _run_tools_parallel(tool_calls_pending, perms)):
             result_data = {
                 "tool_call_id": tc["id"],
                 "name": tc["name"],

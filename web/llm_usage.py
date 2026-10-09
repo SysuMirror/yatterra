@@ -20,6 +20,11 @@ STATE_FILE = siteconf.path("llm_usage.json")
 MAX_CALLS = 500
 MAX_DAYS = 30
 
+# Per-user daily token ceiling for the chat entries. Configurable via env;
+# the default is deliberately LARGE so normal use is never blocked. Set <= 0
+# to disable the check entirely.
+DAILY_TOKEN_LIMIT = int(os.environ.get("LLM_DAILY_TOKEN_LIMIT", "5000000") or 0)
+
 _lock = threading.Lock()
 
 
@@ -152,6 +157,74 @@ def user_summary(username, days=7):
         agg["total"] += bucket.get("total", 0)
         agg["calls"] += bucket.get("calls", 0)
     return agg
+
+
+QUOTA_WARN_PCT = 80  # 日配额使用率达到该百分比时预警一次
+
+
+def _mark_quota_warned(user, day):
+    """当日已预警则返回 False; 否则落盘标记并返回 True(本次应发预警)。"""
+    with _lock:
+        data = _load()
+        warned = data.setdefault("_quota_warn", {}).setdefault(day, {})
+        if user in warned:
+            return False
+        warned[user] = True
+        # 与 _day_index 同步裁剪, 防止 _quota_warn 无限增长
+        for key in ("_quota_warn",):
+            idx = data.get(key, {})
+            for d in [d for d in idx if d < day]:
+                del idx[d]
+        _save(data)
+        return True
+
+
+def _notify_quota_warn(user, percent):
+    """配额预警推送(kind='quota-warn')。收件人是单个用户, notify_event 按组
+    解析发不到, 走 cert_alerts.notify_user 直发(_claim_alert 去重留痕)。"""
+    try:
+        import cert_alerts
+        cert_alerts.notify_user(
+            user, f"quota-warn:{user}:{_today()}", "quota-warn",
+            "AI 用量预警",
+            f"今日 AI 用量已达 {percent}%, 接近日配额, 请留意。",
+            url="/profile", urgency="low")
+    except Exception:
+        pass
+
+
+def check_quota(user, limit=None):
+    """Return ``(ok, used, limit)`` for a user's *today* token usage.
+
+    ``ok`` is False only when the user has reached the daily ceiling. A
+    ``limit`` of None uses DAILY_TOKEN_LIMIT; ``limit <= 0`` (or an empty
+    user) disables the check. Never raises — any failure is treated as
+    "allow", so a usage-tracking problem can never block real traffic.
+
+    附带配额预警: 使用率 >= QUOTA_WARN_PCT% 且当日未预警过时, 异步推送该
+    用户一次(kind='quota-warn', 标记落盘在 usage 数据的 _quota_warn 里)。
+    """
+    try:
+        if limit is None:
+            limit = DAILY_TOKEN_LIMIT
+        if not user or not limit or limit <= 0:
+            return True, 0, limit
+        with _lock:
+            data = _load()
+        bucket = (data.get("_day_index", {}).get(_today(), {}) or {}).get(user) or {}
+        used = bucket.get("total", 0)
+        # 配额预警(best-effort, 永不影响配额判定)
+        try:
+            percent = int(used * 100 / limit)
+            if percent >= QUOTA_WARN_PCT and _mark_quota_warned(user, _today()):
+                import threading
+                threading.Thread(target=_notify_quota_warn,
+                                 args=(user, percent), daemon=True).start()
+        except Exception:
+            pass
+        return used < limit, used, limit
+    except Exception:
+        return True, 0, limit
 
 
 def recent_calls(n=50):

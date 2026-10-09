@@ -47,6 +47,15 @@ PROMPT_HINTS = {
     ),
 }
 
+# Dynamic per-pod pages use the key "pod:<name>" (see api/ai.py). They are NOT
+# in GATHERERS (the sweep can't enumerate live pods); _resolve_gatherer() maps
+# them to _g_pod_detail(name) on demand.
+_POD_PREFIX = "pod"
+_POD_DETAIL_PROMPT = (
+    "请根据以下单个 Pod 的资料，说明该 Pod 里的项目在做什么、当前状态与最近代码变更，"
+    "指出潜在风险与建议操作。控制在 4-6 行以内。"
+)
+
 
 # ── helpers ────────────────────────────────────────────────────
 def _safe(fn, *args, **kw):
@@ -133,6 +142,71 @@ def _g_pod():
     lines = [f"Pod 总数: {len(pods)}, 运行 {running}, 停止 {stopped}, 失败 {failed}"]
     for name in list(pods.keys())[:25]:
         lines.append(f"  {name} [{statuses.get(name, '?')}]")
+    return "\n".join(lines)
+
+
+def _g_pod_detail(name):
+    """Context for a single pod (page key "pod:<name>").
+
+    Combines the pod's spec/status/members, its managed deploys, and the
+    maintained project profile + recent code-change summary written by
+    podwatch.py. Falls back to a minimal context so the panel is never empty.
+    """
+    import groups
+
+    state = groups.load_state()
+    pod = (state.get("groups") or {}).get(name) or {}
+    status = _safe(groups.pod_status, name) or "?"
+
+    lines = [f"Pod 详情: {name}"]
+    if pod:
+        lines.append(
+            f"状态: {status}, 类型: {pod.get('type', '?')}, "
+            f"CPU: {pod.get('cpu', '?')}核, 内存: {pod.get('mem', '?')}, "
+            f"GPU: {', '.join(str(g) for g in (pod.get('gpus') or [])) or '无'}"
+        )
+        owners = pod.get("owners") or []
+        members = pod.get("members") or []
+        if owners:
+            lines.append(f"负责人: {', '.join(owners)}")
+        if members:
+            lines.append(f"成员: {', '.join(members)}")
+    else:
+        lines.append(f"状态: {status}")
+
+    # Managed deploys (in-pod supervisord programs)
+    try:
+        import deploys
+        deps = deploys.list_for(name) or []
+    except Exception:
+        deps = []
+    if deps:
+        lines.append(f"部署应用: {len(deps)} 个")
+        for d in deps[:10]:
+            lines.append(
+                f"  {d.get('name', '?')} [{d.get('kind', '?')}/{d.get('last_status', '?')}] "
+                f"repo={d.get('repo', '')} branch={d.get('branch', '')}"
+            )
+
+    # Maintained project profile + recent changes (from podwatch)
+    try:
+        import podwatch
+        prof = podwatch.get_profile(name)
+    except Exception:
+        prof = None
+    if prof:
+        if prof.get("purpose"):
+            lines.append(f"项目用途: {prof['purpose']}")
+        if prof.get("stack"):
+            lines.append(f"技术栈: {prof['stack']}")
+        if prof.get("entrypoints"):
+            lines.append(f"入口: {prof['entrypoints']}")
+        if prof.get("last_change_summary"):
+            lines.append(f"最近变更: {prof['last_change_summary']}")
+        if prof.get("risk"):
+            lines.append(f"风险: {prof['risk']}")
+        if prof.get("last_scan"):
+            lines.append(f"画像更新: {prof['last_scan']}")
     return "\n".join(lines)
 
 
@@ -483,13 +557,26 @@ GATHERERS = {
 
 
 # ── compute + store ────────────────────────────────────────────
+def _resolve_gatherer(page):
+    """Return a zero-arg callable producing context for *page*, or None.
+
+    Handles static GATHERERS keys plus the dynamic per-pod pages "pod:<name>".
+    """
+    if page.startswith(_POD_PREFIX + ":"):
+        name = page.split(":", 1)[1].strip()
+        if not name:
+            return None
+        return lambda: _g_pod_detail(name)
+    return GATHERERS.get(page)
+
+
 def _compute_one(page):
     """Gather data for *page*, run LLM summary, store in Redis.
 
     Returns the result dict {content, ts} on success, None on failure.
     Never raises.
     """
-    gatherer = GATHERERS.get(page)
+    gatherer = _resolve_gatherer(page)
     if not gatherer:
         return None
     try:
@@ -500,12 +587,16 @@ def _compute_one(page):
     if not ctx or len(ctx) < 10:
         return None
 
-    hint = PROMPT_HINTS.get(page, _DEFAULT_PROMPT)
+    if page.startswith(_POD_PREFIX + ":"):
+        hint = _POD_DETAIL_PROMPT
+    else:
+        hint = PROMPT_HINTS.get(page, _DEFAULT_PROMPT)
     prompt = f"{hint}\n\n数据:\n{ctx}"
 
     try:
         import ai_service
-        content = ai_service.analyze_text(prompt, task="summarize", user="insight-bot")
+        content = ai_service.analyze_text(prompt, task="summarize", user="insight-bot",
+                                          component="insight")
     except Exception as e:
         log.warning("insight: LLM failed for %s: %s", page, e)
         return None

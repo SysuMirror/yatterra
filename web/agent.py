@@ -21,11 +21,18 @@ Guardrails:
   - per-command timeout and output truncation (20 KB)
   - loop cap (iters / wall), sub-agent caps
   - ops denylist (catastrophic host commands) -> refused, fed back to the model
+  - approval gate: high-risk write actions (rm/mv/chmod/kubectl/systemctl restart
+    /supervisorctl/… 及宿主机覆写非 /tmp) are queued in approvals.py instead of
+    executed; approver (admin+/infra.host) runs /api/agents/approve. Mode via
+    YATTERRA_APPROVAL_MODE (off|high|all, default high). See approvals.py.
+  - post-action verification: executed gated writes are re-checked with a
+    read-only command; result into audit + agent_memory.
   - every tool call recorded via audit.record(...)
   - stop(run_id) aborts a running loop and its sub-agents
 """
 import base64
 import json
+import os
 import queue
 import re
 import subprocess
@@ -39,6 +46,7 @@ import audit
 import groups
 import siteconf
 import remote_hosts
+import approvals
 import llm
 import agent_conf
 import mcp_client
@@ -116,21 +124,70 @@ def _bump_peak(tokens):
 
 
 # --- ops denylist ---
+# 顶层系统目录(用于匹配“对根/顶层目录本体”的破坏性操作,而不是其下的任一子路径)
+_TOP_DIRS = (r"(?:opt|home|etc|var|mnt|root|usr|boot|lib|lib64|bin|sbin|srv|proc|sys|dev|run)")
+# rm 的递归+强制标志(-rf/-fr/-Rf/--force --recursive 等任意顺序组合)
+_RM_FORCE_REC = r"-(?:[A-Za-z]*[rR][A-Za-z]*[fF][A-Za-z]*|[A-Za-z]*[fF][A-Za-z]*[rR][A-Za-z]*)"
 _DENY_PATTERNS = [
-    r"\brm\s+-rf\s+/(?:\s|$)",
-    r"\brm\s+-rf\s+/\*",
+    # --- rm:根目录 / 宽通配(含 --no-preserve-root) ---
+    r"\brm\s+" + _RM_FORCE_REC + r"\s+(?:--(?:no-preserve-root|preserve-root)\s+)?/(?:\s|$|\*)",
+    # rm -r /(不带 -f 也拦)
+    r"\brm\s+-[A-Za-z]*[rR][A-Za-z]*\s+(?:--no-preserve-root\s+)?/(?:\*|\.\*|\s|$)",
+    # rm -rf /* 、/.* 类宽通配
+    r"\brm\s+" + _RM_FORCE_REC + r"\s+/(?:\*|\.\*)",
     # rm -rf on top-level system dirs (exact dir, not subpaths underneath)
-    r"\brm\s+-rf\s+/(opt|home|etc|var|mnt|root|usr|boot|lib|lib64|bin|sbin|srv)(?:/?(?:\s|$))",
-    r":\s*\(\)\s*\{\s*:\s*\|\s*&\s*\}",
+    r"\brm\s+" + _RM_FORCE_REC + r"\s+/" + _TOP_DIRS + r"(?:/?(?:\s|$))",
+    r"\brm\s+" + _RM_FORCE_REC + r"\s+/" + _TOP_DIRS + r"/\*",
+    # fork bomb
+    r":\s*\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}",
+    # reboot/shutdown
     r"\b(reboot|shutdown|halt|poweroff|init\s+0)\b",
+    # 格式化/擦除块设备
     r"\bmkfs(?:\.\w+)?\b",
+    r"\bwipefs\b",
     r"\bdd\b.*\bof=/dev/",
+    # 递归改属主/权限到根或顶层目录本体
+    r"\bchmod\s+(?:-[A-Za-z]*R[A-Za-z]*|--recursive)\b[^\n]*?\s/(?:[A-Za-z0-9_.-]+)?(?:\s|$|\*)",
+    r"\bchown\s+(?:-[A-Za-z]*R[A-Za-z]*|--recursive)\b[^\n]*?\s/(?:[A-Za-z0-9_.-]+)?(?:\s|$|\*)",
+    # 移动 / 覆盖根
+    r"\bmv\s+/(?:\s|$|\*)",
+    # 管道下载执行(curl ... | sh / wget ... | sudo bash 等)
+    r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|d|k)?sh\b",
+    # k3s / kubectl: 只拦"集群级不可逆 / 大规模"操作。常规工作负载操作
+    # (delete pod|deploy|svc、apply、rollout restart、scale、patch、edit、
+    #  cordon/uncordon、taint) 一律放行 —— 这些是日常修复手段。
+    # 1) 删除集群级对象(命名空间/节点/PV/PVC/CRD/RBAC/存储类)
+    r"\b(?:k3s\s+)?kubectl\s+delete\s+(?:ns|namespace|namespaces|node|nodes|"
+    r"pv|pvc|persistentvolume\w*|persistentvolumeclaim\w*|crd|"
+    r"customresourcedefinition\w*|clusterrole\w*|storageclass\w*|apigroup\w*)\b",
+    # 2) 任意对象 + --all/-A 的批量删除
+    r"\b(?:k3s\s+)?kubectl\s+delete\b[^\n]*\s(?:--all|-A|--all-namespaces)\b",
+    # 3) drain(单节点集群 → 驱逐全部 Pod, 全站中断)
+    r"\b(?:k3s\s+)?kubectl\s+drain\b",
+    # 4) replace(整体覆盖, 绕过 apply 校验)
+    r"\b(?:k3s\s+)?kubectl\s+replace\b",
+    # 容器运行时破坏性操作
+    r"\bcrictl\s+(?:rmi|rm|stop)\b",
+    # 杀 init(PID 1)/ 杀所有进程
+    r"\bkill\s+(?:-9|-KILL|-s\s+9)\s+(?:1|-1)\b",
+    # 清空系统关键文件
+    r"\btruncate\s+-s\s*0\s+/" + _TOP_DIRS + r"\b",
+    # 重定向(截断)覆盖"系统目录/关键文件"时才拦; 写入 /home、/tmp、/opt/yatterra/logs、
+    # /var/log 等普通路径一律放行(AI 需要能落文件)。排除 fd 重定向(">" 前是数字/&)
+    # 与 /dev/null 等字符设备汇。
+    r"(?<![0-9&])>\s*/(?:etc|boot|usr|lib|lib64|bin|sbin|proc|sys)\b",
+    r"(?<![0-9&])>\s*/dev/(?!null\b|stdin\b|stdout\b|stderr\b|fd/)",
+    r"(?<![0-9&])>\s*(?:/var/lib/rancher|/root/\.ssh)\b",
+    r"(?<![0-9&])>\s*/opt/yatterra/[^\s]*(?:app\.py|agent[^/\s]*\.py|ai_service\.py|llm[^/\s]*\.py|users\.py|groups\.py|\.json|\.conf|\.env)\b",
     # stop/restart/disable of the web UI itself (self-decapitation mid-run)
     r"\bsystemctl\s+(?:stop|restart|disable)\s+yatterra-web\b",
     # stop/disable of k3s / public backbone (restart left allowed for remediation)
     r"\bsystemctl\s+(?:stop|disable)\s+(?:k3s|frps|frpc)\b",
-    r"\bkubectl\s+(delete|edit|apply|patch)\b",
-    r">\s*/dev/sda",
+    # 网络自锁(远端失联、无法恢复): 清空/封锁防火墙、关闭网卡。
+    # ip link down 只拦"真实网卡"(物理/隧道), 放行 veth/docker/br-/flannel/cni 等虚拟设备。
+    r"\biptables\s+(?:-F|-X)\b",
+    r"\biptables\s+-P\s+\S+\s+DROP\b",
+    r"\bip\s+link\s+set\s+(?!veth|docker|br-|flannel|cni|cali|tun|tap|lo\b)\S+\s+down\b",
 ]
 _DENY_RE = [re.compile(p) for p in _DENY_PATTERNS]
 
@@ -140,6 +197,38 @@ def _ops_denied(cmd):
         if rx.search(cmd):
             return True
     return False
+
+
+# --- host write/edit path guard ---
+# 宿主机(ops, root)的 write_file/edit_file 路径护栏;容器内(pod runner,cloud 自己的
+# /home/cloud)不受此限。read_file 已有 ".." 校验,这里同样禁止相对路径与 ".."。
+_HOST_DENY_DIRS = ("/etc", "/boot", "/proc", "/sys", "/dev",
+                   "/var/lib/rancher", "/root/.ssh")
+# 平台自身代码与配置(位于 /opt/yatterra 下),禁止被 agent 覆写
+_HOST_DENY_BASENAME_RE = re.compile(
+    r"^(?:app\.py|agent[^/]*\.py|ai_service\.py|llm[^/]*\.py|users\.py|groups\.py"
+    r"|.*\.json|.*\.conf|\.env)$", re.I)
+
+
+def _host_write_denied(path):
+    """宿主机写/改文件的路径护栏。返回拒绝原因(中文),允许则返回 None。
+    仅在 runner 为宿主机时调用;pod 内的 write_file/edit_file 不经过这里。"""
+    p = (path or "").strip()
+    if not p:
+        return "空路径"
+    if not p.startswith("/") or ".." in p:
+        return "安全限制: 仅允许绝对路径且不含 .."
+    norm = os.path.normpath(p)
+    if not norm.startswith("/") or ".." in norm:
+        return "安全限制: 非法路径"
+    for d in _HOST_DENY_DIRS:
+        if norm == d or norm.startswith(d + "/"):
+            return f"安全限制: 禁止在宿主机写入 {d} 下的路径"
+    if norm == "/opt/yatterra" or norm.startswith("/opt/yatterra/"):
+        base = norm.rsplit("/", 1)[-1]
+        if _HOST_DENY_BASENAME_RE.match(base):
+            return "安全限制: 禁止在宿主机写入平台自身代码/配置"
+    return None
 
 
 # --- tool execution ---
@@ -405,6 +494,9 @@ def _read_file_host(path, out_max=OUT_MAX):
 
 
 def _write_file_host(path, content, out_max=OUT_MAX):
+    denied = _host_write_denied(path)
+    if denied:
+        return False, denied
     b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
     cmd = (
         f"python3 -c "
@@ -438,6 +530,11 @@ def _list_dir(runner, pod, path, depth, max_entries, timeout, out_max):
 
 
 def _edit_file(runner, pod, path, old, new, timeout, out_max):
+    # 宿主机(ops)的 edit_file 同样受路径护栏约束;pod 内(cloud 自己的目录)不受限。
+    if runner != "pod":
+        denied = _host_write_denied(path)
+        if denied:
+            return False, denied
     runner_fn = _runner_for(runner, pod, timeout)
     return _pytool(_EDIT_PY, [path, old, new], runner_fn, out_max)
 
@@ -471,6 +568,17 @@ def _exec_mcp_tool(agent_def, tool, args, cfg, run_id, user=None):
     if isinstance(out, str) and len(out) > out_max:
         out = out[:out_max] + f"\n…[截断,共 {len(out)} 字符]"
     return True, out
+
+
+def _browser_gate(agent_def, user):
+    """浏览器工具(Playwright)权限闸:与 _exec_mcp_tool 同款检查。
+    返回拒绝原因(中文),允许则返回 None。"""
+    if not users.has_perm(user, "dev.mcp"):
+        return "【无 dev.mcp 权限,不能使用浏览器工具】"
+    attached = (agent_def or {}).get("mcp", []) or []
+    if "playwright" not in attached:
+        return "【playwright MCP 未挂载到该 agent,不能使用浏览器工具】"
+    return None
 
 
 def _mcp_prompt_section(agent_def, run_id, user=None):
@@ -762,8 +870,12 @@ def _exec_inspect(resource, name=None, namespace=None, filter_str=None, tail=50)
     return True, out
 
 
-def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
-    """Execute one tool for a parent/sub/node agent. Returns (ok, output)."""
+def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None,
+               _approval_bypass=False):
+    """Execute one tool for a parent/sub/node agent. Returns (ok, output).
+
+    _approval_bypass=True 时跳过审批闸(供 approvals 批准后回调 resume_approved 用)。
+    """
     if tool.startswith("mcp__"):
         return _exec_mcp_tool(agent_def, tool, args, cfg, run_id, user=user)
     if tool in _PLATFORM_TOOLS:
@@ -772,6 +884,14 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
         return False, f"【{tool} 已在该 agent 配置中禁用】"
     out_max = cfg["limits"]["out_max_kb"] * 1024
     runner = (agent_def or {}).get("runner", "host")
+    # --- 需确认的写动作审批闸(默认仅高危写动作;可用 YATTERRA_APPROVAL_MODE 调整) ---
+    if not _approval_bypass:
+        try:
+            susp = approvals.gate(tool, args or {}, runner, agent_def, pod, run_id, user)
+        except Exception:
+            susp = None
+        if susp:
+            return True, susp
     if tool == "run":
         cmd = args.get("command", "")
         if runner == "pod":
@@ -876,6 +996,9 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
             return False, f"【ai_chat 失败: {e}】"
     if tool == "screenshot":
         # Take a screenshot via Playwright MCP (web-use)
+        gate = _browser_gate(agent_def, user)
+        if gate:
+            return False, gate
         url = args.get("url", "")
         if not url:
             return False, "【screenshot 需要提供 url 参数】"
@@ -891,6 +1014,9 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
             return False, f"【screenshot 失败: {e}】"
     # ── Web automation tools (Playwright MCP) ──
     if tool == "browser_navigate":
+        gate = _browser_gate(agent_def, user)
+        if gate:
+            return False, gate
         url = args.get("url", "")
         if not url:
             return False, "【browser_navigate 需要提供 url 参数】"
@@ -902,6 +1028,9 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
         except Exception as e:
             return False, f"【browser_navigate 失败: {e}】"
     if tool == "browser_click":
+        gate = _browser_gate(agent_def, user)
+        if gate:
+            return False, gate
         selector = args.get("selector", "")
         if not selector:
             return False, "【browser_click 需要提供 selector 参数(CSS 选择器)】"
@@ -913,6 +1042,9 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
         except Exception as e:
             return False, f"【browser_click 失败: {e}】"
     if tool == "browser_fill":
+        gate = _browser_gate(agent_def, user)
+        if gate:
+            return False, gate
         selector = args.get("selector", "")
         value = args.get("value", "")
         if not selector:
@@ -926,6 +1058,9 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
             return False, f"【browser_fill 失败: {e}】"
     if tool == "browser_screenshot":
         # Standalone screenshot (no navigate first)
+        gate = _browser_gate(agent_def, user)
+        if gate:
+            return False, gate
         try:
             import mcp_client
             run = mcp_client.get_mcp_run(run_id or "browser")
@@ -934,6 +1069,34 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None):
         except Exception as e:
             return False, f"【browser_screenshot 失败: {e}】"
     return False, f"未知工具: {tool}"
+
+
+def resume_approved(rec, user=None):
+    """执行一条已批准(审批闸登记)的挂起动作,供 approvals.approve 回调。
+
+    rec 为 approvals 里的记录(tool/args/runner/pod/agent_id/run_id)。执行时
+    跳过审批闸(_approval_bypass),避免再次挂起。返回 (ok, output)。
+    """
+    try:
+        aid = rec.get("agent_id") or ""
+        agent_def = agent_conf.get_agent(aid) if aid else None
+    except Exception:
+        agent_def = None
+    if not agent_def:
+        agent_def = {"id": rec.get("agent_id") or "ops",
+                     "runner": rec.get("runner") or "host"}
+    try:
+        cfg = agent_conf.load()
+    except Exception:
+        cfg = {"limits": {"out_max_kb": 20, "cmd_timeout": 60,
+                          "max_iters": 12, "max_wall": 600},
+               "fanout": {"enabled": False, "max_parallel": 2, "max_depth": 1,
+                          "sub_max_iters": 8, "sub_max_wall": 300},
+               "compact": {"enabled": True, "threshold_tokens": 100000,
+                           "keep_last": 6, "max_tokens": 4096}}
+    pod = rec.get("pod") or ""
+    return _exec_tool(agent_def, pod, rec.get("tool"), rec.get("args") or {}, cfg,
+                      rec.get("run_id"), user=user, _approval_bypass=True)
 
 
 # --- system prompts ---
@@ -1037,7 +1200,7 @@ ACTION: 尽量独占一行。执行结果会作为下一轮输入返回给你。
 - 简单单步任务才直接 run,其余一律 spawn 优先
 - 子 agent 结果 fan-in 后你整合,不要等一个完再启下一个
 
-安全约束:禁止 reboot/shutdown/halt、rm -rf / 及 /opt /home /etc /var /mnt /root /usr /boot 等顶层系统目录、mkfs、dd 写块设备、systemctl stop/restart yatterra-web(会杀掉自己)、systemctl stop/disable k3s/frps/frpc、kubectl delete/edit/apply 等破坏性命令(会被策略拒绝)。优先只读命令。每步先观察再决定下一步。命令加超时和输出截断,别一次刷太多。
+安全约束:只有"极危险且不可逆"的命令会被策略拒绝——reboot/shutdown/halt、rm -rf / 及 /opt /home /etc /var /mnt /root /usr /boot 等顶层系统目录、mkfs、dd 写块设备、curl|sh、重定向覆盖系统目录、集群级 kubectl delete(ns/node/pv/pvc/crd 等)与批量 delete --all、kubectl drain、systemctl stop/restart/disable yatterra-web(会杀掉自己)、systemctl stop/disable k3s/frps/frpc、iptables -F、ip link set ... down。除此之外的命令(含管道 |、命令链 ;/&&、重定向、子shell、常规 kubectl 操作如 apply/rollout/scale/delete pod)都可正常执行。每步先观察再决定下一步,命令加超时和输出截断,别一次刷太多。
 
 """ + _PLATFORM_CTX
 
@@ -1321,22 +1484,23 @@ def _parse_bare_action(text):
     return {"tool": tool, "args": {}}
 
 
-def _parse_action(text):
-    """Return {'tool':..., 'args':...} or None.
+def _parse_toolcall(text):
+    """Parse the native tool-call format some providers emit, e.g.
 
-    Tolerant: finds the last ``ACTION:`` anywhere (not just at line start),
-    extracts a balanced {...} JSON object (respecting strings), and accepts
-    both ``{"tool":"run","args":{...}}`` and the shorthand ``{"run":{...}}``.
-    Falls back to the call-style shorthand ``ACTION: run(<cmd>)``.
+        <tool_call>{"name": "run", "arguments": {"command": "ls"}}</tool_call>
+
+    Accepts name/tool and arguments/args. Returns {'tool','args'} or None.
+    Brace extraction respects string literals so braces inside args don't
+    unbalance the scan.
     """
-    idx = text.rfind("ACTION:")
+    idx = text.find("<tool_call>")
     if idx == -1:
         return None
-    j = idx + len("ACTION:")
+    j = idx + len("<tool_call>")
     while j < len(text) and text[j].isspace():
         j += 1
     if j >= len(text) or text[j] != "{":
-        return _parse_bare_action(text)
+        return None
     depth = 0; k = j; in_str = False; esc = False; end = -1
     while k < len(text):
         c = text[k]
@@ -1360,10 +1524,87 @@ def _parse_action(text):
     if end == -1:
         return None
     obj = _lenient_json_loads(text[j:end + 1])
-    if obj is None:
-        return None
     if not isinstance(obj, dict):
         return None
+    name = obj.get("name") or obj.get("tool")
+    args = obj.get("arguments")
+    if args is None:
+        args = obj.get("args")
+    if not isinstance(name, str) or not name:
+        return None
+    return {"tool": name, "args": args if isinstance(args, dict) else {}}
+
+
+def _last_nonempty_segment(text):
+    """Return the last non-empty paragraph (blank-line separated) of text.
+    Used to scope ACTION detection to the tail of the reply so an ``ACTION:``
+    quoted earlier in the prose cannot hijack the parse."""
+    if not text:
+        return ""
+    for part in reversed(re.split(r"\n\s*\n", text)):
+        if part and part.strip():
+            return part
+    return text
+
+
+def _balanced_json_at(s, i):
+    """Extract a balanced-brace JSON object starting at s[i] == '{'.
+    String-literal aware. Returns (obj_or_None, end_index) where end_index is the
+    index of the matching '}', or -1 if no balanced object was found."""
+    depth = 0; k = i; in_str = False; esc = False; end = -1
+    while k < len(s):
+        c = s[k]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    end = k; break
+        k += 1
+    if end == -1:
+        return None, -1
+    return _lenient_json_loads(s[i:end + 1]), end
+
+
+def _parse_action(text):
+    """Return {'tool':..., 'args':...} or None.
+
+    收紧后的判据:
+      1. 只在回复的**最后一段非空文本**(以空行分段)里定位 ``ACTION:``,
+         因此正文/上下文里引用的 ``ACTION:`` 示例不会提前终止解析。
+      2. ``ACTION:`` 之后必须**紧跟可解析的结构**才算数——
+         一个配平的 ``{...}`` JSON 对象,或调用式简写 ``tool`` / ``tool(args)``
+         (且需落在该段末尾);否则视为最终回答(返回 None)。
+    接受 ``{"tool":"run","args":{...}}`` 与简写 ``{"run":{...}}``。
+    """
+    seg = _last_nonempty_segment(text)
+    idx = seg.rfind("ACTION:")
+    if idx == -1:
+        return _parse_toolcall(text)
+    j = idx + len("ACTION:")
+    while j < len(seg) and seg[j].isspace():
+        j += 1
+    if j >= len(seg):
+        return _parse_toolcall(text)
+    if seg[j] != "{":
+        # 非 JSON:只认落在段末的调用式简写 tool / tool(args)
+        return _parse_bare_action(seg) or _parse_toolcall(text)
+    obj, end = _balanced_json_at(seg, j)
+    if end == -1 or not isinstance(obj, dict):
+        return _parse_toolcall(text)
+    # JSON 必须是该段末尾(其后只允许空白),避免正文里带尾随说明的引用被当成调用
+    if seg[end + 1:].strip():
+        return _parse_toolcall(text)
     if "tool" in obj:
         return {"tool": obj["tool"], "args": obj.get("args", {}) or {}}
     keys = list(obj.keys())
@@ -1843,6 +2084,14 @@ def run_agent(mode, name, message, history, run_id, user=None):
             system = _system_prompt_for(agent_def)
         system += _mcp_prompt_section(agent_def, run_id, user=user)
         system += _platform_tools_prompt(user=user)
+
+        # 结果核验闭环(ops/宿主机):启动时顺带核验上批已执行写动作的效果。
+        # 只读、best-effort,失败绝不影响本次运行。
+        if runner != "pod":
+            try:
+                approvals.verify_pending(limit=3)
+            except Exception:
+                pass
 
         messages = []
         for h in (history or []):
