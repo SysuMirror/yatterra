@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Switch } from '@/components/ui/Switch'
 import { DataTable } from '@/components/ui/DataTable'
 import { Dialog } from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { MetricCard } from '@/components/domain/MetricCard'
@@ -27,6 +28,7 @@ export default function InfraProxy() {
   const [port, setPort] = useState('')
   const [note, setNote] = useState('')
   const [pod, setPod] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['infra-proxy'],
@@ -50,11 +52,19 @@ export default function InfraProxy() {
   const createMut = useMutation({
     mutationFn: (d: any) => api.post('/infra/proxy', d),
     onSuccess: () => { toast({ type: 'success', message: '映射已创建' }); setCreateOpen(false); qc.invalidateQueries({ queryKey: ['infra-proxy'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '创建映射失败' }),
   })
 
   const toggleMut = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.put(`/infra/proxy/${id}`, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['infra-proxy'] }),
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '操作失败' }),
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => api.del(`/infra/proxy/${id}`),
+    onSuccess: () => { toast({ type: 'success', message: '已删除' }); setDeleteTarget(null); qc.invalidateQueries({ queryKey: ['infra-proxy'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '删除失败' }),
   })
 
   const mappings = data?.mappings ?? data?.items ?? []
@@ -73,16 +83,17 @@ export default function InfraProxy() {
 
       {/* AI Insight */}
       {!isLoading && data && (
+        <div data-onboarding-target="proxy-insight" className="mb-5">
         <AiInsightPanel
           page="proxy"
           title="反代映射洞察"
-          className="mb-5"
           context={`反代映射: ${mappings.length} 个 (${enabledCount} 启用, ${disabledCount} 禁用), FRP 隧道 ${frpc?.running ?? 0}/${frpc?.total ?? 0} 运行, 反代容器 ${data?.container_running ? '运行中' : '停止'}, 远程主机 ${remoteHosts?.length ?? 0} 台\n映射列表:\n${mappings.slice(0, 20).map((m: any) => `  ${m.subdomain} → :${m.port} ${m.enabled !== false ? '✓' : '✗'} ${m.note || ''}`).join('\n')}`}
         />
+        </div>
       )}
 
       {/* FRP + Mapping stats */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
+      <div data-onboarding-target="proxy-stats" className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
         <MetricCard
           icon={<Globe size={15} className="text-accent" />}
           label="映射总数"
@@ -110,7 +121,7 @@ export default function InfraProxy() {
 
       {/* FRP connection health */}
       {frpc && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="proxy-frp" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <Wifi size={16} className={frpc.running ? 'text-ok' : 'text-bad'} />
             <h2 className="text-sm font-semibold">FRP 连接状态</h2>
@@ -140,7 +151,7 @@ export default function InfraProxy() {
       )}
 
       {/* Proxy mapping table */}
-      <Card padding="none" className="mb-6">
+      <Card data-onboarding-target="proxy-table" padding="none" className="mb-6">
         <DataTable
           columns={[
             { key: 'subdomain', title: '子域名', sortable: true, render: (r: any) => (
@@ -158,7 +169,7 @@ export default function InfraProxy() {
             )},
             { key: 'note', title: '备注', render: (r: any) => <span className="text-muted">{r.note || '—'}</span> },
             { key: 'actions', title: '', render: (r: any) => (
-              <Button variant="ghost" size="sm" onClick={() => { if (confirm('删除此代理规则？')) api.del(`/infra/proxy/${r.id}`).then(() => { toast({ type: 'success', message: '已删除' }); qc.invalidateQueries({ queryKey: ['infra-proxy'] }) }) }}>
+              <Button variant="ghost" size="sm" aria-label="删除映射" onClick={() => setDeleteTarget(r)}>
                 <Trash2 size={14} />
               </Button>
             )},
@@ -171,7 +182,7 @@ export default function InfraProxy() {
 
       {/* Remote hosts */}
       {remoteHosts && remoteHosts.length > 0 && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="proxy-remote" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-4">
             <Server size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">远程主机</h2>
@@ -242,6 +253,16 @@ export default function InfraProxy() {
           </div>
         </Card>
       )}
+
+      {/* Delete mapping confirm */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => deleteTarget && deleteMut.mutate(deleteTarget.id)}
+        loading={deleteMut.isPending}
+        title="删除反代映射"
+        description={`确定删除 ${deleteTarget?.subdomain ?? ''} 的映射？删除后该子域名立即不可访问。`}
+      />
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="添加反代映射">

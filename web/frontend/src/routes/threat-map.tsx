@@ -9,6 +9,7 @@ import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
 import { DataTable } from '@/components/ui/DataTable'
 import { Select } from '@/components/ui/Select'
 import { useCountUp } from '@/hooks/useCountUp'
@@ -79,7 +80,7 @@ export default function ThreatMap() {
   const [statusFilter, setStatusFilter] = useState('')
   const [timeWindow, setTimeWindow] = useState('3d')
 
-  const { data, isLoading } = useQuery<ThreatData>({
+  const { data, isLoading, error, refetch } = useQuery<ThreatData>({
     queryKey: ['threat-map', timeWindow],
     queryFn: () => api.get(`/threat-map?window=${timeWindow}`),
     refetchInterval: 30_000,
@@ -223,8 +224,19 @@ export default function ThreatMap() {
         <Select onboardingTarget="threat-window" value={timeWindow} onChange={setTimeWindow} options={WINDOWS} className="w-[110px]" />
       </PageHeader>
 
+      {/* ── Error state ── */}
+      {error && (
+        <Card padding="lg" className="mb-5">
+          <div className="flex items-center gap-3 flex-wrap">
+            <AlertTriangle size={16} className="text-bad flex-shrink-0" />
+            <span className="text-sm text-bad font-medium">威胁数据加载失败：{(error as any)?.message || '网络异常'}</span>
+            <Button variant="secondary" size="sm" className="ml-auto" onClick={() => refetch()}>重试</Button>
+          </div>
+        </Card>
+      )}
+
       {/* ── Stat strip ── */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-5">
+      <div data-onboarding-target="threat-stats" className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-5">
         <StatCard
           delay={0} tone="#ff453a" icon={<Crosshair size={15} />} label="攻击连接数"
           value={totalAttacks}
@@ -250,7 +262,7 @@ export default function ThreatMap() {
 
       {/* ── Map + side panels ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-5">
-        <Card padding="none" className="lg:col-span-2 overflow-hidden flex animate-fade-in-up">
+        <Card data-onboarding-target="threat-globe" padding="none" className="lg:col-span-2 overflow-hidden flex animate-fade-in-up">
           <div className="relative w-full h-[300px] sm:h-[440px] lg:h-auto lg:min-h-[560px] lg:flex-1 rounded-t-xl overflow-hidden bg-[#050507]">
             {data ? (
               <ThreatGlobe data={data} />
@@ -274,7 +286,7 @@ export default function ThreatMap() {
         </Card>
 
         <div className="lg:col-span-1 flex flex-col gap-5">
-          <Card padding="lg" className="animate-fade-in-up" style={{ animationDelay: '60ms' }}>
+          <Card data-onboarding-target="threat-gauge" padding="lg" className="animate-fade-in-up" style={{ animationDelay: '60ms' }}>
             <div className="flex items-center justify-between gap-2 mb-3">
               <div className="flex items-center gap-2">
                 <Radar size={15} className="text-muted" />
@@ -295,7 +307,7 @@ export default function ThreatMap() {
             </dl>
           </Card>
 
-          <Card padding="lg" className="flex-1 animate-fade-in-up" style={{ animationDelay: '120ms' }}>
+          <Card data-onboarding-target="threat-pattern-dist" padding="lg" className="flex-1 animate-fade-in-up" style={{ animationDelay: '120ms' }}>
             <div className="flex items-center gap-2 mb-4">
               <Activity size={15} className="text-muted" />
               <h2 className="text-sm font-semibold">攻击模式分布</h2>
@@ -332,7 +344,7 @@ export default function ThreatMap() {
 
       {/* ── AI brief ── */}
       {data?.ai_summary && (
-        <Card padding="md" className="mb-5 animate-fade-in-up relative overflow-hidden" style={{ animationDelay: '160ms' }}>
+        <Card data-onboarding-target="threat-ai-brief" padding="md" className="mb-5 animate-fade-in-up relative overflow-hidden" style={{ animationDelay: '160ms' }}>
           <span className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-[#a78bfa] to-[#0a84ff]" />
           <div className="flex items-start gap-3 pl-1">
             <Sparkles size={15} className="text-[#a78bfa] flex-shrink-0 mt-0.5" />
@@ -346,17 +358,18 @@ export default function ThreatMap() {
 
       {/* ── Interactive AI insight ── */}
       {!isLoading && attacks.length > 0 && (
+        <div data-onboarding-target="threat-insight" className="mb-5">
         <AiInsightPanel
           page="threat-map"
           title="威胁态势洞察"
-          className="mb-5"
           promptHint="请根据以下威胁数据生成安全洞察摘要，包括：主要威胁来源、攻击模式分析、封禁状态、安全建议。控制在 3-5 行以内。"
           context={`威胁统计: 总攻击 ${stats.total_attacks ?? attacks.length}, 封禁 ${stats.total_banned ?? 0}, 攻击源IP ${uniqueIps}\n主要模式: ${topPattern}\n威胁等级: ${level.label} (${riskScore}/100)\n攻击类型分布: ${patternStats.map((p) => `${p.label}(${p.n})`).join(', ')}\n最近攻击:\n${attacks.slice(0, 15).map(a => `  ${a.ip} (${a.city ?? '?'}, ${a.country ?? '?'}) ${a.pattern} x${a.count} ${a.banned ? '[封禁]' : '[活跃]'}`).join('\n')}`}
         />
+        </div>
       )}
 
       {/* ── Threat events ── */}
-      <Card padding="lg" className="animate-fade-in-up" style={{ animationDelay: '200ms' }}>
+      <Card data-onboarding-target="threat-events" padding="lg" className="animate-fade-in-up" style={{ animationDelay: '200ms' }}>
         <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
           <div className="flex items-center gap-2">
             <Shield size={16} className="text-muted" />
@@ -365,7 +378,7 @@ export default function ThreatMap() {
             {patternFilter && <Badge variant="muted">{patLabel(patternFilter)}</Badge>}
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
-            <div className="inline-flex rounded-lg bg-black/[0.05] p-0.5">
+            <div data-onboarding-target="threat-status-filter" className="inline-flex rounded-lg bg-black/[0.05] p-0.5">
               {STATUS_FILTERS.map((f) => (
                 <button
                   key={f.value}

@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
-import { Server, Cpu, HardDrive, Monitor, Wifi, WifiOff, Info, HardDriveDownload, Container, Zap, Thermometer, Clock, Activity } from 'lucide-react'
+import { Server, Cpu, HardDrive, Monitor, Wifi, WifiOff, Info, HardDriveDownload, Container, Zap, Thermometer, Clock, Activity, AlertTriangle } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { CodeChip } from '@/components/ui/CodeChip'
+import { Button } from '@/components/ui/Button'
 import { api } from '@/api/client'
 import { formatBytes } from '@/lib/format'
 import { ClusterMetrics, type ClusterMetricsData } from '@/components/domain/ClusterMetrics'
@@ -29,7 +30,7 @@ function BarRow({ label, usedH, totalH, pct }: { label: string; usedH: string; t
 }
 
 export default function InfraHost() {
-  const { data: host, isLoading } = useQuery<any>({
+  const { data: host, isLoading, error: hostError, refetch: refetchHost } = useQuery<any>({
     queryKey: ['infra-host'],
     queryFn: () => api.get('/infra/host'),
     refetchInterval: 10_000,
@@ -71,15 +72,26 @@ export default function InfraHost() {
 
       {/* AI Insight */}
       {!isLoading && host && (
-        <AiInsightPanel page="host" context={aiContext} title="主机健康洞察" className="mb-5" />
+        <div data-onboarding-target="host-insight" className="mb-5">
+          <AiInsightPanel page="host" context={aiContext} title="主机健康洞察" />
+        </div>
       )}
 
-      {isLoading ? (
+      {hostError ? (
+        <Card padding="lg" className="mb-6">
+          <div className="flex items-center gap-3 flex-wrap">
+            <AlertTriangle size={16} className="text-bad flex-shrink-0" />
+            <span className="text-sm text-bad font-medium">主机数据加载失败：{(hostError as any)?.message || '网络异常'}</span>
+            <Button variant="secondary" size="sm" className="ml-auto" onClick={() => refetchHost()}>重试</Button>
+          </div>
+        </Card>
+      ) : isLoading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} height={100} />)}
         </div>
       ) : (
         <motion.div
+          data-onboarding-target="host-stats"
           className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6"
           initial="initial" animate="animate"
           variants={{ animate: { transition: { staggerChildren: 0.06 } } }}
@@ -100,7 +112,7 @@ export default function InfraHost() {
       )}
 
       {/* System Info */}
-      <Card padding="lg" className="mb-4">
+      <Card data-onboarding-target="host-info" padding="lg" className="mb-4">
         <div className="flex items-center gap-2 mb-4">
           <Info size={16} className="text-accent" />
           <h2 className="text-sm font-semibold">系统信息</h2>
@@ -198,14 +210,14 @@ export default function InfraHost() {
       {/* Infra Metrics — proper charts instead of raw JSON */}
       {metrics && Object.keys(metrics).length > 0 && (
         <div className="mb-6">
-          <h2 className="text-sm font-semibold mb-3">集群指标</h2>
+          <h2 data-onboarding-target="host-metrics" className="text-sm font-semibold mb-3">集群指标</h2>
           <ClusterMetrics data={metrics as ClusterMetricsData} />
         </div>
       )}
 
       {/* Disk Usage */}
       {host?.disk?.length > 0 && (
-        <Card padding="lg" className="mb-4">
+        <Card data-onboarding-target="host-disks" padding="lg" className="mb-4">
           <div className="flex items-center gap-2 mb-4">
             <HardDriveDownload size={16} className="text-ok" />
             <h2 className="text-sm font-semibold">磁盘使用</h2>
@@ -233,7 +245,7 @@ export default function InfraHost() {
 
       {/* K3s Nodes */}
       {host?.k3s?.nodes?.length > 0 && (
-        <Card padding="lg" className="mb-4">
+        <Card data-onboarding-target="host-groups" padding="lg" className="mb-4">
           <div className="flex items-center gap-2 mb-4">
             <Container size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">K3s 节点</h2>
@@ -264,7 +276,7 @@ export default function InfraHost() {
 
       {/* GPU Details */}
       {host?.nvidia?.gpus?.length > 0 && (
-        <Card padding="lg" className="mb-4">
+        <Card data-onboarding-target="host-gpu" padding="lg" className="mb-4">
           <div className="flex items-center gap-2 mb-4">
             <Monitor size={16} className="text-warn" />
             <h2 className="text-sm font-semibold">GPU 详情</h2>
@@ -307,7 +319,7 @@ export default function InfraHost() {
 
       {/* FRP Connections */}
       {host?.frpc && (
-        <Card padding="lg" className="mb-4">
+        <Card data-onboarding-target="host-frp" padding="lg" className="mb-4">
           <div className="flex items-center gap-2 mb-2">
             <Activity size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">FRP 连接</h2>
@@ -504,7 +516,7 @@ export default function InfraHost() {
 
       {/* No remote hosts fallback */}
       {(!remoteHosts || remoteHosts.length === 0) && (
-        <Card padding="lg">
+        <Card data-onboarding-target="host-remote" padding="lg">
           <div className="flex items-center gap-2 mb-4">
             <Server size={16} className="text-muted" />
             <h2 className="text-sm font-semibold">远程主机</h2>

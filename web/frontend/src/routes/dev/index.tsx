@@ -69,16 +69,17 @@ export default function DevOverview() {
 
       {/* AI Insight */}
       {!agentsLoading && (
+        <div data-onboarding-target="dev-insight" className="mb-5">
         <AiInsightPanel
           page="dev"
           title="开发概览洞察"
-          className="mb-5"
           context={aiContext}
         />
+        </div>
       )}
 
       {/* Core metrics */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
+      <div data-onboarding-target="dev-stats" className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
         {agentsLoading ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
@@ -93,7 +94,7 @@ export default function DevOverview() {
 
       {/* Recent agent sessions */}
       {sessions.length > 0 && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="dev-sessions" padding="lg" className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Clock size={16} className="text-accent" />
@@ -121,7 +122,7 @@ export default function DevOverview() {
 
       {/* MCP server status */}
       {mcpServers.length > 0 && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="dev-mcp" padding="lg" className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Plug size={16} className="text-warn" />
@@ -153,7 +154,7 @@ export default function DevOverview() {
       )}
 
       {/* Agent summary */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="dev-agents" padding="lg" className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Bot size={16} className="text-accent" />
@@ -186,7 +187,7 @@ export default function DevOverview() {
 
       {/* LLM usage summary */}
       {llmUsage && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="dev-llm-usage" padding="lg" className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <TrendingUp size={16} className="text-accent" />
@@ -218,7 +219,7 @@ export default function DevOverview() {
       )}
 
       {/* Harness summary */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="dev-harnesses" padding="lg" className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Workflow size={16} className="text-ok" />
@@ -235,7 +236,7 @@ export default function DevOverview() {
               <div key={name} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <Workflow size={14} className="text-muted flex-shrink-0" />
                 <span className="text-sm font-medium flex-1 min-w-0 truncate">{name}</span>
-                <Badge variant="muted" className="text-[10px]">idle</Badge>
+                <Badge variant="muted" className="text-[10px]">-</Badge>
               </div>
             ))}
             {harnesses.length > 5 && (
@@ -248,7 +249,7 @@ export default function DevOverview() {
       </Card>
 
       {/* Quick actions */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <section data-onboarding-target="dev-quick" className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <QuickAction icon={<Bot size={18} />} label="新建会话" desc="与 Agent 开始对话" to="/dev/harness" />
         <QuickAction icon={<Plug size={18} />} label="添加 MCP" desc="连接外部工具服务" to="/dev/mcp" />
         <QuickAction icon={<Bot size={18} />} label="添加 LLM" desc="配置大语言模型服务" to="/dev/llm" />

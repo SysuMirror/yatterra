@@ -1,42 +1,30 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion, useInView, useReducedMotion, useScroll, useSpring } from 'framer-motion'
 import { Link } from 'react-router'
+import { useMediaQuery } from '@/hooks/useMediaQuery'
 import { useAuthStore } from '@/stores/auth'
-import { ArrowDown, ArrowRight, Check, ChevronRight, Cpu, Globe2, Network, Orbit, Pause, Play, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
-import { ExplorerIllustration, GapIllustration, LayerIllustration, NetworkIllustration, RootsIllustration, ScenarioIllustration, WorkflowIllustration } from './landing-illustrations'
+import { ArrowDown, ArrowRight, Check, ChevronRight, Cpu, FileText, Globe2, Network, Orbit, Pause, Play, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { ExplorerIllustration, GapIllustration, OrbitMark, LayerIllustration, NetworkIllustration, RootsIllustration, ScenarioIllustration, WorkflowIllustration } from './landing-illustrations'
 import { LandingBackground } from './landing-background'
+import { LANGS, setLandingLang, useLandingCopy, useLandingLang } from './landing.i18n'
 import '../styles/landing.css'
 
-const constraints = [
-  { icon: Globe2, title: '连接不该止步于内网', label: '01 / CONNECTIVITY', description: '校园网、家庭宽带、实验室网络。设备能运行，还需要一条清晰、可控的访问路径。', detail: '内网设备 → 统一入口 → 服务访问' },
-  { icon: Cpu, title: '一块 GPU，也值得被编排', label: '02 / COMPUTE', description: '算力散落在不同设备、不同地点。让资源进入同一套工作流，才能被更多人真正使用。', detail: '独立设备 → 资源池 → 工作负载' },
-  { icon: Wrench, title: '让维护成为共享的能力', label: '03 / OPERATIONS', description: '从网络到权限，从部署到观测。不必为每个新项目，重新搭建一整套基础设施。', detail: '重复配置 → 平台能力 → 持续运行' },
-]
-
-const layers = [
-  { number: '01', title: '连接', english: 'CONNECT', description: '跨过网络边界', detail: '通过内网穿透与统一入口，为分散设备建立可控的访问路径。网络位置不再决定服务能被谁使用。', tags: ['内网穿透', '统一入口', '域名路由'], color: '#67e8d0' },
-  { number: '02', title: '编排', english: 'ORCHESTRATE', description: '让设备成为资源', detail: '通过 Kubernetes / K3s 组织节点、容器与工作负载。让部署、调度和生命周期在同一个平台中被管理。', tags: ['K3s / Kubernetes', 'GPU 资源', '容器生命周期'], color: '#8ab4ec' },
-  { number: '03', title: '智能', english: 'INFERENCE', description: '让模型参与工作', detail: '把 GPU、模型、Agent 和 MCP 工具连接起来。从一次模型调用，到能够持续运行的 AI 应用。', tags: ['模型服务', 'Agent 编排', 'MCP 工具'], color: '#c4b5fd' },
-  { number: '04', title: '运维', english: 'OBSERVE', description: '让运行长期可靠', detail: '围绕工作负载组织权限、监控与审计。让资源如何使用、问题发生在哪里，都有清晰的记录与边界。', tags: ['访问权限', '运行观测', '操作审计'], color: '#f6c889' },
-]
-
-const scenarios = [
-  { title: '校园与实验室', label: '01 / CAMPUS', description: '课程环境、科研任务与共享 GPU，在清晰的权限边界中协作，让设备资源服务更多人。', tags: ['共享 GPU', '科研环境', '课程项目'] },
-  { title: '家庭与工作室', label: '02 / HOME LAB', description: '把手边的工作站变成自己的 AI 节点。模型、数据和计算留在身边，服务从这里连接出去。', tags: ['本地模型', '个人工作流', '可控访问'] },
-  { title: '团队与研究项目', label: '03 / SMALL TEAMS', description: '从一个原型到持续运行的服务。把连接、部署和协作交给平台，让团队专注于想法本身。', tags: ['应用部署', '团队协作', 'Agent 服务'] },
-]
-
-const utilitySteps = [
-  { era: '1880s — 1900s', title: '动力', note: '工厂的蒸汽机 → 走进每个插座', color: '#f6c889', glyph: 'power' },
-  { era: '1970s — 2010s', title: '计算', note: '机构的大型机 → 口袋里的手机', color: '#67e8d0', glyph: 'compute' },
-  { era: '2006 — 2020s', title: '容量', note: '自建的机房 → 按需租用的云', color: '#8ab4ec', glyph: 'cloud' },
-  { era: 'NOW · 缺失的一级', title: '承载智能的一层', note: '模型人人可及，这一层还不是', color: '#c4b5fd', glyph: 'lock' },
+/** 纯视觉元数据(图标/颜色),文案统一走 landing.i18n 的 COPY。 */
+const constraintIcons = [Globe2, Cpu, Wrench]
+const layerColors = ['#5c8bff', '#789bff', '#b56dff', '#f6c889']
+const choiceIcons = [Globe2, Orbit, Wrench]
+const stepMeta = [
+  { color: '#f6c889', glyph: 'power' },
+  { color: '#5c8bff', glyph: 'compute' },
+  { color: '#789bff', glyph: 'cloud' },
+  { color: '#b56dff', glyph: 'lock' },
 ] as const
 
-const startingPoints = [
-  { key: 'device', label: '一台设备', eyebrow: 'START WITH A DEVICE', title: '让一台闲置设备，重新成为生产力。', text: '从工作站、家庭服务器或实验室 GPU 开始，不需要先拥有完整的数据中心。', accent: '#67e8d0', nodes: ['本地 GPU', '内网服务', '你的项目'] },
-  { key: 'network', label: '一组节点', eyebrow: 'START WITH A NETWORK', title: '把分散的算力，组织成一个整体。', text: '不同地点、不同配置的设备，也可以共享连接、调度和运行能力。', accent: '#8ab4ec', nodes: ['校园节点', '家庭节点', '共享资源'] },
-  { key: 'idea', label: '一个想法', eyebrow: 'START WITH AN IDEA', title: '让一个想法拥有持续运行的环境。', text: '从模型、Agent 或应用开始，向下连接真实算力，向上形成可访问的服务。', accent: '#c4b5fd', nodes: ['模型 / Agent', '运行环境', '真实产出'] },
+/** 技术报告 / 白皮书 — 新增条目直接往这里加即可，href 填 PDF 或外链。报告本身为英文，不随首页语言切换。 */
+const reports = [
+  { label: 'TR-001 / INTERCONNECT', title: 'Aggregating Edge-Isolated GPUs into a Unified Scheduling Fabric', desc: 'We present an architecture for federating heterogeneous, NAT-resident compute nodes into a lightweight Kubernetes control plane, covering tunnel topology design, quantile-based resource estimation, and priority-tiered degradation under pressure.', tags: ['Edge Networking', 'GPU Scheduling', 'Resource Estimation'], date: '2026-10', href: '/reports' },
+  { label: 'TR-002 / AGENTOPS', title: 'AI-Native Platform Operations: Assistant Architectures and Tool Governance', desc: 'An account of integrating language-model agents directly into an operational platform: multi-modal assistance, continuous code profiling, hybrid structural–semantic indexing, and permission-scoped tool access.', tags: ['LLM Agents', 'Code Indexing', 'Tool Governance'], date: '2026-10', href: '/reports' },
+  { label: 'TR-003 / HARDENING', title: 'Reliability Engineering for Single-Administrator Infrastructure', desc: 'A systematic treatment of layered self-healing, automated deployment, push-based alerting, and federated identity — keeping small-scale platforms dependable without a dedicated operations team.', tags: ['Self-Healing', 'SSO', 'Hardening'], date: '2026-10', href: '/reports' },
 ]
 
 function Reveal({ children, delay = 0, className = '', pop = false }: { children: ReactNode; delay?: number; className?: string; pop?: boolean }) {
@@ -54,38 +42,46 @@ function Reveal({ children, delay = 0, className = '', pop = false }: { children
   )
 }
 
-/** Per-character entrance for headings — a wave of lift + blur. */
+/**
+ * Per-character entrance for headings — a wave of lift.
+ * 只动 opacity/transform(compositor 属性),不做逐字 blur:逐字 filter 会让每个字
+ * 都走一次 paint,长标题在低端机上明显掉帧。
+ */
 function StaggerLine({ text, visible, reduce, delay = 0, className }: { text: string; visible: boolean; reduce: boolean | null; delay?: number; className?: string }) {
   if (reduce) return <span className={className}>{text}</span>
   return (
     <span className={className}>
-      {[...text].map((char, index) => (
-        <motion.span
-          key={index}
-          className="terra-char"
-          initial={{ opacity: 0, y: 16, filter: 'blur(7px)' }}
-          animate={visible ? { opacity: 1, y: 0, filter: 'blur(0px)' } : undefined}
-          transition={{ duration: .55, delay: delay + index * .028, ease: [.23, 1, .32, 1] }}
-        >{char === ' ' ? ' ' : char}</motion.span>
-      ))}
+      {[...text].map((char, index) =>
+        // 空格不能进 inline-block 的 .terra-char(只含空白的 inline-block 宽度塌缩为 0,
+        // 英文单词会全部粘连),直接作为普通文本节点输出,顺带保留换行能力。
+        char === ' ' ? ' ' : (
+          <motion.span
+            key={index}
+            className="terra-char"
+            initial={{ opacity: 0, y: 16 }}
+            animate={visible ? { opacity: 1, y: 0 } : undefined}
+            transition={{ duration: .55, delay: delay + index * .028, ease: [.23, 1, .32, 1] }}
+          >{char}</motion.span>
+        )
+      )}
     </span>
   )
 }
 
 /** Two-line heading that waves in on scroll. */
-function StaggerHeading({ lines, reduce, delay = 0 }: { lines: [string, string]; reduce: boolean | null; delay?: number }) {
+function StaggerHeading({ lines, reduce, delay = 0 }: { lines: string[]; reduce: boolean | null; delay?: number }) {
   const ref = useRef<HTMLHeadingElement>(null)
   const visible = useInView(ref, { once: true, margin: '-60px' })
   return (
     <h2 ref={ref}>
-      <StaggerLine text={lines[0]} className="terra-line-lead" visible={visible} reduce={reduce} delay={delay} />
-      <StaggerLine text={lines[1]} className="terra-line-accent" visible={visible} reduce={reduce} delay={delay + lines[0].length * .028} />
+      <StaggerLine text={lines[0]!} className="terra-line-lead" visible={visible} reduce={reduce} delay={delay} />
+      <StaggerLine text={lines[1]!} className="terra-line-accent" visible={visible} reduce={reduce} delay={delay + lines[0]!.length * .028} />
     </h2>
   )
 }
 
 /** Eyebrow + two-line heading + blurb, choreographed as one entrance. */
-function SectionIntro({ eyebrow, lines, desc, delay = 0 }: { eyebrow: string; lines: [string, string]; desc: string; delay?: number }) {
+function SectionIntro({ eyebrow, lines, desc, delay = 0 }: { eyebrow: string; lines: string[]; desc: string; delay?: number }) {
   const reduce = useReducedMotion()
   const ref = useRef<HTMLDivElement>(null)
   const visible = useInView(ref, { once: true, margin: '-60px' })
@@ -122,12 +118,26 @@ function ScrollProgress() {
   return <motion.div className="terra-scroll-progress" style={{ scaleX }} aria-hidden="true" />
 }
 
+/** Coalesce high-frequency pointer writes into one per frame. */
+function useRafPointer(handler: (event: React.PointerEvent<HTMLElement>) => void) {
+  const frame = useRef(0)
+  const latest = useRef<React.PointerEvent<HTMLElement> | null>(null)
+  const flush = () => {
+    frame.current = 0
+    if (latest.current) handler(latest.current)
+  }
+  return (event: React.PointerEvent<HTMLElement>) => {
+    latest.current = event
+    if (!frame.current) frame.current = requestAnimationFrame(flush)
+  }
+}
+
 /** 3D tilt + cursor-tracking glow for cards. */
 function TiltCard({ children, className = '', style }: { children: ReactNode; className?: string; style?: CSSProperties }) {
   const reduce = useReducedMotion()
   const ref = useRef<HTMLDivElement>(null)
 
-  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+  const onPointerMove = useRafPointer((event) => {
     if (reduce || event.pointerType !== 'mouse') return
     const element = ref.current
     if (!element) return
@@ -138,7 +148,7 @@ function TiltCard({ children, className = '', style }: { children: ReactNode; cl
     element.style.setProperty('--tilt-y', `${(px - 0.5) * 9}deg`)
     element.style.setProperty('--glow-x', `${px * 100}%`)
     element.style.setProperty('--glow-y', `${py * 100}%`)
-  }
+  })
 
   const onPointerLeave = () => {
     const element = ref.current
@@ -178,7 +188,7 @@ function ShinyButton({ children, className = '', to, href }: {
 }) {
   const reduce = useReducedMotion()
 
-  const onPointerMove = (event: React.PointerEvent<HTMLElement>) => {
+  const onPointerMove = useRafPointer((event) => {
     if (reduce || event.pointerType !== 'mouse') return
     const element = event.currentTarget
     const rect = element.getBoundingClientRect()
@@ -187,7 +197,7 @@ function ShinyButton({ children, className = '', to, href }: {
     element.style.setProperty('--pull-x', `${dx * 10}px`)
     element.style.setProperty('--pull-y', `${dy * 7}px`)
     element.style.setProperty('--shine-x', `${((event.clientX - rect.left) / rect.width) * 100}%`)
-  }
+  })
 
   const onPointerLeave = (event: React.PointerEvent<HTMLElement>) => {
     const element = event.currentTarget
@@ -201,16 +211,17 @@ function ShinyButton({ children, className = '', to, href }: {
 }
 
 function Architecture() {
+  const c = useLandingCopy()
   const [active, setActive] = useState(0)
-  const layer = layers[active]!
+  const layer = { ...c.layers.layers[active]!, color: layerColors[active]! }
   return (
     <div className="terra-architecture">
-      <div className="terra-diagram-heading"><span>THE INFRASTRUCTURE STACK</span><span>选择一层，探索它如何工作</span></div>
+      <div className="terra-diagram-heading"><span>{c.layers.stackHeading[0]}</span><span>{c.layers.stackHeading[1]}</span></div>
       <div className="terra-layer-grid">
-        {layers.map((item, index) => (
+        {c.layers.layers.map((item, index) => (
           <button key={item.number} type="button" className="terra-layer" aria-pressed={active === index} aria-controls="terra-layer-detail" onClick={() => setActive(index)}>
             {active === index && <motion.span layoutId="terra-layer-underline" className="terra-layer-underline" transition={{ type: 'spring', stiffness: 380, damping: 34 }} />}
-            <div className="terra-layer-top"><span>{item.number}</span><span style={{ color: item.color }}>{item.english}</span></div>
+            <div className="terra-layer-top"><span>{item.number}</span><span style={{ color: layerColors[index] }}>{item.english}</span></div>
             <LayerIllustration index={index} />
             <div className="terra-layer-bottom"><h3>{item.title}</h3><p>{item.description}</p><ChevronRight size={16} /></div>
           </button>
@@ -231,12 +242,12 @@ function Architecture() {
           </motion.div>
         </AnimatePresence>
       </div>
-      <div className="terra-control-rail"><ShieldCheck size={15} /><span>统一的权限、观测与审计，贯穿每一层。</span><span className="terra-rail-label">SHARED CONTROL PLANE</span></div>
+      <div className="terra-control-rail"><ShieldCheck size={15} /><span>{c.layers.rail}</span><span className="terra-rail-label">SHARED CONTROL PLANE</span></div>
     </div>
   )
 }
 
-function UtilityGlyph({ glyph, color }: { glyph: typeof utilitySteps[number]['glyph']; color: string }) {
+function UtilityGlyph({ glyph, color }: { glyph: 'power' | 'compute' | 'cloud' | 'lock'; color: string }) {
   if (glyph === 'power') return <path d="M2.5 -11 -6 1.5h5.5L-1.5 11 8 -1.5H2.5Z" fill={color} />
   if (glyph === 'compute') return (
     <g stroke={color} strokeWidth="1.6" fill="none" strokeLinejoin="round">
@@ -257,10 +268,149 @@ function UtilityGlyph({ glyph, color }: { glyph: typeof utilitySteps[number]['gl
   )
 }
 
+/** 窄屏竖排变体：阶梯从下往上爬，字号按 ~420px viewBox 设计，手机上仍可读。 */
+function InfrastructureArcNarrowSvg({ shown, dots, reduce }: { shown: boolean; dots: boolean; reduce: boolean | null }) {
+  const c = useLandingCopy()
+  const ys = [860, 650, 440, 230]
+  return (
+    <svg viewBox="0 0 420 1005" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="terra-arc-path-n" x1="0" y1="940" x2="0" y2="150" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#f6c889" /><stop offset=".5" stopColor="#5c8bff" /><stop offset="1" stopColor="#789bff" />
+        </linearGradient>
+        <linearGradient id="terra-arc-bar-n" x1="0" y1="0" x2="0" y2="1">
+          <stop stopColor="#ffffff" stopOpacity=".14" /><stop offset="1" stopColor="#ffffff" stopOpacity=".02" />
+        </linearGradient>
+        <filter id="terra-arc-glow-n" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="5" result="b" />
+          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+      </defs>
+
+      <motion.g
+        initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+        animate={shown ? { opacity: 1 } : undefined}
+        transition={{ duration: .5, delay: reduce ? 0 : .12 }}
+      >
+        <path d="M40 60V940" stroke="#8fa5b0" strokeOpacity=".22" strokeWidth="1" />
+        <path d="M40 64l-4 8h8ZM40 936l-4-8h8Z" fill="#8fa5b0" fillOpacity=".4" />
+        <text transform="translate(22 790) rotate(-90)" textAnchor="middle" fill="#718792" fontSize="11" fontWeight="600" letterSpacing="2.5">{c.thesis.arcAxis.scarce}</text>
+        <text transform="translate(22 300) rotate(-90)" textAnchor="middle" fill="#9debff" fontSize="11" fontWeight="600" letterSpacing="2.5">{c.thesis.arcAxis.universal}</text>
+      </motion.g>
+
+      <motion.path
+        d="M70 940V250"
+        stroke="url(#terra-arc-path-n)"
+        strokeWidth="3.5"
+        strokeLinecap="round"
+        filter="url(#terra-arc-glow-n)"
+        initial={reduce ? { pathLength: 1, opacity: 1 } : { pathLength: 0, opacity: 0 }}
+        animate={shown ? { pathLength: 1, opacity: 1 } : undefined}
+        transition={reduce ? { duration: 0 } : { pathLength: { duration: 1.3, delay: .3, ease: [.65, 0, .35, 1] }, opacity: { duration: .25, delay: .3 } }}
+      />
+      <motion.path
+        d="M70 250V150"
+        stroke="#b56dff" strokeOpacity=".55" strokeWidth="2.5" strokeDasharray="6 7" strokeLinecap="round"
+        className="terra-march"
+        initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+        animate={shown ? { opacity: 1 } : undefined}
+        transition={{ duration: .5, delay: reduce ? 0 : 1.5 }}
+      />
+
+      {ys.map((y, index) => {
+        const item = { ...c.thesis.steps[index]!, ...stepMeta[index]! }
+        const done = index < 3
+        return (
+          <motion.g
+            key={item.era}
+            initial={reduce ? { opacity: 1 } : { opacity: 0, y: 16 }}
+            animate={shown ? { opacity: 1, y: 0 } : undefined}
+            transition={{ duration: reduce ? .2 : .5, delay: reduce ? 0 : .55 + index * .14, ease: [.23, 1, .32, 1] }}
+          >
+            <rect x="110" y={y - 11} width="280" height="22" rx="11" fill={done ? item.color : 'transparent'} fillOpacity={done ? '.22' : '0'} stroke={item.color} strokeOpacity={done ? '.75' : '.55'} strokeWidth="1.6" strokeDasharray={done ? undefined : '6 5'} />
+            {done && <rect x="113" y={y - 8} width="274" height="6" rx="3" fill="url(#terra-arc-bar-n)" />}
+            <g transform={`translate(70 ${y})`}>
+              <circle r="24" fill={item.color} fillOpacity=".07" />
+              <circle r="17" fill="#0f1830" stroke={item.color} strokeOpacity=".85" strokeWidth="1.6" style={{ filter: `drop-shadow(0 0 6px ${item.color}66)` }} />
+              <UtilityGlyph glyph={item.glyph} color={item.color} />
+            </g>
+            <text x="110" y={y - 36} fill={item.color} fontSize="11.5" fontWeight="700" letterSpacing="1.6">{item.era}</text>
+            <text x="110" y={y - 16} fill="#e4edea" fontSize="18" fontWeight="600">{item.title}</text>
+            <text x="110" y={y + 36} fill={done ? '#718792' : item.color} fillOpacity={done ? '1' : '.9'} fontSize="13" fontWeight={done ? 400 : 600}>{item.note}</text>
+            {done ? (
+              <g transform={`translate(390 ${y})`}>
+                <circle r="9" fill={item.color} fillOpacity=".18" stroke={item.color} strokeOpacity=".7" />
+                <path d="M-3.5 0l2.5 2.5 4.5-5" stroke={item.color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </g>
+            ) : (
+              <g transform={`translate(390 ${y})`}>
+                <circle r="9" fill="#0f1830" stroke={item.color} strokeOpacity=".7" strokeDasharray="3 2" />
+                <path d="M-3.5-2.5v-1.5a3.5 3.5 0 0 1 7 0v1.5" stroke={item.color} strokeWidth="1.4" fill="none" />
+                <rect x="-4" y="-2.5" width="8" height="6.5" rx="1.5" fill={item.color} fillOpacity=".35" stroke={item.color} strokeWidth="1.2" />
+              </g>
+            )}
+          </motion.g>
+        )
+      })}
+
+      <g transform="translate(110 26)">
+        <motion.g
+          initial={reduce ? { opacity: 1, scale: 1 } : { opacity: 0, scale: .9 }}
+          animate={shown ? { opacity: 1, scale: 1 } : undefined}
+          transition={{ duration: reduce ? .2 : .55, delay: reduce ? 0 : 1.45, ease: [.23, 1, .32, 1] }}
+          style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
+        >
+          <rect width="280" height="88" rx="14" fill="#b56dff" fillOpacity=".07" stroke="#b56dff" strokeOpacity=".55" strokeDasharray="6 5" />
+          <path d="M18 20 27 15.5v9L18 29l-9-4.5v-9Z" fill="#b56dff" fillOpacity=".3" stroke="#b56dff" strokeWidth="1.3" />
+          <text x="36" y="27" fill="#e8ecff" fontSize="15" fontWeight="700" letterSpacing=".4">YatTerra</text>
+          <text x="14" y="55" fill="#b56dff" fontSize="13" fontWeight="600">{c.thesis.yatterraBox.title}</text>
+          <text x="14" y="74" fill="#7d93a8" fontSize="11.5">{c.thesis.yatterraBox.note}</text>
+        </motion.g>
+      </g>
+
+      <g transform="translate(70 140)">
+        <motion.g
+          initial={reduce ? { opacity: 1, scale: 1 } : { opacity: 0, scale: .55 }}
+          animate={shown ? { opacity: 1, scale: 1 } : undefined}
+          transition={{ duration: reduce ? .2 : .6, delay: reduce ? 0 : 1.3, ease: [.23, 1, .32, 1] }}
+          style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
+        >
+          <circle r="27" fill="#b56dff" fillOpacity=".1" className="terra-pulse-ring" />
+          <OrbitMark r={18} accent="#b56dff" />
+        </motion.g>
+      </g>
+
+      {shown && dots && !reduce && (
+        <motion.circle
+          r="5"
+          fill="#fff"
+          initial={{ opacity: 0 }}
+          animate={{ cx: [70, 70, 70], cy: [940, 250, 160], opacity: [0, 1, 0] }}
+          transition={{ duration: 4.2, repeat: Infinity, ease: 'linear', delay: 1.65 }}
+          filter="url(#terra-arc-glow-n)"
+        />
+      )}
+
+      <motion.g
+        initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+        animate={shown ? { opacity: 1 } : undefined}
+        transition={{ duration: .5, delay: reduce ? 0 : .3 }}
+      >
+        <text x="60" y="992" fill="#718792" fontSize="10" fontWeight="600" letterSpacing="1.6">SCARCE CAPABILITY</text>
+        <text x="390" y="14" textAnchor="end" fill="#9debff" fontSize="10" fontWeight="600" letterSpacing="1.6">UNIVERSAL UTILITY</text>
+      </motion.g>
+    </svg>
+  )
+}
+
 function InfrastructureArc() {
+  const c = useLandingCopy()
   const reduce = useReducedMotion()
   const arcRef = useRef<HTMLDivElement>(null)
   const shown = useInView(arcRef, { once: true, margin: '-90px' })
+  // 流动光点只在图在视口内时挂载,滚走即卸载,避免离屏后 framer-motion 仍逐帧跑无限动画。
+  const dots = useInView(arcRef, { once: false, margin: '80px' })
+  const narrow = useMediaQuery('(max-width: 640px)')
   const steps = [
     { x: 60, w: 190, y: 260 },
     { x: 290, w: 190, y: 195 },
@@ -272,18 +422,22 @@ function InfrastructureArc() {
       ref={arcRef}
       className="terra-history-art"
       role="img"
-      aria-label="每一项能力从少数机构专属走向每个人可用的阶梯图；承载智能的一级仍然缺失，由 YatTerra 补上"
+      aria-label={c.thesis.arcAria}
       initial={reduce ? { opacity: 1 } : { opacity: 0, y: 18 }}
       animate={shown ? { opacity: 1, y: 0 } : undefined}
       transition={{ duration: reduce ? .2 : .6, ease: [.23, 1, .32, 1] }}
     >
+      {narrow ? <InfrastructureArcNarrowSvg shown={shown} dots={dots} reduce={reduce} /> : (
       <svg viewBox="0 0 1000 370" fill="none" aria-hidden="true">
         <defs>
           <linearGradient id="terra-arc-path" x1="60" y1="260" x2="710" y2="130" gradientUnits="userSpaceOnUse">
-            <stop stopColor="#f6c889" /><stop offset=".5" stopColor="#67e8d0" /><stop offset="1" stopColor="#8ab4ec" />
+            <stop stopColor="#f6c889" /><stop offset=".5" stopColor="#5c8bff" /><stop offset="1" stopColor="#789bff" />
           </linearGradient>
           <linearGradient id="terra-arc-bar" x1="0" y1="0" x2="0" y2="1">
             <stop stopColor="#ffffff" stopOpacity=".14" /><stop offset="1" stopColor="#ffffff" stopOpacity=".02" />
+          </linearGradient>
+          <linearGradient id="terra-arc-area" x1="0" y1="0" x2="0" y2="1">
+            <stop stopColor="#5c8bff" stopOpacity=".1" /><stop offset="1" stopColor="#5c8bff" stopOpacity="0" />
           </linearGradient>
           <filter id="terra-arc-glow" x="-40%" y="-40%" width="180%" height="180%">
             <feGaussianBlur stdDeviation="5" result="b" />
@@ -299,10 +453,17 @@ function InfrastructureArc() {
           <path d="M60 344h910" stroke="#8fa5b0" strokeOpacity=".22" strokeWidth="1" />
           <path d="M44 344V40" stroke="#8fa5b0" strokeOpacity=".22" strokeWidth="1" />
           <path d="M44 44l-4 8h8ZM44 340l-4-8h8Z" fill="#8fa5b0" fillOpacity=".4" />
-          <text transform="translate(30 250) rotate(-90)" textAnchor="middle" fill="#718792" fontSize="10.5" fontWeight="600" letterSpacing="2.5">少数组织专属</text>
-          <text transform="translate(30 160) rotate(-90)" textAnchor="middle" fill="#9aebd2" fontSize="10.5" fontWeight="600" letterSpacing="2.5">每一个人</text>
+          <text transform="translate(30 250) rotate(-90)" textAnchor="middle" fill="#718792" fontSize="10.5" fontWeight="600" letterSpacing="2.5">{c.thesis.arcAxis.scarce}</text>
+          <text transform="translate(30 160) rotate(-90)" textAnchor="middle" fill="#9debff" fontSize="10.5" fontWeight="600" letterSpacing="2.5">{c.thesis.arcAxis.universal}</text>
         </motion.g>
 
+        <motion.path
+          d="M60 344V260H250L290 195H480L520 130H710V344Z"
+          fill="url(#terra-arc-area)"
+          initial={reduce ? { opacity: 1 } : { opacity: 0 }}
+          animate={shown ? { opacity: 1 } : undefined}
+          transition={{ duration: .8, delay: reduce ? 0 : 1.1 }}
+        />
         <motion.path
           d="M60 260H250L290 195H480L520 130H710"
           stroke="url(#terra-arc-path)"
@@ -316,7 +477,7 @@ function InfrastructureArc() {
         />
         <motion.path
           d="M710 130L790 65"
-          stroke="#c4b5fd" strokeOpacity=".55" strokeWidth="2.5" strokeDasharray="6 7" strokeLinecap="round"
+          stroke="#b56dff" strokeOpacity=".55" strokeWidth="2.5" strokeDasharray="6 7" strokeLinecap="round"
           className="terra-march"
           initial={reduce ? { opacity: 1 } : { opacity: 0 }}
           animate={shown ? { opacity: 1 } : undefined}
@@ -324,7 +485,7 @@ function InfrastructureArc() {
         />
         <motion.path
           d="M790 65H960"
-          stroke="#c4b5fd" strokeOpacity=".45" strokeWidth="3" strokeDasharray="6 7" strokeLinecap="round"
+          stroke="#b56dff" strokeOpacity=".45" strokeWidth="3" strokeDasharray="6 7" strokeLinecap="round"
           className="terra-march"
           initial={reduce ? { opacity: 1 } : { opacity: 0 }}
           animate={shown ? { opacity: 1 } : undefined}
@@ -332,11 +493,11 @@ function InfrastructureArc() {
         />
 
         {steps.map((step, index) => {
-          const item = utilitySteps[index]!
+          const item = { ...c.thesis.steps[index]!, ...stepMeta[index]! }
           const done = index < 3
           return (
             <motion.g
-              key={item.title}
+              key={item.era}
               initial={reduce ? { opacity: 1 } : { opacity: 0, y: 16 }}
               animate={shown ? { opacity: 1, y: 0 } : undefined}
               transition={{ duration: reduce ? .2 : .5, delay: reduce ? 0 : .55 + index * .14, ease: [.23, 1, .32, 1] }}
@@ -345,7 +506,8 @@ function InfrastructureArc() {
               <rect x={step.x} y={step.y} width={step.w} height="22" rx="11" fill={done ? item.color : 'transparent'} fillOpacity={done ? '.22' : '0'} stroke={item.color} strokeOpacity={done ? '.75' : '.55'} strokeWidth="1.6" strokeDasharray={done ? undefined : '6 5'} />
               {done && <rect x={step.x + 3} y={step.y + 3} width={step.w - 6} height="6" rx="3" fill="url(#terra-arc-bar)" />}
               <g transform={`translate(${step.x} ${step.y + 11})`}>
-                <circle r="17" fill="#0c1723" stroke={item.color} strokeOpacity=".85" strokeWidth="1.6" />
+                <circle r="24" fill={item.color} fillOpacity=".07" />
+                <circle r="17" fill="#0f1830" stroke={item.color} strokeOpacity=".85" strokeWidth="1.6" style={{ filter: `drop-shadow(0 0 6px ${item.color}66)` }} />
                 <UtilityGlyph glyph={item.glyph} color={item.color} />
               </g>
               <text x={step.x + 28} y={step.y - 30} fill={item.color} fontSize="11" fontWeight="700" letterSpacing="1.8">{item.era}</text>
@@ -358,7 +520,7 @@ function InfrastructureArc() {
                 </g>
               ) : (
                 <g transform={`translate(${step.x + step.w} ${step.y + 11})`}>
-                  <circle r="9" fill="#0c1723" stroke={item.color} strokeOpacity=".7" strokeDasharray="3 2" />
+                  <circle r="9" fill="#0f1830" stroke={item.color} strokeOpacity=".7" strokeDasharray="3 2" />
                   <path d="M-3.5-2.5v-1.5a3.5 3.5 0 0 1 7 0v1.5" stroke={item.color} strokeWidth="1.4" fill="none" />
                   <rect x="-4" y="-2.5" width="8" height="6.5" rx="1.5" fill={item.color} fillOpacity=".35" stroke={item.color} strokeWidth="1.2" />
                 </g>
@@ -374,14 +536,12 @@ function InfrastructureArc() {
             transition={{ duration: reduce ? .2 : .6, delay: reduce ? 0 : 1.3, ease: [.23, 1, .32, 1] }}
             style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
           >
-            <circle r="27" fill="#c4b5fd" fillOpacity=".1" className="terra-pulse-ring" />
-            <path d="M0 -18 15.6 -9v18L0 18-15.6 9V-9Z" fill="#0e2436" stroke="#c4b5fd" strokeWidth="1.8" />
-            <path d="M0 -18V0M0 0 15.6 -9M0 0-15.6 9" stroke="#c4b5fd" strokeOpacity=".4" />
-            <text y="4" textAnchor="middle" fill="#e8ecff" fontSize="10.5" fontWeight="800">YT</text>
+            <circle r="27" fill="#b56dff" fillOpacity=".1" className="terra-pulse-ring" />
+            <OrbitMark r={18} accent="#b56dff" />
           </motion.g>
         </g>
 
-        {shown && !reduce && (
+        {shown && dots && !reduce && (
           <>
             <motion.circle
               r="5"
@@ -393,7 +553,7 @@ function InfrastructureArc() {
             />
             <motion.circle
               r="4"
-              fill="#c4b5fd"
+              fill="#b56dff"
               initial={{ opacity: 0 }}
               animate={{ cx: [712, 750, 790, 955], cy: [130, 97, 65, 65], opacity: [0, .9, .9, 0] }}
               transition={{ duration: 2.6, repeat: Infinity, ease: 'linear', delay: 5.85 }}
@@ -408,11 +568,11 @@ function InfrastructureArc() {
             transition={{ duration: reduce ? .2 : .55, delay: reduce ? 0 : 1.45, ease: [.23, 1, .32, 1] }}
             style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
           >
-            <rect width="180" height="64" rx="14" fill="#c4b5fd" fillOpacity=".07" stroke="#c4b5fd" strokeOpacity=".55" strokeDasharray="6 5" />
-            <path d="M18 16 27 11.5v9L18 25l-9-4.5v-9Z" fill="#c4b5fd" fillOpacity=".3" stroke="#c4b5fd" strokeWidth="1.3" />
+            <rect width="180" height="64" rx="14" fill="#b56dff" fillOpacity=".07" stroke="#b56dff" strokeOpacity=".55" strokeDasharray="6 5" />
+            <path d="M18 16 27 11.5v9L18 25l-9-4.5v-9Z" fill="#b56dff" fillOpacity=".3" stroke="#b56dff" strokeWidth="1.3" />
             <text x="36" y="23" fill="#e8ecff" fontSize="13" fontWeight="700" letterSpacing=".4">YatTerra</text>
-            <text x="14" y="45" fill="#c4b5fd" fontSize="11.5" fontWeight="600">把缺失的一级补上</text>
-            <text x="14" y="58" fill="#7d93a8" fontSize="10">让承载智能的基础设施也普惠</text>
+            <text x="14" y="45" fill="#b56dff" fontSize="11.5" fontWeight="600">{c.thesis.yatterraBox.title}</text>
+            <text x="14" y="58" fill="#7d93a8" fontSize="10">{c.thesis.yatterraBox.note}</text>
           </motion.g>
         </g>
 
@@ -422,23 +582,28 @@ function InfrastructureArc() {
           transition={{ duration: .5, delay: reduce ? 0 : .3 }}
         >
           <text x="60" y="362" fill="#718792" fontSize="10" fontWeight="600" letterSpacing="1.6">SCARCE CAPABILITY</text>
-          <text x="960" y="362" textAnchor="end" fill="#9aebd2" fontSize="10" fontWeight="600" letterSpacing="1.6">UNIVERSAL UTILITY</text>
+          <text x="960" y="362" textAnchor="end" fill="#9debff" fontSize="10" fontWeight="600" letterSpacing="1.6">UNIVERSAL UTILITY</text>
         </motion.g>
       </svg>
-      <div className="terra-history-scale"><span>曾经：少数机构的能力</span><span>目标：每个人都能接上</span></div>
+      )}
+      <div className="terra-history-scale"><span>{c.thesis.scale.was}</span><span>{c.thesis.scale.goal}</span></div>
     </motion.div>
   )
 }
 
+const pointAccents: Record<string, string> = { device: '#5c8bff', network: '#789bff', idea: '#b56dff' }
+
 function StartingPointExplorer() {
-  const [activeKey, setActiveKey] = useState(startingPoints[0]!.key)
-  const active = startingPoints.find(item => item.key === activeKey) ?? startingPoints[0]!
+  const c = useLandingCopy()
+  const [activeKey, setActiveKey] = useState(c.explorer.points[0]!.key)
+  const active = c.explorer.points.find(item => item.key === activeKey) ?? c.explorer.points[0]!
+  const accent = pointAccents[active.key]!
   const reduce = useReducedMotion()
   return (
     <div className="terra-explorer">
-      <div className="terra-explorer-top"><div><p className="terra-eyebrow">TRY THE IDEA</p><h3>你从哪里开始？</h3></div><span className="terra-explorer-status"><span /> SYSTEM READY</span></div>
-      <div className="terra-explorer-tabs" role="tablist" aria-label="选择基础设施起点">
-        {startingPoints.map(item => (
+      <div className="terra-explorer-top"><div><p className="terra-eyebrow">TRY THE IDEA</p><h3>{c.explorer.title}</h3></div><span className="terra-explorer-status"><span /> {c.explorer.status}</span></div>
+      <div className="terra-explorer-tabs" role="tablist" aria-label={c.explorer.tabsAria}>
+        {c.explorer.points.map(item => (
           <button key={item.key} type="button" role="tab" aria-selected={activeKey === item.key} className={activeKey === item.key ? 'is-active' : ''} onClick={() => setActiveKey(item.key)}>
             {activeKey === item.key && <motion.span layoutId="terra-tab-glow" className="terra-tab-glow" transition={{ type: 'spring', stiffness: 400, damping: 36 }} />}
             <span className="terra-tab-label">{item.label}<small>{item.eyebrow}</small></span>
@@ -456,12 +621,12 @@ function StartingPointExplorer() {
             transition={{ duration: reduce ? .15 : .34, ease: [.23, 1, .32, 1] }}
           >
             <div className="terra-explorer-copy">
-              <p className="terra-eyebrow" style={{ color: active.accent }}>{active.eyebrow}</p>
+              <p className="terra-eyebrow" style={{ color: accent }}>{active.eyebrow}</p>
               <h4>{active.title}</h4>
               <p>{active.text}</p>
-              <div className="terra-explorer-nodes">{active.nodes.map((node, index) => <span key={node}><b style={{ backgroundColor: active.accent }} />{node}{index < active.nodes.length - 1 && <ArrowRight size={13} />}</span>)}</div>
+              <div className="terra-explorer-nodes">{active.nodes.map((node, index) => <span key={node}><b style={{ backgroundColor: accent }} />{node}{index < active.nodes.length - 1 && <ArrowRight size={13} />}</span>)}</div>
             </div>
-            <ExplorerIllustration kind={active.key} accent={active.accent} />
+            <ExplorerIllustration kind={active.key} accent={accent} />
           </motion.div>
         </AnimatePresence>
       </div>
@@ -475,6 +640,8 @@ export default function Landing() {
   const reduce = useReducedMotion()
   const heroRef = useRef<HTMLElement>(null)
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn)
+  const c = useLandingCopy()
+  const lang = useLandingLang()
 
   useEffect(() => {
     document.documentElement.classList.add('landing-document')
@@ -484,6 +651,13 @@ export default function Landing() {
       document.body.classList.remove('landing-document')
     }
   }, [])
+
+  // 首页语言跟随切换;离开时还原(其余路由各自设置 lang)
+  useEffect(() => {
+    const prev = document.documentElement.lang
+    document.documentElement.lang = lang
+    return () => { document.documentElement.lang = prev }
+  }, [lang])
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24)
@@ -495,14 +669,14 @@ export default function Landing() {
   const motionOff = paused || Boolean(reduce)
 
   // Hero visual parallax — the topology tilts gently toward the cursor.
-  const onHeroMove = (event: React.PointerEvent<HTMLElement>) => {
+  const onHeroMove = useRafPointer((event) => {
     if (motionOff || event.pointerType !== 'mouse' || !heroRef.current) return
     const rect = heroRef.current.getBoundingClientRect()
     const px = (event.clientX - rect.left) / rect.width - 0.5
     const py = (event.clientY - rect.top) / rect.height - 0.5
     heroRef.current.style.setProperty('--hero-px', `${px * 16}px`)
     heroRef.current.style.setProperty('--hero-py', `${py * 12}px`)
-  }
+  })
   const onHeroLeave = () => {
     if (!heroRef.current) return
     heroRef.current.style.setProperty('--hero-px', '0px')
@@ -515,9 +689,16 @@ export default function Landing() {
       <ScrollProgress />
       <header className={`terra-header${scrolled ? ' is-scrolled' : ''}`}>
         <div className="terra-container terra-header-inner">
-          <Link to="/" className="terra-brand" aria-label="YatTerra 首页"><span className="terra-brand-mark"><Orbit size={24} /></span><span>YatTerra<small>INFRASTRUCTURE, RECONNECTED.</small></span></Link>
-          <nav aria-label="公开页面导航"><a href="#thesis">为什么现在</a><a href="#why">断层</a><a href="#layers">怎么工作</a><a href="#scenarios">场景</a></nav>
-          <Link to={isLoggedIn ? "/console" : "/login"} className="terra-header-login">进入控制台 <ArrowRight size={15} /></Link>
+          <Link to="/" className="terra-brand" aria-label={c.brandAria}><span className="terra-brand-mark"><Orbit size={24} /></span><span>YatTerra<small>INFRASTRUCTURE, RECONNECTED.</small></span></Link>
+          <nav aria-label="Landing"><a href="#thesis">{c.nav.thesis}</a><a href="#why">{c.nav.why}</a><a href="#layers">{c.nav.layers}</a><a href="#scenarios">{c.nav.scenarios}</a><a href="#reports">{c.nav.reports}</a></nav>
+          <div className="terra-header-side">
+            <div className="terra-lang-switch" role="group" aria-label="Language / 语言">
+              {LANGS.map(item => (
+                <button key={item.id} type="button" aria-pressed={lang === item.id} title={item.label} className={lang === item.id ? 'is-active' : ''} onClick={() => setLandingLang(item.id)}>{item.short}</button>
+              ))}
+            </div>
+            <Link to={isLoggedIn ? "/console" : "/login"} className="terra-header-login">{c.login} <ArrowRight size={15} /></Link>
+          </div>
         </div>
       </header>
       <main id="terra-main" className="terra-main">
@@ -525,26 +706,26 @@ export default function Landing() {
           <div className="terra-hero-grid" aria-hidden="true" />
           <div className="terra-container terra-hero-layout">
             <div className="terra-hero-copy">
-              <Reveal><div className="terra-eyebrow"><span className="terra-status-dot" /> BUILT FOR THE REAL WORLD</div></Reveal>
-              <HeroTitle reduce={reduce} lines={['更高级的生产力，', '应该属于每一个人。']} />
-              <Reveal delay={.12}><p className="terra-hero-description">蒸汽机、电力、计算机，都曾经只属于少数组织，后来成为每个人日常生活的一部分。AI 正在完成下一次普惠，而它需要一层新的基础设施。</p></Reveal>
-              <Reveal delay={.18}><div className="terra-actions"><ShinyButton to={isLoggedIn ? "/console" : "/login"} className="terra-button-primary">进入 YatTerra <ArrowRight size={17} /></ShinyButton><ShinyButton href="#thesis" className="terra-button-secondary">理解这件事 <ArrowDown size={16} /></ShinyButton></div></Reveal>
-              <Reveal delay={.24}><div className="terra-promises"><span><Check size={14} />普惠性的技术基础设施</span><span><Check size={14} />公有云与私有云之间</span></div></Reveal>
+              <Reveal><div className="terra-eyebrow"><span className="terra-status-dot" /> {c.hero.eyebrow}</div></Reveal>
+              <HeroTitle reduce={reduce} lines={c.hero.title} />
+              <Reveal delay={.12}><p className="terra-hero-description">{c.hero.description}</p></Reveal>
+              <Reveal delay={.18}><div className="terra-actions"><ShinyButton to={isLoggedIn ? "/console" : "/login"} className="terra-button-primary">{c.hero.primary} <ArrowRight size={17} /></ShinyButton><ShinyButton href="#thesis" className="terra-button-secondary">{c.hero.secondary} <ArrowDown size={16} /></ShinyButton></div></Reveal>
+              <Reveal delay={.24}><div className="terra-promises">{c.hero.promises.map(promise => <span key={promise}><Check size={14} />{promise}</span>)}</div></Reveal>
             </div>
             <Reveal delay={.12} pop className="terra-hero-visual"><NetworkIllustration /></Reveal>
           </div>
-          <div className="terra-container terra-hero-bottom"><span>从少数人的机器，到每个人的基础设施。</span><div><span>PRODUCTION POWER</span><span className="terra-bottom-line" /><span>EVERYWHERE</span></div><button type="button" className="terra-motion-toggle" aria-pressed={motionOff} disabled={Boolean(reduce)} onClick={() => setPaused(value => !value)}>{motionOff ? <Play size={12} /> : <Pause size={12} />}{reduce ? '已减少动态' : paused ? '播放动效' : '暂停动效'}</button></div>
+          <div className="terra-container terra-hero-bottom"><span>{c.hero.bottom}</span><div><span>PRODUCTION POWER</span><span className="terra-bottom-line" /><span>EVERYWHERE</span></div><button type="button" className="terra-motion-toggle" aria-pressed={motionOff} disabled={Boolean(reduce)} onClick={() => setPaused(value => !value)}>{motionOff ? <Play size={12} /> : <Pause size={12} />}{reduce ? c.hero.motion.reduced : paused ? c.hero.motion.paused : c.hero.motion.playing}</button></div>
         </section>
 
         <section id="thesis" className="terra-section terra-section-tinted terra-thesis-section">
           <div className="terra-container">
             <SectionIntro
-              eyebrow="00 — THE LONG ARC"
-              lines={['每一项能力成为基础设施，', '都要走完同一段路。']}
-              desc="从少数机构的专属能力，到每个人都能接上的公共设施。动力走完了，计算走完了，容量也走完了——智能的承载层，还没有。"
+              eyebrow={c.thesis.eyebrow}
+              lines={c.thesis.lines}
+              desc={c.thesis.desc}
             />
             <InfrastructureArc />
-            <Reveal delay={.06}><div className="terra-thesis-note"><span className="terra-thesis-mark">→</span><p>AI 的下一步，不只是让更多人调用模型。<strong>而是让更多人拥有承载模型、工作流与创造的基础设施。</strong></p></div></Reveal>
+            <Reveal delay={.06}><div className="terra-thesis-note"><span className="terra-thesis-mark">→</span><p>{c.thesis.noteLead}<strong>{c.thesis.noteStrong}</strong></p></div></Reveal>
           </div>
         </section>
 
@@ -557,49 +738,66 @@ export default function Landing() {
         <section id="why" className="terra-section terra-section-tinted">
           <div className="terra-container">
             <SectionIntro
-              eyebrow="01 — THE MISSING LAYER"
-              lines={['AI 正在走向每一个人，', '基础设施却没有跟上。']}
-              desc="传统公有云主要服务企业、政府、医院和研究机构，解决的是“非计算机专业客户如何不必考虑运维”。但 AI 时代的创新正在不可逆地碎片化、个人化。"
+              eyebrow={c.why.eyebrow}
+              lines={c.why.lines}
+              desc={c.why.desc}
             />
-            <div className="terra-constraint-grid">{constraints.map((item, index) => (
-              <Reveal key={item.title} delay={index * .07} pop>
-                <TiltCard className="terra-card-slot">
-                  <article className="terra-constraint">
-                    <div className="terra-constraint-heading"><item.icon size={23} /><span>{item.label}</span></div>
-                    <h3>{item.title}</h3>
-                    <p>{item.description}</p>
-                    <div className="terra-constraint-path">{item.detail}</div>
-                  </article>
-                </TiltCard>
-              </Reveal>
-            ))}</div>
-            <Reveal pop><div className="terra-gap-callout"><div><span className="terra-eyebrow">THE GAP</span><h3>云很贵，设备却在内网吃灰。</h3></div><p>OPC、初创公司、小实验室、兴趣团体与家庭用户正在遍地出现，却没有与他们的规模、预算和现实资源相匹配的云基础设施。</p><GapIllustration /></div></Reveal>
+            <div className="terra-constraint-grid">{c.why.constraints.map((item, index) => {
+              const Icon = constraintIcons[index]!
+              return (
+                <Reveal key={item.label} delay={index * .07} pop>
+                  <TiltCard className="terra-card-slot">
+                    <article className="terra-constraint">
+                      <div className="terra-constraint-heading"><Icon size={23} /><span>{item.label}</span></div>
+                      <h3>{item.title}</h3>
+                      <p>{item.description}</p>
+                      <div className="terra-constraint-path">{item.detail}</div>
+                    </article>
+                  </TiltCard>
+                </Reveal>
+              )
+            })}</div>
+            <Reveal pop><div className="terra-gap-callout"><div><span className="terra-eyebrow">{c.why.gap.eyebrow}</span><h3>{c.why.gap.title}</h3></div><p>{c.why.gap.text}</p><GapIllustration /></div></Reveal>
           </div>
         </section>
 
         <section id="layers" className="terra-section">
           <div className="terra-container">
             <SectionIntro
-              eyebrow="02 — ONE COHERENT FABRIC"
-              lines={['不是把云做小，', '而是把基础设施做普惠。']}
-              desc="YatTerra 把连接、编排、AI 与运维组织成一层统一的技术土壤，让真实设备也能拥有平台化的可靠性。"
+              eyebrow={c.layers.eyebrow}
+              lines={c.layers.lines}
+              desc={c.layers.desc}
             />
             <Reveal><Architecture /></Reveal>
-            <Reveal><div className="terra-workflow"><div className="terra-workflow-copy"><p className="terra-eyebrow">FROM IDEA TO SERVICE</p><h3>给想法一条<br />完整的落地路径。</h3><p>从代码、容器到模型服务，<br />把日常开发接进同一套基础设施。</p><div className="terra-tags"><span>开发</span><ArrowRight size={14} /><span>部署</span><ArrowRight size={14} /><span>运行</span></div></div><WorkflowIllustration /></div></Reveal>
+            <Reveal><div className="terra-workflow"><div className="terra-workflow-copy"><p className="terra-eyebrow">{c.layers.workflow.eyebrow}</p><h3>{c.layers.workflow.title[0]}<br />{c.layers.workflow.title[1]}</h3><p>{c.layers.workflow.text[0]}<br />{c.layers.workflow.text[1]}</p><div className="terra-tags"><span>{c.layers.workflow.tags[0]}</span><ArrowRight size={14} /><span>{c.layers.workflow.tags[1]}</span><ArrowRight size={14} /><span>{c.layers.workflow.tags[2]}</span></div></div><WorkflowIllustration /></div></Reveal>
           </div>
         </section>
 
         <section className="terra-section terra-section-tinted">
           <div className="terra-container">
             <SectionIntro
-              eyebrow="03 — A THIRD PATH"
-              lines={['不替代公有云，', '也不鼓励复杂自建。']}
-              desc="公有云解决的是托管与规模，私有云解决的是控制与成本。YatTerra 在两者之间做 tradeoff：连接真实设备，复用平台能力，把可靠性带给更小、更分散的创造者。"
+              eyebrow={c.thirdPath.eyebrow}
+              lines={c.thirdPath.lines}
+              desc={c.thirdPath.desc}
             />
             <div className="terra-choice-grid">
-              <Reveal pop delay={0}><TiltCard className="terra-card-slot"><article className="terra-choice"><span className="terra-choice-index">01 / PUBLIC CLOUD</span><Globe2 size={30} /><h3>公有云</h3><p>能力完整、弹性强，默认用户拥有企业级预算、规模与运维需求。</p><div className="terra-choice-foot">规模化供给 · 长期账单</div></article></TiltCard></Reveal>
-              <Reveal pop delay={.08}><TiltCard className="terra-card-slot"><article className="terra-choice terra-choice-featured"><span className="terra-choice-index">02 / THE MISSING MIDDLE</span><Orbit size={32} /><h3>YatTerra</h3><p>让内网设备、闲置算力与本地数据成为可靠服务，同时获得连接、编排和运维能力。</p><div className="terra-choice-foot"><Check size={14} /> 更低门槛 · 平台级可靠性</div></article></TiltCard></Reveal>
-              <Reveal pop delay={.16}><TiltCard className="terra-card-slot"><article className="terra-choice"><span className="terra-choice-index">03 / PRIVATE CLOUD</span><Wrench size={29} /><h3>私有云 / 下云</h3><p>控制权更强，但需要自行承担网络、机房、集群与长期运维的全部复杂度。</p><div className="terra-choice-foot">自主控制 · 运维负担</div></article></TiltCard></Reveal>
+              {c.thirdPath.choices.map((item, index) => {
+                const Icon = choiceIcons[index]!
+                const featured = index === 1
+                return (
+                  <Reveal key={item.index} pop delay={index * .08}>
+                    <TiltCard className="terra-card-slot">
+                      <article className={`terra-choice${featured ? ' terra-choice-featured' : ''}`}>
+                        <span className="terra-choice-index">{item.index}</span>
+                        <Icon size={featured ? 32 : 30} />
+                        <h3>{item.title}</h3>
+                        <p>{item.text}</p>
+                        <div className="terra-choice-foot">{featured && <Check size={14} />} {item.foot}</div>
+                      </article>
+                    </TiltCard>
+                  </Reveal>
+                )
+              })}
             </div>
           </div>
         </section>
@@ -607,12 +805,12 @@ export default function Landing() {
         <section id="scenarios" className="terra-section">
           <div className="terra-container">
             <SectionIntro
-              eyebrow="04 — MANY PLACES, ONE PLATFORM"
-              lines={['创新会发生在任何地方，', '基础设施也应该在那里。']}
-              desc="校园、家庭、工作室、实验室与小团队，只是不同的起点。底层需要的是同一条连接资源、模型与人的路径。"
+              eyebrow={c.scenarios.eyebrow}
+              lines={c.scenarios.lines}
+              desc={c.scenarios.desc}
             />
-            <div className="terra-scenario-grid">{scenarios.map((item, index) => (
-              <Reveal key={item.title} delay={index * .07} pop>
+            <div className="terra-scenario-grid">{c.scenarios.items.map((item, index) => (
+              <Reveal key={item.label} delay={index * .07} pop>
                 <TiltCard className="terra-card-slot">
                   <article className="terra-scenario">
                     <div className="terra-scenario-label">{item.label}<span>↗</span></div>
@@ -625,18 +823,40 @@ export default function Landing() {
           </div>
         </section>
 
+        <section id="reports" className="terra-section terra-section-tinted">
+          <div className="terra-container">
+            <SectionIntro
+              eyebrow={c.reportsSection.eyebrow}
+              lines={c.reportsSection.lines}
+              desc={c.reportsSection.desc}
+            />
+            <div className="terra-report-grid">{reports.map((item, index) => (
+              <Reveal key={item.title} delay={index * .07} pop>
+                <TiltCard className="terra-card-slot">
+                  <a className="terra-report" href={item.href}>
+                    <div className="terra-report-heading"><FileText size={22} /><span>{item.label}</span><span className="terra-report-date">{item.date}</span></div>
+                    <h3>{item.title}</h3>
+                    <p>{item.desc}</p>
+                    <div className="terra-report-foot"><div className="terra-tags">{item.tags.map(tag => <span key={tag}>{tag}</span>)}</div><span className="terra-report-more">{c.reportsSection.readMore} <ArrowRight size={14} /></span></div>
+                  </a>
+                </TiltCard>
+              </Reveal>
+            ))}</div>
+          </div>
+        </section>
+
         <section className="terra-closing">
           <div className="terra-container">
             <Reveal><div className="terra-closing-symbol" aria-hidden="true"><span /><span /><Orbit size={40} /></div></Reveal>
             <Reveal delay={.06}><RootsIllustration /></Reveal>
-            <Reveal delay={.1}><p className="terra-eyebrow">YATTERRA — THE SOIL FOR AI</p></Reveal>
-            <StaggerHeading lines={['让每一个想法，', '都能拥有自己的基础设施。']} reduce={reduce} />
-            <Reveal delay={.12}><p className="terra-closing-description">Yat 来自 Sun Yat-sen University。Terra 是大地，是土壤，也是让万物生长的基础。我们不替代云，我们让更多创造拥有可以扎根的土壤。</p></Reveal>
-            <Reveal delay={.18}><ShinyButton to={isLoggedIn ? "/console" : "/login"} className="terra-button-primary">进入 YatTerra <ArrowRight size={17} /></ShinyButton></Reveal>
+            <Reveal delay={.1}><p className="terra-eyebrow">{c.closing.eyebrow}</p></Reveal>
+            <StaggerHeading lines={c.closing.lines} reduce={reduce} />
+            <Reveal delay={.12}><p className="terra-closing-description">{c.closing.description}</p></Reveal>
+            <Reveal delay={.18}><ShinyButton to={isLoggedIn ? "/console" : "/login"} className="terra-button-primary">{c.closing.primary} <ArrowRight size={17} /></ShinyButton></Reveal>
           </div>
         </section>
       </main>
-      <footer className="terra-footer terra-container"><Link to="/" className="terra-brand"><Orbit size={21} /> YatTerra</Link><span>为真实世界构建的 AI-native 基础设施</span><span>© {new Date().getFullYear()} YatTerra</span></footer>
+      <footer className="terra-footer terra-container"><Link to="/" className="terra-brand"><Orbit size={21} /> YatTerra</Link><span>{c.footer}</span><span>© {new Date().getFullYear()} YatTerra</span></footer>
     </div>
   )
 }

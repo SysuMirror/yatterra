@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ShieldCheck, FolderOpen, Swords, ChevronRight, AlertTriangle, Ban, Crosshair, Server, HardDrive, Database, Bot, Activity } from 'lucide-react'
+import { ShieldCheck, ShieldQuestion, FolderOpen, Swords, ChevronRight, AlertTriangle, Ban, Crosshair, Server, HardDrive, Database, Bot, Activity } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -9,7 +9,9 @@ import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { SkeletonCard } from '@/components/ui/Skeleton'
+import { Button } from '@/components/ui/Button'
 import { api } from '@/api/client'
+import { useAuth } from '@/hooks/useAuth'
 import { formatDatetime } from '@/lib/format'
 
 function actionVariant(action: string): 'bad' | 'ok' | 'accent' | 'muted' {
@@ -23,8 +25,10 @@ function actionVariant(action: string): 'bad' | 'ok' | 'accent' | 'muted' {
 export default function OpsOverview() {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
+  const { hasPerm, role } = useAuth()
+  const canApprove = hasPerm('infra.host') || role === 'admin' || role === 'super'
 
-  const { data: audit, isLoading: auditLoading } = useQuery<any>({
+  const { data: audit, isLoading: auditLoading, error: auditError, refetch: refetchAudit } = useQuery<any>({
     queryKey: ['audit-recent'],
     queryFn: () => api.get(`/audit?per_page=5&since=${today.toISOString()}`),
     staleTime: 10_000,
@@ -88,16 +92,28 @@ export default function OpsOverview() {
 
       {/* AI Insight */}
       {!auditLoading && (
+        <div data-onboarding-target="ops-insight" className="mb-5">
         <AiInsightPanel
           page="ops"
           title="运维概览洞察"
-          className="mb-5"
           context={`运维概览: 今日审计 ${(audit?.total ?? 0)} 条, 威胁 ${threat?.attacks ?? 0} 次攻击/${threat?.banned ?? 0} 封禁, 主机负载 ${host?.load?.load1 ?? '?'}\n最近审计:\n${(audit?.entries ?? []).slice(0, 10).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor ?? '?'} ${r.action ?? ''}`).join('\n')}`}
         />
+        </div>
+      )}
+
+      {/* Error state */}
+      {auditError && (
+        <Card padding="lg" className="mb-6">
+          <div className="flex items-center gap-3 flex-wrap">
+            <AlertTriangle size={16} className="text-bad flex-shrink-0" />
+            <span className="text-sm text-bad font-medium">运维数据加载失败：{(auditError as any)?.message || '网络异常'}</span>
+            <Button variant="secondary" size="sm" className="ml-auto" onClick={() => refetchAudit()}>重试</Button>
+          </div>
+        </Card>
       )}
 
       {/* Core metrics */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
+      <div data-onboarding-target="ops-stats" className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
         {auditLoading ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
@@ -112,7 +128,7 @@ export default function OpsOverview() {
 
       {/* System health */}
       {host && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="ops-health" padding="lg" className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Server size={16} className="text-ok" />
@@ -152,7 +168,7 @@ export default function OpsOverview() {
       )}
 
       {/* Service status */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="ops-services" padding="lg" className="mb-6">
         <div className="flex items-center gap-2 mb-4">
           <Activity size={16} className="text-accent" />
           <h2 className="text-sm font-semibold">服务状态</h2>
@@ -167,7 +183,7 @@ export default function OpsOverview() {
 
       {/* LLM usage summary */}
       {llmUsage && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="ops-llm" padding="lg" className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Bot size={16} className="text-accent" />
@@ -199,7 +215,7 @@ export default function OpsOverview() {
       )}
 
       {/* Recent audit */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="ops-recent-audit" padding="lg" className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <ShieldCheck size={16} className="text-accent" />
@@ -230,7 +246,7 @@ export default function OpsOverview() {
       </Card>
 
       {/* Threat summary */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="ops-threat" padding="lg" className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Swords size={16} className="text-bad" />
@@ -254,6 +270,9 @@ export default function OpsOverview() {
 
       {/* Quick actions */}
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {canApprove && (
+          <QuickAction icon={<ShieldQuestion size={18} />} label="审批队列" desc="AI 高危写动作审批" to="/ops/approvals" />
+        )}
         <QuickAction icon={<ShieldCheck size={18} />} label="查看审计" desc="完整操作审计日志" to="/ops/audit" />
         <QuickAction icon={<FolderOpen size={18} />} label="浏览共享" desc="跨 Pod 共享文件" to="/ops/shared" />
         <QuickAction icon={<Swords size={18} />} label="攻防地图" desc="实时威胁态势" to="/threat-map" />

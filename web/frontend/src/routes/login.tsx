@@ -4,14 +4,7 @@ import { motion } from 'framer-motion'
 import { ArrowLeft, ArrowUpRight, Fingerprint, KeyRound, LockKeyhole, Sparkles, UserRound } from 'lucide-react'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-
-const OAUTH_ERROR_MESSAGES: Record<string, string> = {
-  ssemarket: 'SSE Market 授权失败',
-  unisso: 'UniSSO 授权失败',
-  missing_params: 'OAuth 回调参数缺失',
-  invalid_state: 'OAuth state 验证失败，请重试',
-  no_token: '未获取到授权令牌',
-}
+import { LANGS, setLandingLang, useLandingCopy, useLandingLang } from './landing.i18n'
 
 function TerraMark({ small = false }: { small?: boolean }) {
   const size = small ? 40 : 58
@@ -75,6 +68,15 @@ export default function Login() {
   const navigate = useNavigate()
   const { login, isLoggedIn } = useAuthStore()
   const [searchParams] = useSearchParams()
+  const c = useLandingCopy()
+  const lang = useLandingLang()
+
+  // 登录页语言跟随 landing 的三语切换;离开时还原(其余路由各自设置 lang)
+  useEffect(() => {
+    const prev = document.documentElement.lang
+    document.documentElement.lang = lang
+    return () => { document.documentElement.lang = prev }
+  }, [lang])
 
   // Already logged in: go straight to the console instead of showing the
   // login form again (fixes login-seems-forgotten after PWA relaunch).
@@ -86,10 +88,11 @@ export default function Login() {
     const oauthError = searchParams.get('oauth_error')
     if (oauthError) {
       const detail = searchParams.get('detail')
-      const base = OAUTH_ERROR_MESSAGES[oauthError] || `授权失败 (${oauthError})`
+      const o = c.loginPage.oauth
+      const base = (o as Record<string, string>)[oauthError] || `${o.generic} (${oauthError})`
       setError(detail ? `${base}: ${detail}` : base)
     }
-  }, [searchParams])
+  }, [searchParams, c])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -119,7 +122,7 @@ export default function Login() {
       login(data.user, data.role, data.perms || [])
       navigate('/console')
     } catch (err: any) {
-      setError(err.message || '登录失败')
+      setError(err.message || c.loginPage.errLogin)
     } finally {
       setLoading(false)
     }
@@ -133,7 +136,7 @@ export default function Login() {
       login(data.user, data.role, data.perms || [])
       navigate('/console')
     } catch (err: any) {
-      setError(err.message || '游客登录失败')
+      setError(err.message || c.loginPage.errGuest)
     } finally {
       setLoading(false)
     }
@@ -164,6 +167,21 @@ export default function Login() {
         }}
       />
 
+      <div className="absolute right-5 top-5 z-20 flex items-center gap-1 rounded-full border border-white/[.12] bg-white/[.05] p-1 backdrop-blur-md sm:right-8 sm:top-8" role="group" aria-label="Language / 语言">
+        {LANGS.map(item => (
+          <button
+            key={item.id}
+            type="button"
+            aria-pressed={lang === item.id}
+            title={item.label}
+            onClick={() => setLandingLang(item.id)}
+            className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${lang === item.id ? 'bg-cyan-300/15 text-cyan-100' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            {item.short}
+          </button>
+        ))}
+      </div>
+
       <div className="relative mx-auto grid min-h-screen w-full max-w-[1240px] items-center gap-10 px-5 py-8 sm:px-10 lg:grid-cols-[1fr_440px] lg:gap-20 lg:px-14">
         <section className="relative hidden min-h-[620px] flex-col justify-between py-4 lg:flex">
           <div className="flex items-center gap-3">
@@ -177,15 +195,15 @@ export default function Login() {
             <div className="relative z-10">
               <p className="mb-5 flex items-center gap-2 text-xs font-medium uppercase tracking-[.28em] text-cyan-200/70">
                 <Sparkles size={14} />
-                AI infrastructure, reimagined
+                {c.loginPage.eyebrow}
               </p>
               <h1 className="max-w-xl text-5xl font-semibold leading-[1.04] text-white xl:text-[4.4rem]">
-                让每一个
+                {c.loginPage.heroTitle[0]}
                 <br />
-                <span className="bg-gradient-to-r from-cyan-200 via-blue-300 to-violet-300 bg-clip-text text-transparent">想法落地。</span>
+                <span className="bg-gradient-to-r from-cyan-200 via-blue-300 to-violet-300 bg-clip-text text-transparent">{c.loginPage.heroTitle[1]}</span>
               </h1>
               <p className="mt-7 max-w-md text-[15px] leading-7 text-slate-400">
-                连接集群、模型与工作负载。YatTerra 将复杂的基础设施，收敛成一个清晰而可靠的控制面。
+                {c.loginPage.heroDesc}
               </p>
             </div>
           </div>
@@ -201,10 +219,10 @@ export default function Login() {
               }
             />
             <span className={health === 'error' ? 'text-amber-200/90' : undefined}>
-              {health === 'checking' ? '检查中…' : health === 'ok' ? '所有系统运行正常' : '部分服务异常'}
+              {health === 'checking' ? c.loginPage.healthChecking : health === 'ok' ? c.loginPage.healthOk : c.loginPage.healthError}
             </span>
             <span className="mx-1 text-slate-700">/</span>
-            <span>安全连接 · 私有部署</span>
+            <span>{c.loginPage.secure}</span>
           </div>
         </section>
 
@@ -223,8 +241,8 @@ export default function Login() {
             <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-200/20 bg-cyan-300/[.08]">
               <LockKeyhole size={20} className="text-cyan-200" />
             </div>
-            <h2 className="text-[28px] font-semibold">登录 YatTerra</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">登录控制台，开始管理你的集群、模型与工作负载。</p>
+            <h2 className="text-[28px] font-semibold">{c.loginPage.cardTitle}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">{c.loginPage.cardDesc}</p>
           </div>
 
           {error && (
@@ -239,38 +257,38 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <label className="block">
-              <span className="mb-2 block text-xs font-medium tracking-wide text-slate-300">用户名</span>
+              <span className="mb-2 block text-xs font-medium tracking-wide text-slate-300">{c.loginPage.userLabel}</span>
               <div className="relative">
                 <UserRound size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input required type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus placeholder="输入用户名" className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
+                <input required type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus placeholder={c.loginPage.userPlaceholder} className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
               </div>
             </label>
 
             <label className="block">
-              <span className="mb-2 block text-xs font-medium tracking-wide text-slate-300">密码</span>
+              <span className="mb-2 block text-xs font-medium tracking-wide text-slate-300">{c.loginPage.passLabel}</span>
               <div className="relative">
                 <KeyRound size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="输入密码" className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
+                <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={c.loginPage.passPlaceholder} className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
               </div>
             </label>
 
             <motion.button type="submit" disabled={loading} className="group flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-200 to-blue-300 text-sm font-semibold text-[#071021] shadow-[0_10px_28px_rgba(91,195,255,.16)] transition duration-200 hover:brightness-110 disabled:cursor-wait disabled:opacity-55" whileTap={{ scale: .975 }}>
-              {loading ? '正在验证...' : '登录控制台'}
+              {loading ? c.loginPage.submitting : c.loginPage.submit}
               {!loading && <ArrowUpRight size={16} className="transition-transform duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />}
             </motion.button>
           </form>
 
           <motion.button type="button" onClick={handleGuestLogin} disabled={loading} className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/[.1] bg-white/[.035] text-sm font-medium text-slate-300 transition duration-200 hover:bg-white/[.08] hover:text-white disabled:cursor-wait disabled:opacity-55" whileTap={{ scale: .975 }}>
             <Fingerprint size={16} className="text-slate-400" />
-            先看看，不注册
+            {c.loginPage.guest}
           </motion.button>
-          <p className="mt-2.5 text-center text-xs leading-5 text-slate-500">以游客身份进入控制台，无需账号。</p>
+          <p className="mt-2.5 text-center text-xs leading-5 text-slate-500">{c.loginPage.guestHint}</p>
 
-          <p className="mt-4 text-center text-xs leading-5 text-slate-500">还没有账号？请联系管理员开通，或先用游客身份体验。</p>
+          <p className="mt-4 text-center text-xs leading-5 text-slate-500">{c.loginPage.noAccount}</p>
 
           <div className="my-6 flex items-center gap-3 text-[11px] text-slate-600">
             <span className="h-px flex-1 bg-white/[.09]" />
-            其他登录方式
+            {c.loginPage.otherMethods}
             <span className="h-px flex-1 bg-white/[.09]" />
           </div>
 
@@ -287,7 +305,7 @@ export default function Login() {
 
           <Link to="/" className="mt-5 flex items-center justify-center gap-1.5 text-xs text-slate-500 transition-colors hover:text-cyan-200">
             <ArrowLeft size={14} />
-            返回 YatTerra 项目首页
+            {c.loginPage.backHome}
           </Link>
         </motion.section>
       </div>

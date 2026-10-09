@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
 import { Routes, Route, Outlet, useNavigate, useLocation } from 'react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import AuthLayout from './routes/_auth.layout'
 import MainLayout from './routes/_layout'
 import { api, getCsrfToken } from './api/client'
@@ -13,9 +13,12 @@ import { setAppBadge, clearAppBadge } from './lib/badge'
 // ── Lazy-loaded pages (code splitting) ──
 const Login = lazy(() => import('./routes/login'))
 const Landing = lazy(() => import('./routes/landing'))
+const Reports = lazy(() => import('./routes/reports'))
 const Dashboard = lazy(() => import('./routes/index'))
 const PodList = lazy(() => import('./routes/pods/index'))
 const PodDetail = lazy(() => import('./routes/pods/$name'))
+const PodIdePage = lazy(() => import('./routes/pods/ide'))
+const IdeLandingPage = lazy(() => import('./routes/ide'))
 const HostPage = lazy(() => import('./routes/infra/host'))
 const StoragePage = lazy(() => import('./routes/infra/storage'))
 const DatabasesPage = lazy(() => import('./routes/infra/databases'))
@@ -29,6 +32,7 @@ const OpsOverview = lazy(() => import('./routes/ops/index'))
 const GpuPage = lazy(() => import('./routes/infra/gpu'))
 const FleetPage = lazy(() => import('./routes/infra/fleet'))
 const AuditPage = lazy(() => import('./routes/ops/audit'))
+const ApprovalsPage = lazy(() => import('./routes/ops/approvals'))
 const SharedPage = lazy(() => import('./routes/ops/shared'))
 const UsersPage = lazy(() => import('./routes/users'))
 const ProfilePage = lazy(() => import('./routes/profile'))
@@ -59,6 +63,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     queryKey: ['auth-check'],
     queryFn: () => api.get<{ is_logged_in: boolean; user: string; user_id?: string | null; username?: string | null; display_name?: string | null; avatar_url?: string | null; display_source?: string | null; role: string; perms: string[] }>('/auth/me'),
     staleTime: 300_000,       // 5 min — don't re-check on every navigation
+    refetchInterval: 120_000, // PWA 长驻后台也要能发现 session 失效
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,  // only re-check on network reconnect
     retry: 1,                  // one retry absorbs a transient blip
@@ -67,11 +72,14 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   // Guards against a re-check loop when the server keeps saying "not logged in".
   const recheckRef = useRef(false)
+  const queryClient = useQueryClient()
   const leaveForLogin = useCallback(() => {
     logout()
     clearAppBadge()
+    // 清缓存防止假登录态复活(同 handleLogout)
+    queryClient.clear()
     if (location.pathname !== '/login') navigate('/login', { replace: true })
-  }, [logout, navigate, location.pathname])
+  }, [logout, navigate, location.pathname, queryClient])
 
   // Badge: poll for Pods that are currently down
   const { data: badgeData } = useQuery({
@@ -142,6 +150,22 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     }
   }, [isError, isLoggedIn, leaveForLogin, location.pathname])
 
+  // 任意业务接口返回 401 → 立即复查 session。data-effect 里的双查逻辑
+  // (再问一次才信)会处理多入口 cookie 竞态,确认失效才 logout+跳登录页。
+  // 5s 防抖:并发请求同时 401 只触发一次复查;已登出后不再复查。
+  useEffect(() => {
+    let lastCheck = 0
+    const onUnauthorized = () => {
+      if (!useAuthStore.getState().isLoggedIn) return
+      const now = Date.now()
+      if (now - lastCheck < 5_000) return
+      lastCheck = now
+      refetch()
+    }
+    window.addEventListener('api:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('api:unauthorized', onUnauthorized)
+  }, [refetch])
+
   // If we have cached auth, render immediately (no "Checking auth…" screen)
   // If no cached auth and query hasn't returned yet, show minimal loader
   if (!isLoggedIn && !data && !isError) {
@@ -194,6 +218,7 @@ export default function App() {
         <Route element={<AuthLayout />}>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/reports" element={<Reports />} />
         </Route>
 
         {/* Main app routes — single AuthGuard at layout level */}
@@ -202,6 +227,8 @@ export default function App() {
             <Route path="/console" element={<RequirePerm perms={['group.view']}><Dashboard /></RequirePerm>} />
             <Route path="/pods" element={<RequirePerm perms={['group.view']}><PodList /></RequirePerm>} />
             <Route path="/pods/:name" element={<RequirePerm perms={['group.view']}><PodDetail /></RequirePerm>} />
+            <Route path="/pods/:name/ide" element={<RequirePerm perms={['group.view']}><PodIdePage /></RequirePerm>} />
+            <Route path="/ide" element={<RequirePerm perms={['group.view']}><IdeLandingPage /></RequirePerm>} />
             <Route path="/infra" element={<RequirePerm perms={['infra.host', 'infra.storage', 'infra.db', 'infra.scheduler', 'infra.proxy']}><InfraOverview /></RequirePerm>} />
             <Route path="/infra/host" element={<RequirePerm perms={['infra.host']}><HostPage /></RequirePerm>} />
             <Route path="/infra/gpu" element={<RequirePerm perms={['infra.host']}><GpuPage /></RequirePerm>} />
@@ -215,6 +242,7 @@ export default function App() {
             <Route path="/dev/llm" element={<RequirePerm perms={['dev.llm']}><DevLlm /></RequirePerm>} />
             <Route path="/ops" element={<RequirePerm perms={['ops.audit', 'ops.shared.read', 'ops.shared.write']}><OpsOverview /></RequirePerm>} />
             <Route path="/ops/audit" element={<RequirePerm perms={['ops.audit']}><AuditPage /></RequirePerm>} />
+            <Route path="/ops/approvals" element={<RequirePerm perms={['infra.host', 'admin.users']}><ApprovalsPage /></RequirePerm>} />
             <Route path="/ops/shared" element={<RequirePerm perms={['ops.shared.read', 'ops.shared.write']}><SharedPage /></RequirePerm>} />
             <Route path="/users" element={<RequirePerm perms={['admin.users']}><UsersPage /></RequirePerm>} />
             <Route path="/profile" element={<ProfilePage />} />

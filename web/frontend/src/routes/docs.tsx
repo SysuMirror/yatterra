@@ -1164,7 +1164,9 @@ export default function Docs() {
         <PageHeader title="文档" description="从创建 Pod 到发布应用的学习路径">
           <PageAiAssistant page="docs" context="13 节学习路径；参考文档与管理员导航保留" />
         </PageHeader>
+        <div data-onboarding-target="docs-learning">
         <LearningPath lessonId={lessonId ?? 'concepts'} canViewStaffDocs={canViewStaffDocs} />
+        </div>
       </>
     )
   }
@@ -1175,7 +1177,7 @@ export default function Docs() {
         <PageAiAssistant page="docs" context={`文档目录: ${visibleSections.length} 个章节\n${visibleSections.map(s => `  ${s.title}: ${s.items.map(i => i.title).join(', ')}`).join('\n')}`} />
       </PageHeader>
 
-      <nav aria-label="文档导航" className="mb-4 flex gap-4 text-sm text-accent"><Link to="/docs?lesson=concepts">学习路径</Link><Link to="/docs?view=reference">功能参考</Link>{canViewStaffDocs && <Link to="/docs?view=admin">管理员参考</Link>}</nav>
+      <nav data-onboarding-target="docs-nav" aria-label="文档导航" className="mb-4 flex gap-4 text-sm text-accent"><Link to="/docs?lesson=concepts">学习路径</Link><Link to="/docs?view=reference">功能参考</Link>{canViewStaffDocs && <Link to="/docs?view=admin">管理员参考</Link>}</nav>
       {searchParams.get("view") === "admin" && !canViewStaffDocs && <p role="status" className="mb-4 text-sm text-muted">管理员参考需要 infra.* / ops.* 或超级权限；请使用功能参考或学习路径。</p>}
       <div className="space-y-3">
         {visibleSections.filter(section => searchParams.get('view') !== 'admin' || section.staffOnly).map((section) => (

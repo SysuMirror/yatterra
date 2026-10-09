@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { DataTable } from '@/components/ui/DataTable'
 import { Dialog } from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { api } from '@/api/client'
@@ -38,6 +39,8 @@ export default function Users() {
   const [tokenDesc, setTokenDesc] = useState('')
   const [createdToken, setCreatedToken] = useState('')
   const [search, setSearch] = useState('')
+  const [deleteUserTarget, setDeleteUserTarget] = useState<string | null>(null)
+  const [deleteTokenTarget, setDeleteTokenTarget] = useState<string | null>(null)
 
   const canManage = hasPerm('admin.users')
 
@@ -58,7 +61,8 @@ export default function Users() {
 
   const deleteMut = useMutation({
     mutationFn: (u: string) => api.del(`/users/${u}`),
-    onSuccess: () => { toast({ type: 'success', message: '用户已删除' }); qc.invalidateQueries({ queryKey: ['users'] }) },
+    onSuccess: () => { toast({ type: 'success', message: '用户已删除' }); setDeleteUserTarget(null); qc.invalidateQueries({ queryKey: ['users'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '删除用户失败' }),
   })
 
   const roleMut = useMutation({
@@ -91,7 +95,7 @@ export default function Users() {
 
   const tokenDeleteMut = useMutation({
     mutationFn: (id: string) => api.del(`/tokens/${encodeURIComponent(id)}`),
-    onSuccess: () => { toast({ type: 'success', message: 'Token 已删除' }); qc.invalidateQueries({ queryKey: ['tokens'] }) },
+    onSuccess: () => { toast({ type: 'success', message: 'Token 已删除' }); setDeleteTokenTarget(null); qc.invalidateQueries({ queryKey: ['tokens'] }) },
     onError: (e: any) => toast({ type: 'error', message: e?.message || 'Token 删除失败' }),
   })
 
@@ -112,20 +116,21 @@ export default function Users() {
 
       {/* AI Insight */}
       {canManage && !isLoading && users.length > 0 && (
+        <div data-onboarding-target="users-insight" className="mb-5">
         <AiInsightPanel
           page="users"
           title="用户管理洞察"
-          className="mb-5"
           context={`用户总数: ${users.length}, 当前用户: ${data?.current ?? ''}\n角色分布: ${['super','admin','owner','user','guest'].map(r => `${r}=${users.filter((u: any) => (u.role ?? 'user') === r).length}`).join(', ')}\n用户列表:\n${users.map((u: any) => `  ${u.label ?? u.name ?? u.username ?? u} [${u.role ?? '?'}]`).join('\n')}\nAPI Tokens: ${tokens?.length ?? 0} 个`}
         />
+        </div>
       )}
 
       {canManage && <>
-        <div className="mb-4 flex items-center gap-2 max-w-xl">
+        <div data-onboarding-target="users-search" className="mb-4 flex items-center gap-2 max-w-xl">
           <Search size={16} className="text-muted" />
           <Input aria-label="搜索用户" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索昵称、用户名或 OAuth 身份…" />
         </div>
-        <Card padding="none">
+        <Card data-onboarding-target="users-table" padding="none">
         <DataTable
           columns={[
             { key: 'username', title: '用户名', sortable: true, render: (r: any) => {
@@ -145,6 +150,7 @@ export default function Users() {
             }},
             { key: 'role', title: '角色', sortable: true, width: '200px', render: (r: any) => (
               <Select
+                onboardingTarget="users-role"
                 value={r.role}
                 onChange={(v) => roleMut.mutate({ username: r.username || r.user, role: v })}
                 options={roleOptions}
@@ -156,10 +162,10 @@ export default function Users() {
               if (name === current) return null
               return (
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="sm" onClick={() => { setResetUser(name); setNewPassword(''); setResetOpen(true) }} title="重置密码" aria-label="重置密码">
+                  <Button data-onboarding-target="users-reset" variant="ghost" size="sm" onClick={() => { setResetUser(name); setNewPassword(''); setResetOpen(true) }} title="重置密码" aria-label="重置密码">
                     <Key size={14} />
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => { if (confirm(`删除用户 ${name}?`)) deleteMut.mutate(name) }} aria-label="删除用户">
+                  <Button data-onboarding-target="users-delete" variant="ghost" size="sm" onClick={() => setDeleteUserTarget(name)} aria-label="删除用户">
                     <Trash2 size={14} />
                   </Button>
                 </div>
@@ -200,8 +206,28 @@ export default function Users() {
         </div>
       </Dialog>
 
+      {/* Delete user confirm */}
+      <ConfirmDialog
+        open={!!deleteUserTarget}
+        onClose={() => setDeleteUserTarget(null)}
+        onConfirm={() => deleteUserTarget && deleteMut.mutate(deleteUserTarget)}
+        loading={deleteMut.isPending}
+        title={`删除用户 ${deleteUserTarget ?? ''}`}
+        description="该操作不可撤销，用户将被永久移除。"
+      />
+
+      {/* Delete token confirm */}
+      <ConfirmDialog
+        open={!!deleteTokenTarget}
+        onClose={() => setDeleteTokenTarget(null)}
+        onConfirm={() => deleteTokenTarget && tokenDeleteMut.mutate(deleteTokenTarget)}
+        loading={tokenDeleteMut.isPending}
+        title="删除 API Token"
+        description="删除后使用该 Token 的应用将立即失去访问权限，该操作不可撤销。"
+      />
+
       {/* API Tokens */}
-      <Card className="mt-6" padding="none">
+      <Card data-onboarding-target="users-tokens" className="mt-6" padding="none">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h2 className="text-sm font-semibold flex items-center gap-2">
             <Key size={16} /> API Token
@@ -225,7 +251,7 @@ export default function Users() {
               <span className="text-sm text-muted">{r.last_used_at || r.last_used || '-'}</span>
             )},
             { key: 'actions', title: '', width: '60px', render: (r: any) => (
-              <Button variant="ghost" size="sm" onClick={() => { if (confirm('删除此 Token?')) tokenDeleteMut.mutate(r.id ?? r.name) }}>
+              <Button data-onboarding-target="users-token-delete" variant="ghost" size="sm" onClick={() => setDeleteTokenTarget(r.id ?? r.name)}>
                 <Trash2 size={14} />
               </Button>
             )},

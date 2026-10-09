@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Switch } from '@/components/ui/Switch'
 import { DataTable } from '@/components/ui/DataTable'
 import { Dialog } from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
@@ -33,6 +34,7 @@ export default function DevMCP() {
   const [addOpen, setAddOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [editing, setEditing] = useState<MCPServer | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<MCPServer | null>(null)
 
   // Form state
   const [formName, setFormName] = useState('')
@@ -113,11 +115,13 @@ export default function DevMCP() {
   const toggleMut = useMutation({
     mutationFn: (id: string) => api.post(`/mcp/${id}/toggle`),
     onSuccess: () => { toast({ type: 'success', message: '已切换' }); qc.invalidateQueries({ queryKey: ['mcp'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '切换失败' }),
   })
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => api.del(`/mcp/${id}`),
-    onSuccess: () => { toast({ type: 'success', message: '已删除' }); qc.invalidateQueries({ queryKey: ['mcp'] }) },
+    onSuccess: () => { toast({ type: 'success', message: '已删除' }); setDeleteTarget(null); qc.invalidateQueries({ queryKey: ['mcp'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '删除失败' }),
   })
 
   const testMut = useMutation({
@@ -137,15 +141,16 @@ export default function DevMCP() {
 
       {/* AI Insight */}
       {!isLoading && data && data.length > 0 && (
+        <div data-onboarding-target="mcp-insight" className="mb-5">
         <AiInsightPanel
           page="mcp"
           title="MCP 服务洞察"
-          className="mb-5"
           context={`MCP 服务器: ${data.length} 个 (${data.filter((s: any) => s.enabled !== false).length} 启用, ${data.filter((s: any) => s.enabled === false).length} 禁用)\n${data.map((s: any) => `  ${s.name ?? s.id} [${s.transport ?? 'stdio'}] ${s.enabled === false ? '(禁用)' : '(启用)'}`).join('\n')}\nMCP 目录: ${catalog?.length ?? 0} 个可用`}
         />
+        </div>
       )}
 
-      <Card padding="none">
+      <Card data-onboarding-target="mcp-table" padding="none">
         <DataTable
           columns={[
             { key: 'name', title: '名称', sortable: true, render: (r: any) => (
@@ -162,7 +167,7 @@ export default function DevMCP() {
               <div className="flex items-center gap-1">
                 <Button variant="ghost" size="sm" onClick={() => openEdit(r)} aria-label="编辑"><Pencil size={14} /></Button>
                 <Button data-onboarding-target="mcp-test" variant="ghost" size="sm" onClick={() => testMut.mutate(r.name)} aria-label="测试"><FlaskConical size={14} /></Button>
-                <Button variant="ghost" size="sm" onClick={() => deleteMut.mutate(r.name)} aria-label="删除"><Trash2 size={14} /></Button>
+                <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(r)} aria-label="删除"><Trash2 size={14} /></Button>
               </div>
             )},
           ]}
@@ -173,7 +178,7 @@ export default function DevMCP() {
       </Card>
 
       {/* MCP Catalog */}
-      <Card className="mt-6">
+      <Card data-onboarding-target="mcp-catalog" className="mt-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold">MCP 目录</h2>
           <Badge variant="muted">{catalog?.length ?? 0} 个</Badge>
@@ -191,7 +196,7 @@ export default function DevMCP() {
                     <Badge variant="muted">{item.transport || 'stdio'}</Badge>
                   </div>
                   {item.description && <p className="text-xs text-muted">{item.description}</p>}
-                  <Button size="sm" variant="outline" onClick={() => openAdd(item)}>
+                  <Button data-onboarding-target="mcp-install" size="sm" variant="outline" onClick={() => openAdd(item)}>
                     <Plus size={14} /> 安装
                   </Button>
                 </div>
@@ -205,6 +210,16 @@ export default function DevMCP() {
           </div>
         )}
       </Card>
+
+      {/* Delete server confirm */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => deleteTarget && deleteMut.mutate(deleteTarget.name)}
+        loading={deleteMut.isPending}
+        title="删除 MCP 服务器"
+        description={`确定删除 ${deleteTarget?.name ?? ''}？依赖它的 Agent 工具调用将失效。`}
+      />
 
       {/* Add Dialog */}
       <Dialog open={addOpen} onClose={() => setAddOpen(false)} title="添加 MCP 服务器">

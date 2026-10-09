@@ -16,6 +16,7 @@ import { SearchBar } from '@/components/ui/SearchBar'
 import { Select } from '@/components/ui/Select'
 import { SkeletonCard } from '@/components/ui/Skeleton'
 import { api } from '@/api/client'
+import { useThemeStore } from '@/stores/theme'
 import { formatDatetime } from '@/lib/format'
 
 const ACTION_COLORS = ['#0a84ff', '#ff9f0a', '#30d158', '#ff453a', '#bf5af2', '#64d2ff', '#ff6482', '#ac8e68']
@@ -49,6 +50,7 @@ function sinceParam(range: string): string | undefined {
 }
 
 export default function OpsAudit() {
+  const dark = useThemeStore((s) => s.resolved) === 'dark'
   const [actor, setActor] = useState('')
   const [action, setAction] = useState('')
   const [dateRange, setDateRange] = useState('')
@@ -134,23 +136,24 @@ export default function OpsAudit() {
       <PageHeader title="审计日志" description="系统操作审计追踪" count={total > 0 ? `共 ${total} 条` : undefined} doc={{ section: 'ops', item: 0, label: '审计文档' }}>
         <div className="flex items-center gap-2">
           <Button data-onboarding-target="audit-export" variant="secondary" size="sm" disabled={!items.length} onClick={handleExportCsv}><Download size={14} /> 导出</Button>
-          <Button variant="secondary" size="sm" disabled={!items.length} onClick={handleSummarize}>让运维助手总结</Button>
+          <Button data-onboarding-target="audit-summarize" variant="secondary" size="sm" disabled={!items.length} onClick={handleSummarize}>让运维助手总结</Button>
           <PageAiAssistant page="audit" ref={aiRef} context={items.length > 0 ? `审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n最近事件:\n${items.slice(0, 15).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor_label ?? r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? ''}`).join('\n')}` : ''} />
         </div>
       </PageHeader>
 
       {/* AI Insight */}
       {!isLoading && items.length > 0 && (
+        <div data-onboarding-target="audit-insight" className="mb-5">
         <AiInsightPanel
           page="audit"
           title="审计日志洞察"
-          className="mb-5"
           context={`审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n失败/删除: ${stats.failCount}, 登录: ${stats.loginCount}, 活跃用户: ${stats.uniqueUsers}\n操作分布: ${stats.actionDist.map(a => `${a.name}(${a.count})`).join(', ')}\n最近事件:\n${items.slice(0, 20).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor_label ?? r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? r.detail ?? ''}`).join('\n')}`}
         />
+        </div>
       )}
 
       {/* Stats summary cards */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
+      <div data-onboarding-target="audit-stats" className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
         {isLoading ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
@@ -165,7 +168,7 @@ export default function OpsAudit() {
 
       {/* Action type distribution */}
       {stats.actionDist.length > 0 && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="audit-dist" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-4">
             <BarChart3 size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">操作类型分布</h2>
@@ -173,10 +176,19 @@ export default function OpsAudit() {
           <div className="h-40">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={stats.actionDist} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 80 }}>
-                <CartesianGrid stroke="rgba(0,0,0,0.05)" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 10, fill: '#86868b' }} tickLine={false} axisLine={false} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#1d1d1f' }} tickLine={false} axisLine={false} width={76} />
-                <Tooltip contentStyle={{ borderRadius: 10, border: '0.5px solid rgba(0,0,0,0.1)', fontSize: 12 }} />
+                <CartesianGrid stroke={dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'} horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 10, fill: dark ? '#98989d' : '#86868b' }} tickLine={false} axisLine={false} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: dark ? '#f5f5f7' : '#1d1d1f' }} tickLine={false} axisLine={false} width={76} />
+                <Tooltip
+                  contentStyle={{
+                    borderRadius: 10,
+                    border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.1)',
+                    fontSize: 12,
+                    background: dark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
+                    color: dark ? '#f5f5f7' : undefined,
+                  }}
+                  labelStyle={{ color: dark ? '#98989d' : '#86868b' }}
+                />
                 <Bar dataKey="count" radius={[0, 4, 4, 0]} isAnimationActive={false}>
                   {stats.actionDist.map((_: any, i: number) => (
                     <Cell key={i} fill={ACTION_COLORS[i % ACTION_COLORS.length]} />
@@ -190,7 +202,7 @@ export default function OpsAudit() {
 
       {/* Hourly heatmap */}
       {stats.maxHour > 0 && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="audit-heatmap" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <h2 className="text-sm font-semibold">24 小时活动热力图</h2>
           </div>
@@ -239,6 +251,7 @@ export default function OpsAudit() {
           className="w-[140px]"
         />
         <Select
+          onboardingTarget="audit-range"
           value={dateRange}
           onChange={(v) => { setDateRange(v) }}
           options={[
@@ -249,6 +262,7 @@ export default function OpsAudit() {
           className="w-[130px]"
         />
         <Select
+          onboardingTarget="audit-limit"
           value={limit}
           onChange={(v) => { setLimit(v) }}
           options={LIMIT_OPTIONS}
@@ -257,7 +271,7 @@ export default function OpsAudit() {
       </div>
 
       {/* Audit table */}
-      <Card padding="none">
+      <Card data-onboarding-target="audit-table" padding="none">
         <DataTable
           columns={[
             { key: 'time', title: '时间', sortable: true, width: '180px', render: (r: any) => (
@@ -290,7 +304,7 @@ export default function OpsAudit() {
       </Card>
 
       {total > 0 && (
-        <div className="flex items-center mt-4 px-1">
+        <div data-onboarding-target="audit-count" className="flex items-center mt-4 px-1">
           <span className="text-sm text-muted">
             共 {total} 条
           </span>

@@ -9,6 +9,7 @@ import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Dialog } from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { CodeChip } from '@/components/ui/CodeChip'
@@ -134,6 +135,8 @@ export default function InfraStorage() {
   const [keyPerm, setKeyPerm] = useState('readwrite')
   const [endpointCopied, setEndpointCopied] = useState(false)
   const [browseBucket, setBrowseBucket] = useState<string | null>(null)
+  const [deleteBucketTarget, setDeleteBucketTarget] = useState<string | null>(null)
+  const [deleteKeyTarget, setDeleteKeyTarget] = useState<any | null>(null)
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['infra-storage'],
@@ -158,6 +161,18 @@ export default function InfraStorage() {
     onError: (err: any) => { toast({ type: 'error', message: err?.message || '创建密钥失败' }) },
   })
 
+  const deleteBucketMut = useMutation({
+    mutationFn: (name: string) => api.del(`/infra/storage/buckets/${name}`),
+    onSuccess: () => { toast({ type: 'success', message: '桶已删除' }); setDeleteBucketTarget(null); qc.invalidateQueries({ queryKey: ['infra-storage'] }) },
+    onError: (err: any) => { toast({ type: 'error', message: err?.message || '删除桶失败' }) },
+  })
+
+  const deleteKeyMut = useMutation({
+    mutationFn: (id: string) => api.del(`/infra/storage/keys/${id}`),
+    onSuccess: () => { toast({ type: 'success', message: '密钥已删除' }); setDeleteKeyTarget(null); qc.invalidateQueries({ queryKey: ['infra-storage'] }) },
+    onError: (err: any) => { toast({ type: 'error', message: err?.message || '删除密钥失败' }) },
+  })
+
   const buckets = data?.buckets ?? []
   const bucketOptions = buckets.map((b: any) => {
     const name = typeof b === 'string' ? b : b.name
@@ -176,7 +191,7 @@ export default function InfraStorage() {
         <PageAiAssistant page="storage" context={buckets.length > 0 ? `存储桶: ${buckets.length} 个\n${buckets.map((b: any) => `  ${b.name ?? b} (${b.creation_date ?? b.created ?? '?'})`).join('\n')}` : '暂无存储桶'} />
         <div className="flex gap-2">
           {canManage && <>
-            <Button variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
+            <Button data-onboarding-target="storage-ensure" variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
             <Button data-onboarding-target="storage-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建桶</Button>
           </>}
         </div>
@@ -184,17 +199,18 @@ export default function InfraStorage() {
 
       {/* AI Insight */}
       {!isLoading && data && (
+        <div data-onboarding-target="storage-insight" className="mb-5">
         <AiInsightPanel
           page="storage"
           title="存储洞察"
-          className="mb-5"
           context={`MinIO 状态: ${data?.status?.ready ? '运行中' : data?.status?.deployed ? '启动中' : '未部署'}\n存储桶: ${buckets.length} 个 (${buckets.map((b: any) => typeof b === 'string' ? b : b.name).join(', ')})\n访问密钥: ${data?.keys?.length ?? 0} 个\n${data?.keys?.length ? '密钥详情:\n' + data.keys.slice(0, 10).map((k: any) => `  ${k.label ?? k.id}: 桶=${k.bucket ?? '?'}, 权限=${k.perm ?? 'rw'}`).join('\n') : ''}`}
         />
+        </div>
       )}
 
       {/* Status */}
       {data?.status && (
-        <div className="mb-4">
+        <div data-onboarding-target="storage-status" className="mb-4">
           <Badge variant={data.status.ready ? 'ok' : data.status.deployed ? 'warn' : 'bad'} dot>
             MinIO {data.status.deployed ? (data.status.ready ? '运行中' : data.status.phase || '启动中') : '未部署'}
           </Badge>
@@ -203,7 +219,7 @@ export default function InfraStorage() {
 
       {/* In-cluster Endpoint */}
       {data?.status?.deployed && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="storage-endpoint-card" padding="lg" className="mb-6">
           <h2 className="text-sm font-semibold mb-3">Pod 内连接端点</h2>
           <p className="text-xs text-muted mb-2">供集群内 pod 访问 MinIO，组内代码使用此地址</p>
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/[0.04] border-[0.5px] border-black/[0.06] font-mono text-xs text-ink-2 max-w-full">
@@ -222,7 +238,7 @@ export default function InfraStorage() {
 
       {/* Admin Credentials */}
       {data?.conf && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="storage-root" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <h2 className="text-sm font-semibold">Root 凭证</h2>
             <Badge variant="muted">仅管理员</Badge>
@@ -241,7 +257,7 @@ export default function InfraStorage() {
       )}
 
       {/* Buckets */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="storage-buckets" padding="lg" className="mb-6">
         <h2 className="text-sm font-semibold mb-3">存储桶</h2>
         {buckets.length ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -254,10 +270,10 @@ export default function InfraStorage() {
                     <span className="font-medium text-sm truncate" title={name}>{name}</span>
                   </div>
                   <div className="flex gap-1 self-start">
-                    <Button variant="ghost" size="sm" onClick={() => setBrowseBucket(name)}>
+                    <Button data-onboarding-target="storage-browse" variant="ghost" size="sm" onClick={() => setBrowseBucket(name)}>
                       <FolderOpen size={12} /> 浏览
                     </Button>
-                    {canManage && <Button variant="ghost" size="sm" onClick={() => { if (confirm(`删除桶 ${name}？桶内数据将丢失。`)) api.del(`/infra/storage/buckets/${name}`).then(() => { toast({ type: 'success', message: '桶已删除' }); qc.invalidateQueries({ queryKey: ['infra-storage'] }) }) }}>
+                    {canManage && <Button variant="ghost" size="sm" aria-label="删除桶" onClick={() => setDeleteBucketTarget(name)}>
                       <Trash2 size={12} />
                     </Button>}
                   </div>
@@ -271,7 +287,7 @@ export default function InfraStorage() {
       </Card>
 
       {/* Access Keys */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="storage-keys" padding="lg" className="mb-6">
         <div className="flex items-center justify-between gap-2 mb-3">
           <h2 className="text-sm font-semibold">访问密钥</h2>
           {canManage && <Button data-onboarding-target="storage-key" size="sm" onClick={() => { setKeyFormOpen(true); if (bucketOptions.length && !keyBucket) setKeyBucket(bucketOptions[0].value) }}>
@@ -329,7 +345,7 @@ export default function InfraStorage() {
                   )}
                   <Badge variant={permVariant[k.perm] || 'muted'}>{permLabel[k.perm] || k.perm || '读写'}</Badge>
                   <div className="flex-1" />
-                  {canManage && <Button variant="ghost" size="sm" onClick={() => { if (confirm(`删除密钥 ${k.label || k.id}？`)) api.del(`/infra/storage/keys/${k.id}`).then(() => { toast({ type: 'success', message: '已删除' }); qc.invalidateQueries({ queryKey: ['infra-storage'] }) }) }}>
+                  {canManage && <Button variant="ghost" size="sm" aria-label="删除密钥" onClick={() => setDeleteKeyTarget(k)}>
                     <Trash2 size={14} />
                   </Button>}
                 </div>
@@ -353,13 +369,33 @@ export default function InfraStorage() {
 
       {/* Python connection example */}
       {data?.status?.deployed && (
-        <Card padding="lg">
+        <Card data-onboarding-target="storage-example" padding="lg">
           <h2 className="text-sm font-semibold mb-3">Python 连接示例</h2>
           <pre className="p-3 rounded-lg bg-[#3a3329] text-[#d9d2c8] text-xs overflow-auto font-mono leading-relaxed">
             <code>{PYTHON_EXAMPLE}</code>
           </pre>
         </Card>
       )}
+
+      {/* Delete bucket confirm */}
+      <ConfirmDialog
+        open={!!deleteBucketTarget}
+        onClose={() => setDeleteBucketTarget(null)}
+        onConfirm={() => deleteBucketTarget && deleteBucketMut.mutate(deleteBucketTarget)}
+        loading={deleteBucketMut.isPending}
+        title={`删除桶 ${deleteBucketTarget ?? ''}`}
+        description="桶内数据将全部丢失，该操作不可撤销。"
+      />
+
+      {/* Delete key confirm */}
+      <ConfirmDialog
+        open={!!deleteKeyTarget}
+        onClose={() => setDeleteKeyTarget(null)}
+        onConfirm={() => deleteKeyTarget && deleteKeyMut.mutate(deleteKeyTarget.id)}
+        loading={deleteKeyMut.isPending}
+        title="删除访问密钥"
+        description={`确定删除密钥 ${deleteKeyTarget?.label || String(deleteKeyTarget?.id ?? '')}？使用该密钥的应用将立即失去访问权限。`}
+      />
 
       {/* Bucket Browser */}
       {browseBucket && (

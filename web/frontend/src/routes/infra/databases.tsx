@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/Badge'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { Disclosure } from '@/components/ui/Disclosure'
 import { Dialog } from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { api } from '@/api/client'
@@ -19,7 +20,7 @@ import { useToastStore } from '@/stores/toast'
 import { useAuthStore } from '@/stores/auth'
 import { PUBLIC_HOST } from '@/lib/site'
 
-const SERVICE_PORTS: Record<string, number> = { mysql: 3306, redis: 6379, qdrant: 6333 }
+const SERVICE_PORTS: Record<string, number> = { mysql: 3306, redis: 6379, qdrant: 6333, postgres: 5432 }
 const NS = 'platform-infra'
 
 // In-cluster endpoints (full k8s service DNS)
@@ -28,6 +29,7 @@ const INCLUSTER_ENDPOINTS = [
   { label: 'Redis', value: `redis.${NS}.svc.cluster.local:6379` },
   { label: 'Qdrant', value: `http://qdrant.${NS}.svc.cluster.local:6333` },
   { label: 'Qdrant gRPC', value: `qdrant.${NS}.svc.cluster.local:6334` },
+  { label: 'PostgreSQL', value: `postgres.${NS}.svc.cluster.local:5432` },
 ]
 
 // FRP tunnel endpoints (relay host localhost)
@@ -36,6 +38,7 @@ const FRP_ENDPOINTS = [
   { label: 'Redis', value: '127.0.0.1:25079' },
   { label: 'Qdrant', value: 'http://127.0.0.1:25033' },
   { label: 'Qdrant gRPC', value: '127.0.0.1:25034' },
+  { label: 'PostgreSQL', value: '127.0.0.1:25432' },
 ]
 
 const CONN_EXAMPLE = `# MySQL (pip install --break-system-packages pymysql)
@@ -54,7 +57,13 @@ r.set("前缀:mykey", "v")   # 键必须以 前缀: 开头
 from qdrant_client import QdrantClient
 qc = QdrantClient(host="qdrant.platform-infra.svc.cluster.local", port=6333,
                   api_key="管理员发的key", https=False)
-# 集合名以 前缀_ 开头,如 前缀_docs`
+# 集合名以 前缀_ 开头,如 前缀_docs
+
+# PostgreSQL (pip install --break-system-packages psycopg[binary])
+import psycopg
+conn = psycopg.connect(host="postgres.platform-infra.svc.cluster.local", port=5432,
+                        user="管理员发的用户", password="管理员发的密码",
+                        dbname="管理员发的库")`
 
 function buildConnStr(svc: string, cred: any, conf: any): string | null {
   const host = `${svc}:${SERVICE_PORTS[svc]}`
@@ -71,6 +80,12 @@ function buildConnStr(svc: string, cred: any, conf: any): string | null {
   if (svc === 'qdrant') {
     const key = cred?.secret || conf?.qdrant_api_key
     return `http://${host}?api_key=${key}`
+  }
+  if (svc === 'postgres') {
+    const user = cred?.username || 'postgres'
+    const pass = cred?.secret || conf?.postgres_password
+    const db = cred?.database || ''
+    return `postgresql://${user}:${pass}@${host}/${db}`
   }
   return null
 }
@@ -90,6 +105,7 @@ export default function InfraDatabases() {
   const [createOpen, setCreateOpen] = useState(false)
   const [group, setGroup] = useState('')
   const [service, setService] = useState('')
+  const [deleteCredTarget, setDeleteCredTarget] = useState<any | null>(null)
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['infra-databases'],
@@ -99,11 +115,19 @@ export default function InfraDatabases() {
   const ensureMut = useMutation({
     mutationFn: () => api.post('/infra/databases/ensure'),
     onSuccess: () => { toast({ type: 'success', message: '数据库服务已初始化' }); qc.invalidateQueries({ queryKey: ['infra-databases'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '初始化数据库失败' }),
   })
 
   const createCredMut = useMutation({
     mutationFn: (d: { group: string; service: string }) => api.post('/infra/databases/creds', d),
     onSuccess: () => { toast({ type: 'success', message: '凭证已创建' }); setCreateOpen(false); qc.invalidateQueries({ queryKey: ['infra-databases'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '创建凭证失败' }),
+  })
+
+  const deleteCredMut = useMutation({
+    mutationFn: (id: string) => api.del(`/infra/databases/creds/${id}`),
+    onSuccess: () => { toast({ type: 'success', message: '凭证已删除' }); setDeleteCredTarget(null); qc.invalidateQueries({ queryKey: ['infra-databases'] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '删除凭证失败' }),
   })
 
   const copyConnStr = (str: string) => {
@@ -132,11 +156,11 @@ export default function InfraDatabases() {
 
   return (
     <>
-      <PageHeader title="数据库" description="MySQL / Redis / Qdrant 服务与凭证" doc={{ section: 'infra', item: 2, label: '数据库文档' }}>
+      <PageHeader title="数据库" description="MySQL / Redis / Qdrant / PostgreSQL 服务与凭证" doc={{ section: 'infra', item: 2, label: '数据库文档' }}>
         <PageAiAssistant page="databases" context={data?.creds?.length > 0 ? `数据库凭证: ${data.creds.length} 个\n${Object.entries(credsByService).map(([svc, list]: [string, any[]]) => `  ${svc}: ${list.length} 个 (${list.map((c: any) => c.group ?? c.name).join(', ')})`).join('\n')}` : '暂无数据库凭证'} />
         <div className="flex gap-2">
           {canManage && <>
-            <Button variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
+            <Button data-onboarding-target="db-ensure" variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
             <Button data-onboarding-target="db-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建凭证</Button>
           </>}
         </div>
@@ -144,17 +168,18 @@ export default function InfraDatabases() {
 
       {/* AI Insight */}
       {!isLoading && data && (
+        <div data-onboarding-target="db-insight" className="mb-5">
         <AiInsightPanel
           page="databases"
           title="数据库洞察"
-          className="mb-5"
-          context={`数据库状态: ${['mysql','redis','qdrant'].map(s => `${s}=${data?.status?.[s]?.ready ? '运行' : data?.status?.[s]?.deployed ? '启动中' : '未部署'}`).join(', ')}\n凭证: ${data?.creds?.length ?? 0} 个\n${Object.entries(credsByService).map(([svc, list]: [string, any[]]) => `  ${svc}: ${list.length} 个 (${list.map((c: any) => c.group ?? c.username ?? c.id).join(', ')})`).join('\n')}`}
+          context={`数据库状态: ${['mysql','redis','qdrant','postgres'].map(s => `${s}=${data?.status?.[s]?.ready ? '运行' : data?.status?.[s]?.deployed ? '启动中' : '未部署'}`).join(', ')}\n凭证: ${data?.creds?.length ?? 0} 个\n${Object.entries(credsByService).map(([svc, list]: [string, any[]]) => `  ${svc}: ${list.length} 个 (${list.map((c: any) => c.group ?? c.username ?? c.id).join(', ')})`).join('\n')}`}
         />
+        </div>
       )}
 
       {/* Service Status */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        {['mysql', 'redis', 'qdrant'].map((svc) => {
+      <div data-onboarding-target="db-status" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {['mysql', 'redis', 'qdrant', 'postgres'].map((svc) => {
           const info = data?.status?.[svc]
           const conf = data?.conf
           const port = SERVICE_PORTS[svc]
@@ -181,7 +206,7 @@ export default function InfraDatabases() {
 
       {/* In-cluster endpoints */}
       {anyReady && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="db-incluster" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <Globe size={16} className="text-muted" />
             <h2 className="text-sm font-semibold">Pod 内端点</h2>
@@ -204,7 +229,7 @@ export default function InfraDatabases() {
 
       {/* FRP tunnel endpoints */}
       {anyReady && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="db-frp" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <Server size={16} className="text-muted" />
             <h2 className="text-sm font-semibold">{PUBLIC_HOST} 本机端点</h2>
@@ -227,7 +252,7 @@ export default function InfraDatabases() {
 
       {/* Root credentials (admin only) */}
       {anyReady && canManage && data?.root && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="db-root" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <Shield size={16} className="text-muted" />
             <h2 className="text-sm font-semibold">Root 凭证</h2>
@@ -262,13 +287,22 @@ export default function InfraDatabases() {
                 </Button>
               </div>
             )}
+            {data.root.postgres_password && (
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted w-20 flex-shrink-0 font-semibold">Postgres root</span>
+                <CodeChip code={maskStr(data.root.postgres_password)} />
+                <Button variant="ghost" size="sm" onClick={() => copyText(data.root.postgres_password)}>
+                  <Copy size={12} />
+                </Button>
+              </div>
+            )}
           </div>
         </Card>
       )}
 
       {/* Connection examples */}
       {anyReady && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="db-examples" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <Terminal size={16} className="text-muted" />
             <h2 className="text-sm font-semibold">连接示例</h2>
@@ -280,8 +314,8 @@ export default function InfraDatabases() {
       )}
 
       {/* Credentials grouped by service */}
-      <div className="space-y-3">
-        {['mysql', 'redis', 'qdrant'].map((svc) => {
+      <div data-onboarding-target="db-creds" className="space-y-3">
+        {['mysql', 'redis', 'qdrant', 'postgres'].map((svc) => {
           const creds = credsByService[svc]
           if (!creds?.length) return null
           return (
@@ -310,7 +344,7 @@ export default function InfraDatabases() {
                             <Link2 size={14} />
                           </Button>
                         )}
-                        {canManage && <Button variant="ghost" size="sm" onClick={() => api.del(`/infra/databases/creds/${c.id}`).then(() => { toast({ type: 'success', message: '已删除' }); qc.invalidateQueries({ queryKey: ['infra-databases'] }) })}>
+                        {canManage && <Button variant="ghost" size="sm" aria-label="删除凭证" onClick={() => setDeleteCredTarget(c)}>
                           <Trash2 size={14} />
                         </Button>}
                       </div>
@@ -322,7 +356,7 @@ export default function InfraDatabases() {
           )
         })}
         {/* Credentials for services not in the standard three */}
-        {Object.keys(credsByService).filter((s) => !['mysql', 'redis', 'qdrant'].includes(s)).map((svc) => {
+        {Object.keys(credsByService).filter((s) => !['mysql', 'redis', 'qdrant', 'postgres'].includes(s)).map((svc) => {
           const creds = credsByService[svc] ?? []
           return (
             <Disclosure key={svc} title={`${svc} 凭证 (${creds.length})`} defaultOpen>
@@ -334,7 +368,7 @@ export default function InfraDatabases() {
                     {c.label && <Badge variant="muted">{c.label}</Badge>}
                     {c.created && <span className="text-xs text-muted">{fmtDate(c.created)}</span>}
                     <div className="flex-1" />
-                    {canManage && <Button variant="ghost" size="sm" onClick={() => api.del(`/infra/databases/creds/${c.id}`).then(() => { toast({ type: 'success', message: '已删除' }); qc.invalidateQueries({ queryKey: ['infra-databases'] }) })}>
+                    {canManage && <Button variant="ghost" size="sm" aria-label="删除凭证" onClick={() => setDeleteCredTarget(c)}>
                       <Trash2 size={14} />
                     </Button>}
                   </div>
@@ -350,6 +384,16 @@ export default function InfraDatabases() {
         )}
       </div>
 
+      {/* Delete cred confirm */}
+      <ConfirmDialog
+        open={!!deleteCredTarget}
+        onClose={() => setDeleteCredTarget(null)}
+        onConfirm={() => deleteCredTarget && deleteCredMut.mutate(deleteCredTarget.id)}
+        loading={deleteCredMut.isPending}
+        title="删除数据库凭证"
+        description={`确定删除凭证 ${deleteCredTarget?.username || deleteCredTarget?.user || String(deleteCredTarget?.id ?? '')}？使用该凭证的应用将立即失去访问权限。`}
+      />
+
       {/* Create Cred Dialog */}
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="创建数据库凭证">
         <div className="space-y-4">
@@ -361,6 +405,7 @@ export default function InfraDatabases() {
             { value: 'mysql', label: 'MySQL' },
             { value: 'redis', label: 'Redis' },
             { value: 'qdrant', label: 'Qdrant' },
+            { value: 'postgres', label: 'PostgreSQL' },
           ]} />
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setCreateOpen(false)}>取消</Button>

@@ -7,7 +7,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import TopBar from '@/components/layout/TopBar'
 import Sidebar from '@/components/layout/Sidebar'
 import { MobileTabBar } from '@/components/layout/MobileTabBar'
-import { AgentWidget } from '@/components/domain/AgentWidget'
+import { GlobalAiAssistant } from '@/components/domain/GlobalAiAssistant'
 import { AiContextMenu } from '@/components/domain/AiContextMenu'
 import { PullToRefresh } from '@/components/ui/PullToRefresh'
 import { OnboardingGuide } from '@/components/ui/OnboardingGuide'
@@ -49,6 +49,11 @@ export default function MainLayout() {
   const qc = useQueryClient()
   const prevPathname = useRef(location.pathname)
 
+  // 控制台界面为简体中文;公开页(reports/landing)自行覆盖 document lang
+  useEffect(() => {
+    document.documentElement.lang = 'zh-CN'
+  }, [])
+
   useEffect(() => {
     setMobileOpen(false)
   }, [location.pathname, isDesktop, setMobileOpen])
@@ -76,6 +81,10 @@ export default function MainLayout() {
 
   // Is this a detail page? (deeper than 1 segment, e.g. /pods/my-pod)
   const isDetailPage = !isDesktop && location.pathname.split('/').filter(Boolean).length > 1
+
+  // Web IDE 需要整屏画布:去掉页面 padding / 下拉刷新 / 外层滚动,
+  // 面板内部自己管理滚动。
+  const isIdePage = /^\/pods\/[^/]+\/ide\/?$/.test(location.pathname)
 
   // ── Edge swipe: open sidebar OR go back ──
   // On detail pages: left-edge swipe = go back
@@ -149,40 +158,52 @@ export default function MainLayout() {
         <Sidebar />
         <main
           {...edgeBind()}
-          className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden touch-pan-y"
-          style={!isDesktop ? { paddingBottom: 'var(--mobile-tabbar-h)' } : undefined}
+          className={
+            isIdePage
+              ? 'flex-1 min-w-0 overflow-hidden touch-auto'
+              : 'flex-1 min-w-0 overflow-y-auto overflow-x-hidden touch-pan-y'
+          }
+          style={!isDesktop && !isIdePage ? { paddingBottom: 'var(--mobile-tabbar-h)' } : undefined}
         >
-          <PullToRefresh
-            enabled={!isDesktop}
-            onRefresh={() => qc.invalidateQueries().then(() => {})}
-          >
-            <div className="px-3 py-4 sm:px-6 sm:py-6 lg:px-8 xl:px-10 2xl:mx-auto 2xl:max-w-[80%]">
-              <AnimatePresence mode="wait">
-                <motion.div
-                  data-onboarding-page={location.pathname}
-                  key={location.pathname}
-                  initial={variants.initial}
-                  animate={variants.animate}
-                  exit={variants.exit}
-                  transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
-                  style={{
-                    willChange: 'opacity, transform',
-                    // Swipe-to-go-back: page follows finger
-                    x: isDetailPage ? pageX : 0,
-                  }}
-                >
-                  <Outlet />
-                </motion.div>
-              </AnimatePresence>
+          {isIdePage ? (
+            // IDE:整屏画布,无 padding / 无转场动画(dockview 拖拽不受 transform 影响)
+            <div className="h-full">
+              <Outlet />
             </div>
-          </PullToRefresh>
+          ) : (
+            <PullToRefresh
+              enabled={!isDesktop}
+              onRefresh={() => qc.invalidateQueries().then(() => {})}
+            >
+              <div className="px-3 py-4 sm:px-6 sm:py-6 lg:px-8 xl:px-10 2xl:mx-auto 2xl:max-w-[80%]">
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    data-onboarding-page={location.pathname}
+                    key={location.pathname}
+                    initial={variants.initial}
+                    animate={variants.animate}
+                    exit={variants.exit}
+                    transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
+                    style={{
+                      willChange: 'opacity, transform',
+                      // Swipe-to-go-back: page follows finger
+                      x: isDetailPage ? pageX : 0,
+                    }}
+                  >
+                    <Outlet />
+                  </motion.div>
+                </AnimatePresence>
+              </div>
+            </PullToRefresh>
+          )}
         </main>
       </div>
 
-      {/* Mobile bottom tab bar — hidden when sidebar drawer is open */}
-      {!isDesktop && !mobileOpen && <MobileTabBar />}
+      {/* Mobile bottom tab bar — hidden when sidebar drawer is open; IDE 自带底栏 */}
+      {!isDesktop && !mobileOpen && !isIdePage && <MobileTabBar />}
 
-      <AgentWidget />
+      {/* IDE 有自己的 AI 面板,不再叠全局助手 */}
+      {!isIdePage && <GlobalAiAssistant />}
       <AiContextMenu />
       <OnboardingGuide />
     </div>

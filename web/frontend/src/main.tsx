@@ -1,7 +1,10 @@
-// PWA auto-update: reload once when a user-approved new service worker takes control
+// PWA auto-update: reload once when a user-approved new service worker takes control.
+// 首次安装 SW 时 controller 从 null 变为有值也会触发 controllerchange,
+// 用启动时是否已被控制区分,避免首次访问白刷一次。
+const __hadController = !!navigator.serviceWorker?.controller
 let __swReloaded = false
 navigator.serviceWorker?.addEventListener('controllerchange', () => {
-  if (__swReloaded) return
+  if (__swReloaded || !__hadController) return
   __swReloaded = true
   location.reload()
 })
@@ -15,11 +18,13 @@ import { ToastContainer } from '@/components/ui/Toast'
 import { NetworkStatusBanner } from '@/components/ui/NetworkStatusBanner'
 import { SWUpdateNotifier } from '@/components/ui/SWUpdateNotifier'
 import { initTheme } from '@/stores/theme'
+import { initEditorPrefs } from '@/stores/editorPrefs'
 import '@/lib/pwa-install'
 import './styles/globals.css'
 import './styles/animations.css'
 
 initTheme()
+initEditorPrefs()
 
 onlineManager.setEventListener((setOnline) => {
   const onOnline = () => setOnline(true)

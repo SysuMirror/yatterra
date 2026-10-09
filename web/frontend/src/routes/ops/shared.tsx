@@ -108,12 +108,13 @@ export default function OpsShared() {
 
       {/* AI Insight */}
       {!isLoading && fileEntries.length > 0 && (
+        <div data-onboarding-target="shared-insight" className="mb-5">
         <AiInsightPanel
           page="shared"
           title="共享目录洞察"
-          className="mb-5"
           context={`共享目录: ${fileEntries.length} 个条目 (${fileEntries.filter((e: any) => e.type === 'dir').length} 目录, ${fileEntries.filter((e: any) => e.type === 'file').length} 文件)\n${fileEntries.slice(0, 20).map((e: any) => `  ${e.type === 'dir' ? '📁' : '📄'} ${e.name} ${e.size ? `(${e.size})` : ''}`).join('\n')}`}
         />
+        </div>
       )}
 
       <Dialog open={mkdirOpen} onClose={() => setMkdirOpen(false)} title="新建目录">
@@ -132,6 +133,7 @@ export default function OpsShared() {
       <div className="grid grid-cols-1 md:grid-cols-5 lg:grid-cols-3 gap-3 md:gap-4">
         {/* File tree */}
         <Card
+          data-onboarding-target="shared-tree"
           padding="none"
           className={`
             md:col-span-2 lg:col-span-1
@@ -141,7 +143,7 @@ export default function OpsShared() {
             transition-all
           `}
         >
-          <div className="px-3 py-2 text-xs font-semibold text-muted border-b border-black/[0.06] flex items-center justify-between">
+          <div data-onboarding-target="shared-path" className="px-3 py-2 text-xs font-semibold text-muted border-b border-black/[0.06] flex items-center justify-between">
             <span>/shared</span>
             {selectedFile && (
               <button
@@ -164,6 +166,7 @@ export default function OpsShared() {
 
         {/* File viewer */}
         <Card
+          data-onboarding-target="shared-viewer"
           padding="none"
           className={`
             md:col-span-3 lg:col-span-2
@@ -211,7 +214,7 @@ export default function OpsShared() {
       {treeCollapsed && selectedFile && (
         <button
           onClick={() => setTreeCollapsed(false)}
-          className="md:hidden fixed bottom-4 left-4 z-[var(--z-fab)] flex items-center gap-1.5 px-3 py-2 rounded-full bg-accent text-white text-sm font-medium shadow-lg active:scale-95 transition-transform"
+          className="md:hidden fixed bottom-4 left-4 z-[var(--z-fab)] flex items-center gap-1.5 px-3 py-2 rounded-full bg-accent/85 glass-blur text-white text-sm font-medium shadow-lg active:scale-95 transition-transform"
         >
           <Folder size={14} />
           文件树

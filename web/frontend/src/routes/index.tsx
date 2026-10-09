@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { Activity, Cpu, HardDrive, Server, Box, Users, Plus, Bot, Swords, AlertTriangle, Shield, Settings, Plug, Workflow, FolderOpen, ChevronRight, Thermometer, Zap } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { MetricCard } from '@/components/domain/MetricCard'
@@ -59,14 +59,14 @@ export default function Dashboard() {
   const toast = useToastStore((s) => s.add)
   const { hasPerm } = useAuth()
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [joinTarget, setJoinTarget] = useState<string | null>(null)
   const [joinReason, setJoinReason] = useState('')
 
-  const { data, isLoading } = useQuery<DashboardData>({
+  const { data, isLoading, error, refetch } = useQuery<DashboardData>({
     queryKey: ['dashboard'],
     queryFn: async () => {
-      try {
-        const [pods, host, gpu, agents, mcp, llm, audit, threat] = await Promise.all([
+      const [pods, host, gpu, agents, mcp, llm, audit, threat] = await Promise.all([
           api.get<{ pods: any[]; total: number }>('/pods?per_page=200'),
           api.get<any>('/infra/host').catch(() => null),
           api.get<{ gpus: GpuInfo[]; count: number; error?: string }>('/infra/gpu').catch(() => ({ gpus: [], count: 0 })),
@@ -114,9 +114,6 @@ export default function Dashboard() {
           gpuList: gpu.gpus ?? [],
           podList,
         }
-      } catch {
-        return { pods: { total: 0, running: 0, stopped: 0, failed: 0 }, metrics: { cpu: 0, mem: 0, gpu: 0, disk: 0 }, k3s: null, groupsCount: 0, agents: { total: 0, running: 0 }, mcp: { total: 0, enabled: 0 }, llm: { total: 0 }, auditToday: 0, threat: { attacks: 0, banned: 0 }, gpuList: [], podList: [] }
-      }
     },
     staleTime: 10_000,
   })
@@ -125,11 +122,11 @@ export default function Dashboard() {
   const hasAlert = (d?.pods.failed ?? 0) > 0 || (d?.metrics.disk ?? 0) > 90
 
   // Join pod handler
-  const handleJoin = async (name: string) => {
+  const handleJoin = (name: string) => {
     setJoinTarget(name)
     setJoinReason('')
   }
-  ;(window as any).__joinPod = handleJoin
+  const podCols = useMemo(() => buildPodColumns(handleJoin), [handleJoin])
 
   const submitJoin = async () => {
     if (!joinTarget) return
@@ -162,19 +159,29 @@ export default function Dashboard() {
         <PageAiAssistant page="dashboard" context={aiContext} />
       </PageHeader>
 
+      {/* Error banner */}
+      {error && (
+        <div data-onboarding-target="dashboard-error" className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-bad/8 border border-bad/15 mb-5">
+          <AlertTriangle size={16} className="text-bad flex-shrink-0" />
+          <span className="text-sm text-bad font-medium">概览数据加载失败：{(error as any)?.message || '网络异常'}</span>
+          <Button variant="secondary" size="sm" className="ml-auto" onClick={() => refetch()}>重试</Button>
+        </div>
+      )}
+
       {/* AI Insight Panel */}
       {!isLoading && d && (
-        <AiInsightPanel
-          page="dashboard"
-          context={aiContext}
-          title="集群概览洞察"
-          className="mb-5"
-        />
+        <div data-onboarding-target="dashboard-insight" className="mb-5">
+          <AiInsightPanel
+            page="dashboard"
+            context={aiContext}
+            title="集群概览洞察"
+          />
+        </div>
       )}
 
       {/* Alert bar */}
       {hasAlert && !isLoading && (
-        <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-bad/8 border border-bad/15 mb-5">
+        <div data-onboarding-target="dashboard-alert" className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-bad/8 border border-bad/15 mb-5">
           <AlertTriangle size={16} className="text-bad flex-shrink-0" />
           <div className="flex items-center gap-3 flex-wrap text-sm">
             {(d?.pods.failed ?? 0) > 0 && (
@@ -191,7 +198,7 @@ export default function Dashboard() {
       )}
 
       {/* Stat strip */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
+      <div data-onboarding-target="dashboard-stats" className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
         {isLoading ? (
           Array.from({ length: 5 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
@@ -206,7 +213,7 @@ export default function Dashboard() {
       </div>
 
       {/* Cluster card */}
-      <section className="glass-card rounded-2xl p-5 mb-6">
+      <section data-onboarding-target="dashboard-cluster" className="glass-card rounded-2xl p-5 mb-6">
         <h2 className="text-sm font-semibold mb-4">集群</h2>
         <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
           <Row label="运行 / 总计">
@@ -240,7 +247,7 @@ export default function Dashboard() {
       </section>
 
       {/* Module health strip */}
-      <section className="glass-card rounded-2xl p-5 mb-6">
+      <section data-onboarding-target="dashboard-modules" className="glass-card rounded-2xl p-5 mb-6">
         <h2 className="text-sm font-semibold mb-4">模块</h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <ModuleChip
@@ -280,7 +287,7 @@ export default function Dashboard() {
 
       {/* GPU overview */}
       {(d?.gpuList?.length ?? 0) > 0 && (
-        <section className="glass-card rounded-2xl p-5 mb-6">
+        <section data-onboarding-target="dashboard-gpu" className="glass-card rounded-2xl p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold">GPU</h2>
             <span className="text-xs text-muted">{d!.gpuList.length} 块</span>
@@ -333,23 +340,23 @@ export default function Dashboard() {
 
       {/* Pod list */}
       {(d?.podList?.length ?? 0) > 0 && (
-        <section className="glass-card rounded-2xl p-5 mb-6">
+        <section data-onboarding-target="dashboard-pods" className="glass-card rounded-2xl p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold">Pod 列表</h2>
             <span className="text-xs text-muted">{d!.podList.length} 个</span>
           </div>
           <DataTable
-            columns={podColumns}
+            columns={podCols}
             data={d!.podList}
             keyFn={(r) => r.name}
-            onRowClick={(r) => { window.location.href = `/pods/${r.name}` }}
+            onRowClick={(r) => navigate(`/pods/${r.name}`)}
             empty={<span className="text-sm text-muted">暂无 Pod</span>}
           />
         </section>
       )}
 
       {/* Quick actions */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <section data-onboarding-target="dashboard-quick" className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <QuickAction icon={<Plus size={18} />} label="创建 Pod" desc="新建容器开发环境" to="/pods" />
         <QuickAction icon={<Bot size={18} />} label="AI 对话" desc="与助手交互" to="/dev/harness" />
         <QuickAction icon={<Swords size={18} />} label="查看攻防" desc="实时威胁态势" to="/threat-map" />
@@ -429,8 +436,9 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-/** Pod table columns */
-const podColumns: Column<PodRow>[] = [
+/** Pod table columns (join handler passed in — no window hack) */
+function buildPodColumns(onJoin: (name: string) => void): Column<PodRow>[] {
+  return [
   {
     key: 'name',
     title: 'Pod 名',
@@ -485,11 +493,12 @@ const podColumns: Column<PodRow>[] = [
         <Button
           variant="ghost"
           size="sm"
-          onClick={(e) => { e.stopPropagation(); (window as any).__joinPod?.(r.name) }}
+          onClick={(e) => { e.stopPropagation(); onJoin(r.name) }}
         >
           申请加入
         </Button>
       )
     },
   },
-]
+  ]
+}

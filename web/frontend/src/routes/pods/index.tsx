@@ -188,7 +188,7 @@ export default function PodList() {
       <PageHeader title="Pod" count={data?.total} description="容器开发环境" doc={{ section: 'pods', item: 0, label: 'Pod 文档' }}>
         <div className="flex items-center gap-2">
           {isDesktop && (
-            <div className="flex items-center rounded-lg border-[0.5px] border-black/[0.08] overflow-hidden">
+            <div data-onboarding-target="pods-view-toggle" className="flex items-center rounded-lg border-[0.5px] border-black/[0.08] overflow-hidden">
               <ViewBtn active={view === 'table'} onClick={() => setView('table')} label="列表" icon={<Rows3 size={14} />} />
               <ViewBtn active={view === 'cards'} onClick={() => setView('cards')} label="卡片" icon={<LayoutGrid size={14} />} />
             </div>
@@ -202,17 +202,18 @@ export default function PodList() {
 
       {/* AI Insight */}
       {!isLoading && pods.length > 0 && (
+        <div data-onboarding-target="pods-insight" className="mb-5">
         <AiInsightPanel
           page="pod"
           title="Pod 集群洞察"
-          className="mb-5"
           context={`Pod 总数: ${pods.length}, 运行 ${pods.filter(p => p.status === 'Running').length}, 停止 ${pods.filter(p => p.status === 'Stopped').length}, 失败 ${pods.filter(p => p.status === 'Failed').length}\n${pods.slice(0, 25).map(p => `  ${p.name} [${p.status}] CPU:${p.cpu} Mem:${p.mem}GB GPU:${p.gpus?.join(',')} 类型:${p.type} 负责人:${p.owners?.join(',') ?? '?'}`).join('\n')}`}
         />
+        </div>
       )}
 
       {/* Summary strip */}
       {!isLoading && data && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3 mb-5">
+        <div data-onboarding-target="pods-stats" className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3 mb-5">
           <MetricCard icon={<Box size={15} className="text-ok" />} label="运行" value={pods.filter(p => p.status === 'Running').length} />
           <MetricCard icon={<Box size={15} className="text-muted" />} label="已停止" value={pods.filter(p => p.status === 'Stopped').length} />
           <MetricCard icon={<AlertTriangle size={15} className="text-bad" />} label="失败" value={pods.filter(p => p.status === 'Failed').length} />
@@ -222,7 +223,7 @@ export default function PodList() {
 
       {/* AI diagnostic hint for failed pods */}
       {!isLoading && pods.some(p => p.status === 'Failed') && (
-        <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-accent/6 border border-accent/12 mb-5 text-sm">
+        <div data-onboarding-target="pods-failed-hint" className="flex items-center gap-2 px-4 py-2 rounded-xl bg-accent/6 border border-accent/12 mb-5 text-sm">
           <Bot size={15} className="text-accent" />
           <span className="text-ink-2">有 Pod 失败，</span>
           <button
@@ -235,7 +236,7 @@ export default function PodList() {
       )}
 
       {/* Filters — wrap on narrow screens instead of squeezing */}
-      <div className="flex items-center gap-3 mb-5 flex-wrap">
+      <div data-onboarding-target="pods-filters" className="flex items-center gap-3 mb-5 flex-wrap">
         <SearchBar onboardingTarget="pods-search" value={search} onChange={setSearch} placeholder="搜索 Pod 名称..." className="flex-1 min-w-[180px] max-w-xs" />
         <Select
           onboardingTarget="pods-status"

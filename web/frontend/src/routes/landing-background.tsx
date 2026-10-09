@@ -109,17 +109,18 @@ export function LandingBackground({ paused }: { paused: boolean }) {
     const draw = () => {
       ctx.clearRect(0, 0, width, height)
 
-      // constellation lines
+      // constellation lines — squared-distance compares only, no per-pair sqrt
+      const LINK2 = 118 * 118
       for (let i = 0; i < particles.length; i++) {
         const a = particles[i]!
         for (let j = i + 1; j < particles.length; j++) {
           const b = particles[j]!
           const dx = a.x - b.x
           const dy = a.y - b.y
-          const distance = Math.hypot(dx, dy)
-          if (distance > 118) continue
-          const alpha = (1 - distance / 118) * 0.13
-          ctx.strokeStyle = `rgba(154, 235, 210, ${alpha.toFixed(3)})`
+          const dist2 = dx * dx + dy * dy
+          if (dist2 > LINK2) continue
+          const alpha = (1 - Math.sqrt(dist2) / 118) * 0.13
+          ctx.strokeStyle = `rgba(157, 235, 255, ${alpha.toFixed(3)})`
           ctx.lineWidth = 0.7
           ctx.beginPath()
           ctx.moveTo(a.x, a.y)
@@ -130,11 +131,14 @@ export function LandingBackground({ paused }: { paused: boolean }) {
 
       // cursor links
       if (pointer.active && fine) {
+        const REACH2 = 170 * 170
         for (const p of particles) {
-          const distance = Math.hypot(p.x - pointer.x, p.y - pointer.y)
-          if (distance > 170) continue
-          const alpha = (1 - distance / 170) * 0.3
-          ctx.strokeStyle = `rgba(154, 235, 210, ${alpha.toFixed(3)})`
+          const dx = p.x - pointer.x
+          const dy = p.y - pointer.y
+          const dist2 = dx * dx + dy * dy
+          if (dist2 > REACH2) continue
+          const alpha = (1 - Math.sqrt(dist2) / 170) * 0.3
+          ctx.strokeStyle = `rgba(157, 235, 255, ${alpha.toFixed(3)})`
           ctx.lineWidth = 0.8
           ctx.beginPath()
           ctx.moveTo(pointer.x, pointer.y)
@@ -144,9 +148,12 @@ export function LandingBackground({ paused }: { paused: boolean }) {
       }
 
       // particles
+      const NEAR2 = 170 * 170
       for (const p of particles) {
         const tone = TONES[p.tone]!
-        const near = pointer.active && fine && Math.hypot(p.x - pointer.x, p.y - pointer.y) < 170
+        const dx = p.x - pointer.x
+        const dy = p.y - pointer.y
+        const near = pointer.active && fine && dx * dx + dy * dy < NEAR2
         ctx.fillStyle = `rgba(${tone.r}, ${tone.g}, ${tone.b}, ${near ? 0.85 : 0.42})`
         ctx.beginPath()
         ctx.arc(p.x, p.y, near ? p.r + 0.5 : p.r, 0, Math.PI * 2)
@@ -158,12 +165,15 @@ export function LandingBackground({ paused }: { paused: boolean }) {
       if (!running) return
       const delta = Math.min((now - last) / 16.7, 3)
       last = now
+      const REACH2 = 170 * 170
+      const MAX2 = 0.55 * 0.55
       for (const p of particles) {
         if (pointer.active && fine) {
           const dx = pointer.x - p.x
           const dy = pointer.y - p.y
-          const distance = Math.hypot(dx, dy)
-          if (distance < 170 && distance > 1) {
+          const dist2 = dx * dx + dy * dy
+          if (dist2 < REACH2 && dist2 > 1) {
+            const distance = Math.sqrt(dist2)
             const force = (1 - distance / 170) * 0.014
             p.vx += (dx / distance) * force
             p.vy += (dy / distance) * force
@@ -171,8 +181,9 @@ export function LandingBackground({ paused }: { paused: boolean }) {
         }
         p.vx *= 0.992
         p.vy *= 0.992
-        const speed = Math.hypot(p.vx, p.vy)
-        if (speed > 0.55) {
+        const speed2 = p.vx * p.vx + p.vy * p.vy
+        if (speed2 > MAX2) {
+          const speed = Math.sqrt(speed2)
           p.vx = (p.vx / speed) * 0.55
           p.vy = (p.vy / speed) * 0.55
         }

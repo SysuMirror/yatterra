@@ -2,12 +2,13 @@ import { lazy, Suspense, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Terminal as TermIcon, Activity, Key, Rocket, Users, Settings, Play, Square, RotateCw, ArrowLeft, FolderOpen, Plus, Trash2, ScrollText, Link2, Lock, Globe } from 'lucide-react'
+import { Terminal as TermIcon, Activity, Key, Rocket, Users, Settings, Play, Square, RotateCw, ArrowLeft, FolderOpen, Plus, Trash2, ScrollText, Link2, Lock, Globe, Code2 } from 'lucide-react'
 import { Tabs } from '@/components/ui/Tabs'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Dialog } from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { MonitorTab } from '@/components/pod/MonitorTab'
@@ -17,6 +18,7 @@ const SettingsTab = lazy(() => import('@/components/pod/SettingsTab').then(m => 
 const MembersTab = lazy(() => import('@/components/pod/MembersTab').then(m => ({ default: m.MembersTab })))
 const DeploysTab = lazy(() => import('@/components/pod/DeploysTab').then(m => ({ default: m.DeploysTab })))
 const AppLogsTab = lazy(() => import('@/components/pod/AppLogsTab').then(m => ({ default: m.AppLogsTab })))
+const ProfileTab = lazy(() => import('@/components/pod/ProfileTab').then(m => ({ default: m.ProfileTab })))
 import { CredentialCard } from '@/components/domain/CredentialCard'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { LogViewer } from '@/components/domain/LogViewer'
@@ -39,6 +41,7 @@ const tabDefs = [
   { key: 'creds', label: '凭证', icon: <Key size={15} /> },
   { key: 'domains', label: '子域名', icon: <Globe size={15} /> },
   { key: 'deploys', label: '部署', icon: <Rocket size={15} /> },
+  { key: 'profile', label: '项目画像', icon: <Activity size={15} /> },
   { key: 'members', label: '成员', icon: <Users size={15} /> },
   { key: 'settings', label: '设置', icon: <Settings size={15} /> },
 ]
@@ -139,7 +142,7 @@ export default function PodDetail() {
         <button onClick={() => navigate('/pods')} aria-label="返回" className="w-10 h-10 rounded-lg flex items-center justify-center text-muted hover:text-ink hover:bg-black/[0.04] active:bg-black/[0.06] transition-colors">
           <ArrowLeft size={18} />
         </button>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0" data-onboarding-target="pod-header">
           <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-xl font-bold tracking-tight font-mono break-all">{name}</h1>
             <Badge variant={statusVariant as any} dot>{podStatusLabel(status)}</Badge>
@@ -150,7 +153,10 @@ export default function PodDetail() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" data-onboarding-target="pod-actions">
+          <Button variant="secondary" size="sm" onClick={() => navigate(`/pods/${name}/ide`)}>
+            <Code2 size={14} /> IDE
+          </Button>
           {running ? (
             <Button variant="secondary" size="sm" onClick={() => actOnPod('stop', '停止中')}>
               <Square size={14} /> 停止
@@ -163,16 +169,17 @@ export default function PodDetail() {
           <Button variant="secondary" size="sm" onClick={() => actOnPod('restart', '重启中')}>
             <RotateCw size={14} /> 重启
           </Button>
-          <PageAiAssistant page="pod" context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator_label ?? pod.creator ?? ''}` : ''} />
+          <PageAiAssistant page={`pod:${name}`} context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator_label ?? pod.creator ?? ''}` : ''} />
         </div>
       </div>
 
+      <div data-onboarding-target="pod-insight" className="mb-5">
       <AiInsightPanel
-        page="pod"
+        page={`pod:${name}`}
         title={`Pod ${name} 洞察`}
-        className="mb-5"
         context={pod ? `Pod: ${pod.name}, 状态: ${pod.status}, CPU: ${pod.cpu}核, 内存: ${pod.mem}GB, 存储: ${pod.storage}GB, GPU: ${(pod.gpus ?? []).join(',')}, 类型: ${pod.type ?? ''}, 创建者: ${pod.creator_label ?? pod.creator ?? ''}, 成员: ${(pod.members ?? []).map((m: string) => pod.labels?.[m] || m).join(', ')}, 角色: ${pod.my_role ?? ''}` : ''}
       />
+      </div>
 
       <Tabs onboardingPrefix="pod-tab" tabs={tabDefs} active={activeTab} onChange={setActiveTab} className="mb-6" swipeable />
 
@@ -194,6 +201,7 @@ export default function PodDetail() {
           {activeTab === 'creds' && <CredsTab podName={name!} pod={pod} />}
           {activeTab === 'domains' && <SubdomainsTab podName={name!} />}
           {activeTab === 'deploys' && <DeploysTab podName={name!} canManage={canManage} />}
+          {activeTab === 'profile' && <ProfileTab podName={name!} />}
           {activeTab === 'members' && <MembersTab podName={name!} canManage={canManage} />}
           {activeTab === 'settings' && <SettingsTab podName={name!} pod={pod} canManage={canManage} />}
           </Suspense>
@@ -341,6 +349,7 @@ function CredsTab({ podName, pod }: { podName: string; pod?: any }) {
   const [service, setService] = useState('mysql')
   const [bucket, setBucket] = useState('')
   const [perm, setPerm] = useState('readwrite')
+  const [revokeTarget, setRevokeTarget] = useState<any>(null)
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['creds', podName],
@@ -362,7 +371,7 @@ function CredsTab({ podName, pod }: { podName: string; pod?: any }) {
   })
   const revokeCred = useMutation({
     mutationFn: (c: any) => api.del(`/pods/${podName}/credentials/${c.id}`),
-    onSuccess: () => { toast({ type: 'success', message: '凭证已撤销' }); refresh() },
+    onSuccess: () => { toast({ type: 'success', message: '凭证已撤销' }); setRevokeTarget(null); refresh() },
     onError: (e: any) => toast({ type: 'error', message: e?.message || '撤销失败' }),
   })
 
@@ -413,7 +422,7 @@ function CredsTab({ podName, pod }: { podName: string; pod?: any }) {
             {dbCreds.map((c: any, i: number) => (
               <div key={i} className="relative">
                 <CredentialCard service={c.service || c.kind} type="database" host={c.host} port={c.port} username={c.user} password={c.password} database={c.database} />
-                <Button variant="ghost" size="sm" className="absolute top-2 right-2" aria-label="撤销凭证" onClick={() => { if (confirm('撤销此凭证？')) revokeCred.mutate(c) }}>
+                <Button variant="ghost" size="sm" className="absolute top-2 right-2" aria-label="撤销凭证" onClick={() => setRevokeTarget(c)}>
                   <Trash2 size={13} /> 撤销
                 </Button>
               </div>
@@ -428,7 +437,7 @@ function CredsTab({ podName, pod }: { podName: string; pod?: any }) {
             {minioCreds.map((c: any, i: number) => (
               <div key={i} className="relative">
                 <CredentialCard service={c.service || 'MinIO'} type="storage" host={c.host} port={c.port} username={c.access_key} password={c.secret_key} />
-                <Button variant="ghost" size="sm" className="absolute top-2 right-2" aria-label="撤销凭证" onClick={() => { if (confirm('撤销此凭证？')) revokeCred.mutate(c) }}>
+                <Button variant="ghost" size="sm" className="absolute top-2 right-2" aria-label="撤销凭证" onClick={() => setRevokeTarget(c)}>
                   <Trash2 size={13} /> 撤销
                 </Button>
               </div>
@@ -439,6 +448,16 @@ function CredsTab({ podName, pod }: { podName: string; pod?: any }) {
       {dbCreds.length === 0 && minioCreds.length === 0 && (
         <p className="text-sm text-muted text-center py-8">暂无凭证</p>
       )}
+
+      <ConfirmDialog
+        open={!!revokeTarget}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={() => revokeTarget && revokeCred.mutate(revokeTarget)}
+        title="撤销凭证"
+        description={`确定撤销此凭证？撤销后 Pod 内使用该凭证的服务将立即无法访问。`}
+        confirmText="撤销"
+        loading={revokeCred.isPending}
+      />
     </div>
   )
 }
@@ -451,6 +470,7 @@ function SubdomainsTab({ podName }: { podName: string }) {
   const [note, setNote] = useState('')
   const [editId, setEditId] = useState<string | null>(null)
   const [editPrefix, setEditPrefix] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<any>(null)
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['pod-proxy', podName],
@@ -466,7 +486,7 @@ function SubdomainsTab({ podName }: { podName: string }) {
   })
   const delMut = useMutation({
     mutationFn: (id: string) => api.del(`/infra/pods/${podName}/proxy/${id}`),
-    onSuccess: () => { toast({ type: 'success', message: '已删除' }); refresh() },
+    onSuccess: () => { toast({ type: 'success', message: '已删除' }); setDeleteTarget(null); refresh() },
     onError: (e: any) => toast({ type: 'error', message: e?.message || '删除失败' }),
   })
   const toggleMut = useMutation({
@@ -534,7 +554,7 @@ function SubdomainsTab({ podName }: { podName: string }) {
                   <Button variant="ghost" size="sm" onClick={() => toggleMut.mutate({ id: m.id, enabled: m.enabled === false })}>
                     {m.enabled === false ? '启用' : '停用'}
                   </Button>
-                  <Button variant="ghost" size="sm" aria-label="删除映射" onClick={() => { if (confirm(`删除 ${m.subdomain}.${DOMAIN}？`)) delMut.mutate(m.id) }}>
+                  <Button variant="ghost" size="sm" aria-label="删除映射" onClick={() => setDeleteTarget(m)}>
                     <Trash2 size={13} />
                   </Button>
                 </div>
@@ -543,6 +563,16 @@ function SubdomainsTab({ podName }: { podName: string }) {
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => deleteTarget && delMut.mutate(deleteTarget.id)}
+        title="删除子域名映射"
+        description={`确定删除 ${deleteTarget?.subdomain}.${DOMAIN}？删除后该子域名立即不可访问。`}
+        confirmText="删除"
+        loading={delMut.isPending}
+      />
 
       <Dialog open={addOpen} onClose={() => setAddOpen(false)} title="添加子域名映射">
         <div className="space-y-4">

@@ -1,7 +1,34 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useInView } from 'framer-motion'
+import { useMediaQuery } from '@/hooks/useMediaQuery'
+import { useLandingCopy } from './landing.i18n'
 
 type Point = [number, number]
+
+/** Polished Yatterra orbit mark — glowing disc with the lucide "orbit" glyph (arcs + satellite dots). */
+export function OrbitMark({ r = 24, accent = '#5c8bff', bright = false, className, style, filter }: { r?: number; accent?: string; bright?: boolean; className?: string; style?: CSSProperties; filter?: string }) {
+  const uid = useId().replace(/:/g, '')
+  const s = r / 12
+  return (
+    <g className={className} style={style} filter={filter}>
+      <defs>
+        <radialGradient id={`${uid}-f`} cx=".5" cy=".42" r=".65">
+          <stop offset="0" stopColor={bright ? '#eafffa' : '#1d5568'} />
+          <stop offset=".55" stopColor={bright ? accent : '#0e2436'} />
+          <stop offset="1" stopColor={bright ? '#5c8bff' : '#0a1a29'} />
+        </radialGradient>
+      </defs>
+      <circle r={r} fill={`url(#${uid}-f)`} stroke={bright ? '#b7fff0' : accent} strokeWidth={Math.max(1.2, r * .07)} />
+      <g transform={`translate(${-12 * s} ${-12 * s}) scale(${s})`} fill="none" stroke={bright ? '#04131c' : '#eafffa'} strokeWidth="1.7" strokeLinecap="round">
+        <path d="M20.341 6.484A10 10 0 0 1 10.266 21.85" />
+        <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152" />
+        <circle cx="12" cy="12" r="3" fill={bright ? '#04131c' : '#eafffa'} stroke="none" />
+        <circle cx="19" cy="5" r="2" fill={bright ? '#04131c' : accent} stroke="none" />
+        <circle cx="5" cy="19" r="2" fill={bright ? '#04131c' : accent} stroke="none" />
+      </g>
+    </g>
+  )
+}
 
 export function AnimatedScene({ children, className = '', label }: { children: ReactNode; className?: string; label: string }) {
   const scene = useRef<HTMLDivElement>(null)
@@ -19,7 +46,7 @@ export function AnimatedScene({ children, className = '', label }: { children: R
 }
 
 /** Animated data packet travelling along a polyline, with a glowing trail. */
-function Flow({ points, color = '#67e8d0', delay = 0, dashed = false, glow = true }: { points: Point[]; color?: string; delay?: number; dashed?: boolean; glow?: boolean }) {
+function Flow({ points, color = '#5c8bff', delay = 0, dashed = false, glow = true }: { points: Point[]; color?: string; delay?: number; dashed?: boolean; glow?: boolean }) {
   const uid = useId().replace(/:/g, '')
   const animation = `terra-flow-${uid}`
   const distances = points.map((point, index) => {
@@ -43,10 +70,12 @@ function Flow({ points, color = '#67e8d0', delay = 0, dashed = false, glow = tru
           <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
-      {glow && <path d={path} stroke={color} strokeOpacity=".16" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" filter={`url(#${uid}-fg)`} />}
+      {glow && <path d={path} stroke={color} strokeOpacity=".1" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" filter={`url(#${uid}-fg)`} />}
+      {glow && <path d={path} stroke={color} strokeOpacity=".14" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
       <path d={path} stroke={color} strokeOpacity={dashed ? '.4' : '.42'} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" strokeDasharray={dashed ? '5 7' : undefined} className={dashed ? 'terra-march' : undefined} style={dashed ? { animationDelay: `${delay}s` } : undefined} />
       <style>{`@keyframes ${animation}{${frames}}`}</style>
-      <circle cx="0" cy="0" r="3.4" fill={color} className="terra-packet" style={{ animationName: animation, animationDelay: `${delay}s`, filter: `drop-shadow(0 0 4px ${color})` }} />
+      <circle cx="0" cy="0" r="2" fill={color} fillOpacity=".55" className="terra-packet" style={{ animationName: animation, animationDelay: `${delay + .22}s` }} />
+      <circle cx="0" cy="0" r="3.4" fill={color} className="terra-packet" style={{ animationName: animation, animationDelay: `${delay}s`, filter: `drop-shadow(0 0 5px ${color})` }} />
       {ends.map(([horizontal, vertical], index) => (
         <g key={index}>
           <circle cx={horizontal} cy={vertical} r="6.5" fill={color} fillOpacity=".12" />
@@ -57,70 +86,84 @@ function Flow({ points, color = '#67e8d0', delay = 0, dashed = false, glow = tru
   )
 }
 
-function Rack({ horizontal = 0, vertical = 0, scale = 1, color = '#67e8d0' }: { horizontal?: number; vertical?: number; scale?: number; color?: string }) {
+function Rack({ horizontal = 0, vertical = 0, scale = 1, color = '#5c8bff' }: { horizontal?: number; vertical?: number; scale?: number; color?: string }) {
   const uid = useId().replace(/:/g, '')
   return (
     <g transform={`translate(${horizontal} ${vertical}) scale(${scale})`} strokeLinejoin="round">
       <defs>
         <linearGradient id={`${uid}-t`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#22404f" /><stop offset="1" stopColor="#152c3c" />
+          <stop offset="0" stopColor="#2a4c5e" /><stop offset=".45" stopColor="#22404f" /><stop offset="1" stopColor="#152c3c" />
         </linearGradient>
         <linearGradient id={`${uid}-l`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#122637" /><stop offset="1" stopColor="#0a1926" />
+          <stop offset="0" stopColor="#16303f" /><stop offset=".5" stopColor="#122637" /><stop offset="1" stopColor="#0a1926" />
         </linearGradient>
         <linearGradient id={`${uid}-r`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#102536" /><stop offset="1" stopColor="#091724" />
+          <stop offset="0" stopColor="#143650" /><stop offset=".5" stopColor="#102536" /><stop offset="1" stopColor="#091724" />
+        </linearGradient>
+        <linearGradient id={`${uid}-slot`} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="#0a1622" /><stop offset=".55" stopColor="#0f2130" /><stop offset="1" stopColor="#0d1b2a" />
         </linearGradient>
         <radialGradient id={`${uid}-s`}>
-          <stop offset="0" stopColor="#02070d" stopOpacity=".55" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
+          <stop offset="0" stopColor="#02070d" stopOpacity=".65" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
         </radialGradient>
         <filter id={`${uid}-g`} x="-80%" y="-80%" width="260%" height="260%">
           <feGaussianBlur stdDeviation="1.8" result="b" />
           <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
-      <ellipse cx="47" cy="140" rx="56" ry="11" fill={`url(#${uid}-s)`} />
+      <ellipse cx="47" cy="142" rx="60" ry="12" fill={`url(#${uid}-s)`} />
       <path d="M0 10 55 -7 94 10 39 28Z" fill={`url(#${uid}-t)`} stroke={color} strokeOpacity=".55" />
-      <path d="M5 10 55 -5 87 10" stroke="#ffffff" strokeOpacity=".14" strokeLinecap="round" />
+      <path d="M5 9 55 -5 87 10" stroke="#ffffff" strokeOpacity=".22" strokeLinecap="round" />
+      <path d="M5 10.5 55 -3.5 86 10.5" stroke="#ffffff" strokeOpacity=".08" strokeLinecap="round" />
       <path d="M0 10 39 28V137L0 117Z" fill={`url(#${uid}-l)`} stroke={color} strokeOpacity=".42" />
       <path d="M39 28 94 10V118L39 137Z" fill={`url(#${uid}-r)`} stroke={color} strokeOpacity=".32" />
+      <path d="M2 13 39 29" stroke="#ffffff" strokeOpacity=".07" />
       {[0, 1, 2, 3].map(slot => (
         <g key={slot} transform={`translate(0 ${slot * 25})`}>
-          <path d="M45 35 88 20V37L45 52Z" fill="#0d1b2a" stroke={color} strokeOpacity=".3" />
+          <path d="M45 35 88 20V37L45 52Z" fill={`url(#${uid}-slot)`} stroke={color} strokeOpacity=".3" />
+          <path d="M45 35 88 20V24L45 39Z" fill="#ffffff" fillOpacity=".05" />
           <path d="M51 37 72 30M51 42 66 37" stroke={color} strokeOpacity=".55" strokeWidth="1.2" strokeLinecap="round" />
+          <path d="M51 47 60 43.5" stroke={color} strokeOpacity=".3" strokeWidth="1" strokeLinecap="round" />
           <circle cx="81" cy="31" r="2.2" fill={color} className="terra-light" style={{ animationDelay: `${slot * -.7}s`, filter: `drop-shadow(0 0 3px ${color})` }} />
+          <circle cx="76.5" cy="33" r="1.4" fill={color} fillOpacity=".5" />
           <path d="M8 25 29 35M8 29 29 39M8 33 29 43" stroke="#315063" strokeOpacity=".9" strokeLinecap="round" />
         </g>
       ))}
       <path d="M45 128 86 114" stroke={color} strokeWidth="2.2" strokeOpacity=".75" filter={`url(#${uid}-g)`} />
+      <path d="M45 131 86 117" stroke={color} strokeWidth="1" strokeOpacity=".25" />
     </g>
   )
 }
 
-function Chip({ horizontal = 0, vertical = 0, scale = 1, label = 'GPU', color = '#a5b4fc' }: { horizontal?: number; vertical?: number; scale?: number; label?: string; color?: string }) {
+function Chip({ horizontal = 0, vertical = 0, scale = 1, label = 'GPU', color = '#90a8ff' }: { horizontal?: number; vertical?: number; scale?: number; label?: string; color?: string }) {
   const uid = useId().replace(/:/g, '')
   return (
     <g transform={`translate(${horizontal} ${vertical}) scale(${scale})`} strokeLinejoin="round">
       <defs>
         <linearGradient id={`${uid}-t`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#1a3145" /><stop offset="1" stopColor="#101f30" />
+          <stop offset="0" stopColor="#22405a" /><stop offset=".5" stopColor="#1a3145" /><stop offset="1" stopColor="#101f30" />
         </linearGradient>
         <linearGradient id={`${uid}-d`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor={color} stopOpacity=".55" /><stop offset="1" stopColor={color} stopOpacity=".2" />
+          <stop offset="0" stopColor={color} stopOpacity=".65" /><stop offset=".6" stopColor={color} stopOpacity=".35" /><stop offset="1" stopColor={color} stopOpacity=".2" />
+        </linearGradient>
+        <linearGradient id={`${uid}-side`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#0d1e2e" /><stop offset="1" stopColor="#081420" />
         </linearGradient>
         <radialGradient id={`${uid}-s`}>
-          <stop offset="0" stopColor="#02070d" stopOpacity=".55" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
+          <stop offset="0" stopColor="#02070d" stopOpacity=".65" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
         </radialGradient>
         <filter id={`${uid}-g`} x="-80%" y="-80%" width="260%" height="260%">
           <feGaussianBlur stdDeviation="2" result="b" />
           <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
-      <ellipse cx="76" cy="50" rx="84" ry="14" fill={`url(#${uid}-s)`} />
+      <ellipse cx="76" cy="52" rx="88" ry="15" fill={`url(#${uid}-s)`} />
       <path d="M0 0 76 -39 153 0 76 40Z" fill={`url(#${uid}-t)`} stroke={color} strokeOpacity=".55" />
-      <path d="M0 0V12L76 53 153 12V0L76 40Z" fill="#0a1826" stroke={color} strokeOpacity=".42" />
+      <path d="M8 -1 76 -35 146 -1" stroke="#ffffff" strokeOpacity=".18" strokeLinecap="round" />
+      <path d="M0 0V12L76 53 153 12V0L76 40Z" fill={`url(#${uid}-side)`} stroke={color} strokeOpacity=".42" />
       <path d="M39 -2 76 -21 114 -2 76 18Z" fill={`url(#${uid}-d)`} stroke={color} />
       <path d="M39 -2V7L76 27 114 7V-2L76 18Z" fill="#0c1d2d" stroke={color} strokeOpacity=".65" />
+      <path d="M42 -3 76 -20 111 -3" stroke="#ffffff" strokeOpacity=".25" strokeLinecap="round" />
       <path d="M76 -21V18" stroke="#ffffff" strokeOpacity=".16" />
       {[0, 1, 2, 3].map(pin => <g key={pin} stroke={color} strokeOpacity=".6" strokeLinecap="round"><path d={`M${23 + pin * 10} ${-7 - pin * 5}l-10 -6M${95 + pin * 10} ${17 - pin * 5}l10 5M${25 + pin * 10} ${14 + pin * 5}l-8 5`} /></g>)}
       <text x="76" y="1" textAnchor="middle" fill={color} fontSize="13" fontWeight="700" letterSpacing=".5" filter={`url(#${uid}-g)`}>{label}</text>
@@ -134,35 +177,42 @@ function Building({ home = false }: { home?: boolean }) {
     <g strokeLinejoin="round">
       <defs>
         <linearGradient id={`${uid}-t`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#1c3a4a" /><stop offset="1" stopColor="#152e3c" />
+          <stop offset="0" stopColor="#265062" /><stop offset=".5" stopColor="#1c3a4a" /><stop offset="1" stopColor="#152e3c" />
         </linearGradient>
         <linearGradient id={`${uid}-l`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#102231" /><stop offset="1" stopColor="#0b1a27" />
+          <stop offset="0" stopColor="#14303f" /><stop offset="1" stopColor="#0b1a27" />
         </linearGradient>
         <linearGradient id={`${uid}-r`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#14303f" /><stop offset="1" stopColor="#0d2231" />
+          <stop offset="0" stopColor="#1a4050" /><stop offset="1" stopColor="#0d2231" />
+        </linearGradient>
+        <linearGradient id={`${uid}-win`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#b7fff0" /><stop offset="1" stopColor="#5c8bff" />
         </linearGradient>
         <radialGradient id={`${uid}-s`}>
-          <stop offset="0" stopColor="#02070d" stopOpacity=".55" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
+          <stop offset="0" stopColor="#02070d" stopOpacity=".65" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
         </radialGradient>
       </defs>
-      <ellipse cx="58" cy="128" rx="72" ry="13" fill={`url(#${uid}-s)`} />
-      <path d="M0 26 66 3 116 28 51 53Z" fill={`url(#${uid}-t)`} stroke="#67e8d0" strokeOpacity=".55" />
-      <path d="M0 26V98L51 126V53Z" fill={`url(#${uid}-l)`} stroke="#67e8d0" strokeOpacity=".45" />
-      <path d="M51 53 116 28V101L51 126Z" fill={`url(#${uid}-r)`} stroke="#67e8d0" strokeOpacity=".4" />
-      {home && <path d="M-8 28 32 -17 73 7 124 28 57 55 32 16Z" fill="#1f4450" stroke="#8ff0da" strokeOpacity=".65" />}
+      <ellipse cx="58" cy="130" rx="76" ry="14" fill={`url(#${uid}-s)`} />
+      <path d="M0 26 66 3 116 28 51 53Z" fill={`url(#${uid}-t)`} stroke="#5c8bff" strokeOpacity=".55" />
+      <path d="M0 26V98L51 126V53Z" fill={`url(#${uid}-l)`} stroke="#5c8bff" strokeOpacity=".45" />
+      <path d="M51 53 116 28V101L51 126Z" fill={`url(#${uid}-r)`} stroke="#5c8bff" strokeOpacity=".4" />
+      {home && <path d="M-8 28 32 -17 73 7 124 28 57 55 32 16Z" fill="#1f4450" stroke="#9debff" strokeOpacity=".65" />}
       {[0, 1, 2].map(column => [0, 1].map(row => (
-        <path
-          key={`${column}-${row}`}
-          d={`M${61 + column * 17} ${62 + row * 22 - column * 6}l10 -4v13l-10 4Z`}
-          fill="#67e8d0"
-          fillOpacity={row === column ? '.7' : '.16'}
-          className={row === column ? 'terra-light' : undefined}
-          style={row === column ? { animationDelay: `${(column - row) * -.9}s`, filter: 'drop-shadow(0 0 4px #67e8d0)' } : undefined}
-        />
+        <g key={`${column}-${row}`}>
+          <path
+            d={`M${61 + column * 17} ${62 + row * 22 - column * 6}l10 -4v13l-10 4Z`}
+            fill={`url(#${uid}-win)`}
+            fillOpacity={row === column ? '.7' : '.16'}
+            className={row === column ? 'terra-light' : undefined}
+            style={row === column ? { animationDelay: `${(column - row) * -.9}s`, filter: 'drop-shadow(0 0 4px #5c8bff)' } : undefined}
+          />
+          <path d={`M${61 + column * 17} ${62 + row * 22 - column * 6}l10 -4`} stroke="#ffffff" strokeOpacity=".25" />
+        </g>
       )))}
-      <path d="M12 49 22 54V68L12 63ZM30 59 40 64V78L30 73ZM12 75 22 80V94L12 89Z" fill="#67e8d0" fillOpacity=".2" />
-      <path d="M4 27 66 6 112 28" stroke="#ffffff" strokeOpacity=".12" />
+      <path d="M12 49 22 54V68L12 63ZM30 59 40 64V78L30 73ZM12 75 22 80V94L12 89ZM30 85 40 90V104L30 99Z" fill="#5c8bff" fillOpacity=".2" />
+      <path d="M4 27 66 6 112 28" stroke="#ffffff" strokeOpacity=".16" />
+      <path d="M3 28.5 66 7.5" stroke="#ffffff" strokeOpacity=".07" />
+      <path d="M51 53v73" stroke="#ffffff" strokeOpacity=".06" />
     </g>
   )
 }
@@ -173,18 +223,27 @@ function NodeCluster({ x, y, accent, label, body, glyph }: { x: number; y: numbe
     <g transform={`translate(${x} ${y})`} strokeLinejoin="round">
       <defs>
         <linearGradient id={`${uid}-c`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#163041" /><stop offset="1" stopColor="#0e2132" />
+          <stop offset="0" stopColor="#1b3a4e" /><stop offset=".5" stopColor="#163041" /><stop offset="1" stopColor="#0e2132" />
         </linearGradient>
+        <linearGradient id={`${uid}-sheen`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#ffffff" stopOpacity=".1" /><stop offset="1" stopColor="#ffffff" stopOpacity="0" />
+        </linearGradient>
+        <radialGradient id={`${uid}-aura`} cx=".5" cy=".5" r=".5">
+          <stop offset="0" stopColor={accent} stopOpacity=".14" /><stop offset="1" stopColor={accent} stopOpacity="0" />
+        </radialGradient>
         <filter id={`${uid}-g`} x="-70%" y="-70%" width="240%" height="240%">
           <feGaussianBlur stdDeviation="1.6" result="b" />
           <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
+      <rect x="-14" y="-12" width="176" height="92" rx="22" fill={`url(#${uid}-aura)`} />
       <rect x="0" y="0" width="148" height="64" rx="14" fill={`url(#${uid}-c)`} stroke={accent} strokeOpacity=".55" />
+      <rect x="1.5" y="1.5" width="145" height="61" rx="12.5" fill={`url(#${uid}-sheen)`} />
       <rect x="1" y="1" width="146" height="28" rx="13" fill={accent} fillOpacity=".06" />
       <rect x="10" y="10" width="30" height="30" rx="9" fill={accent} fillOpacity=".14" stroke={accent} strokeOpacity=".5" />
+      <rect x="11.5" y="11.5" width="27" height="13" rx="7" fill="#ffffff" fillOpacity=".07" />
       <g transform="translate(17 17)" color={accent} filter={`url(#${uid}-g)`}>{glyph}</g>
-      <text x="48" y="26" fill="#d9fff4" fontSize="12.5" fontWeight="700" letterSpacing=".4">{label}</text>
+      <text x="48" y="26" fill="#d9fff4" fontSize="13.5" fontWeight="700" letterSpacing=".4">{label}</text>
       <text x="48" y="44" fill={accent} fillOpacity=".85" fontSize="10.5" fontWeight="600" letterSpacing=".6">{body}</text>
       <circle cx="134" cy="20" r="3" fill={accent} className="terra-light" style={{ filter: `drop-shadow(0 0 4px ${accent})` }} />
     </g>
@@ -227,40 +286,51 @@ function PulseGlyph() {
 }
 
 export function NetworkIllustration() {
+  const c = useLandingCopy()
   const uid = useId().replace(/:/g, '')
   const metrics = ['99.9% uptime', '<12ms p95', '3 regions live']
   const ring = [
-    { x: 286, y: 56, accent: '#67e8d0', label: 'Edge Gateway', body: 'ingress · wss', glyph: <PacketGlyph /> },
-    { x: 498, y: 146, accent: '#8ab4ec', label: 'GPU Pool', body: '48×H100', glyph: <ChipGlyph /> },
-    { x: 498, y: 316, accent: '#c4b5fd', label: 'Cloud Burst', body: 'burst · $/hr', glyph: <PacketGlyph /> },
-    { x: 286, y: 406, accent: '#a5b4fc', label: 'Control Plane', body: 'schedule · observe', glyph: <GearGlyph /> },
+    { x: 286, y: 56, accent: '#5c8bff', label: 'Edge Gateway', body: 'ingress · wss', glyph: <PacketGlyph /> },
+    { x: 498, y: 146, accent: '#789bff', label: 'GPU Pool', body: '48×H100', glyph: <ChipGlyph /> },
+    { x: 498, y: 316, accent: '#b56dff', label: 'Cloud Burst', body: 'burst · $/hr', glyph: <PacketGlyph /> },
+    { x: 286, y: 406, accent: '#90a8ff', label: 'Control Plane', body: 'schedule · observe', glyph: <GearGlyph /> },
     { x: 74, y: 316, accent: '#f6c889', label: 'Telemetry', body: 'otel · logs', glyph: <PulseGlyph /> },
-    { x: 74, y: 146, accent: '#67e8d0', label: 'On-prem Lab', body: '闲置 12×A100', glyph: <ChipGlyph /> },
+    { x: 74, y: 146, accent: '#5c8bff', label: 'On-prem Lab', body: c.illus.onPremBody, glyph: <ChipGlyph /> },
   ]
   return (
-    <AnimatedScene className="terra-network" label="Yatterra 网络拓扑示意：六类资源环绕中心编排核">
+    <AnimatedScene className="terra-network" label={c.illus.networkAria}>
       <svg viewBox="0 0 720 600" width="100%" height="100%" fill="none" aria-hidden="true">
         <defs>
           <radialGradient id={`${uid}-bg`} cx=".5" cy=".45" r=".7">
             <stop offset="0" stopColor="#113040" stopOpacity=".6" />
+            <stop offset=".6" stopColor="#0b2432" stopOpacity=".35" />
             <stop offset="1" stopColor="#061018" stopOpacity="0" />
           </radialGradient>
+          <radialGradient id={`${uid}-bg2`} cx=".5" cy=".42" r=".42">
+            <stop offset="0" stopColor="#5c8bff" stopOpacity=".1" />
+            <stop offset="1" stopColor="#5c8bff" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id={`${uid}-vig`} cx=".5" cy=".5" r=".75">
+            <stop offset=".7" stopColor="#02070d" stopOpacity="0" />
+            <stop offset="1" stopColor="#02070d" stopOpacity=".4" />
+          </radialGradient>
           <linearGradient id={`${uid}-orbit`} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stopColor="#67e8d0" stopOpacity=".05" />
-            <stop offset=".5" stopColor="#8ab4ec" stopOpacity=".4" />
-            <stop offset="1" stopColor="#c4b5fd" stopOpacity=".08" />
+            <stop offset="0" stopColor="#5c8bff" stopOpacity=".05" />
+            <stop offset=".5" stopColor="#789bff" stopOpacity=".4" />
+            <stop offset="1" stopColor="#b56dff" stopOpacity=".08" />
           </linearGradient>
           <radialGradient id={`${uid}-core`} cx=".5" cy=".5" r=".5">
-            <stop offset="0" stopColor="#b7fff0" />
-            <stop offset=".45" stopColor="#67e8d0" />
+            <stop offset="0" stopColor="#d9fff6" />
+            <stop offset=".4" stopColor="#5c8bff" />
             <stop offset="1" stopColor="#1a5f56" />
           </radialGradient>
           <radialGradient id={`${uid}-halo2`} cx=".5" cy=".5" r=".5">
-            <stop offset="0" stopColor="#67e8d0" stopOpacity=".28" />
-            <stop offset="1" stopColor="#67e8d0" stopOpacity="0" />
+            <stop offset="0" stopColor="#5c8bff" stopOpacity=".28" />
+            <stop offset="1" stopColor="#5c8bff" stopOpacity="0" />
           </radialGradient>
           <pattern id={`${uid}-grid`} width="36" height="36" patternUnits="userSpaceOnUse">
-            <path d="M36 0H0V36" stroke="#67e8d0" strokeOpacity=".05" />
+            <path d="M36 0H0V36" stroke="#5c8bff" strokeOpacity=".04" />
+            <path d="M18 0V36M0 18h36" stroke="#5c8bff" strokeOpacity=".018" />
           </pattern>
           <filter id={`${uid}-halo`} x="-80%" y="-80%" width="260%" height="260%">
             <feGaussianBlur stdDeviation="8" result="b" />
@@ -268,45 +338,55 @@ export function NetworkIllustration() {
           </filter>
         </defs>
         <rect width="720" height="600" rx="24" fill={`url(#${uid}-bg)`} />
+        <rect width="720" height="600" rx="24" fill={`url(#${uid}-bg2)`} />
         <rect width="720" height="600" rx="24" fill={`url(#${uid}-grid)`} />
         <ellipse cx="360" cy="265" rx="272" ry="196" stroke={`url(#${uid}-orbit)`} strokeWidth="1.2" strokeDasharray="7 9" className="terra-spin" style={{ animationDuration: '46s' }} />
-        <ellipse cx="360" cy="265" rx="214" ry="238" stroke="#a5b4fc" strokeOpacity=".13" strokeWidth="1" strokeDasharray="3 11" className="terra-spin" style={{ animationDuration: '64s', animationDirection: 'reverse' }} />
-        <path d="M40 60h26M40 60v26M680 60h-26M680 60v26M40 540h26M40 540v-26M680 540h-26M680 540v-26" stroke="#67e8d0" strokeOpacity=".3" strokeWidth="1.5" strokeLinecap="round" />
+        <ellipse cx="360" cy="265" rx="214" ry="238" stroke="#90a8ff" strokeOpacity=".13" strokeWidth="1" strokeDasharray="3 11" className="terra-spin" style={{ animationDuration: '64s', animationDirection: 'reverse' }} />
+        <path d="M40 60h26M40 60v26M680 60h-26M680 60v26M40 540h26M40 540v-26M680 540h-26M680 540v-26" stroke="#5c8bff" strokeOpacity=".3" strokeWidth="1.5" strokeLinecap="round" />
         <circle cx="360" cy="265" r="150" fill={`url(#${uid}-halo2)`} />
-        <Flow points={[[360, 120], [346, 156], [356, 192]]} color="#67e8d0" delay={0} />
-        <Flow points={[[498, 178], [458, 196], [426, 222]]} color="#8ab4ec" delay={.5} />
-        <Flow points={[[498, 348], [460, 332], [426, 308]]} color="#c4b5fd" delay={1} />
-        <Flow points={[[360, 400], [374, 370], [362, 342]]} color="#a5b4fc" delay={1.5} />
+        <Flow points={[[360, 120], [346, 156], [356, 192]]} color="#5c8bff" delay={0} />
+        <Flow points={[[498, 178], [458, 196], [426, 222]]} color="#789bff" delay={.5} />
+        <Flow points={[[498, 348], [460, 332], [426, 308]]} color="#b56dff" delay={1} />
+        <Flow points={[[360, 400], [374, 370], [362, 342]]} color="#90a8ff" delay={1.5} />
         <Flow points={[[222, 348], [260, 332], [294, 308]]} color="#f6c889" delay={.7} />
-        <Flow points={[[222, 178], [260, 196], [294, 222]]} color="#67e8d0" delay={1.2} />
+        <Flow points={[[222, 178], [260, 196], [294, 222]]} color="#5c8bff" delay={1.2} />
         <Flow points={[[148, 214], [148, 265], [148, 314]]} color="#f6c889" delay={.4} dashed glow={false} />
-        <Flow points={[[572, 214], [572, 265], [572, 314]]} color="#8ab4ec" delay={.9} dashed glow={false} />
+        <Flow points={[[572, 214], [572, 265], [572, 314]]} color="#789bff" delay={.9} dashed glow={false} />
         {ring.map(node => <NodeCluster key={node.label} x={node.x} y={node.y} accent={node.accent} label={node.label} body={node.body} glyph={node.glyph} />)}
         <g transform="translate(360 265)">
-          <circle r="86" stroke="#67e8d0" strokeOpacity=".16" strokeWidth="1.2" className="terra-pulse-ring" />
-          <circle r="86" stroke="#8ab4ec" strokeOpacity=".12" strokeWidth="1.2" className="terra-pulse-ring" style={{ animationDelay: '-2s' }} />
-          <circle r="60" fill="#67e8d0" fillOpacity=".06" stroke="#67e8d0" strokeOpacity=".32" />
-          <circle r="60" fill="none" stroke="#67e8d0" strokeOpacity=".18" strokeDasharray="4 8" className="terra-spin" style={{ animationDuration: '24s' }} />
-          <path d="M0 -46 40 -23v46L0 46-40 23v-46Z" fill={`url(#${uid}-core)`} stroke="#b7fff0" strokeWidth="1.5" filter={`url(#${uid}-halo)`} className="terra-float" />
-          <path d="M0 -46V0M0 0 40 -23M0 0-40 23" stroke="#04131c" strokeOpacity=".45" strokeWidth="1.4" />
-          <text y="5" textAnchor="middle" fill="#04131c" fontSize="13" fontWeight="800" letterSpacing="1">YT</text>
+          <circle r="86" stroke="#5c8bff" strokeOpacity=".16" strokeWidth="1.2" className="terra-pulse-ring" />
+          <circle r="86" stroke="#789bff" strokeOpacity=".12" strokeWidth="1.2" className="terra-pulse-ring" style={{ animationDelay: '-2s' }} />
+          <circle r="60" fill="#5c8bff" fillOpacity=".06" stroke="#5c8bff" strokeOpacity=".32" />
+          <circle r="60" fill="none" stroke="#5c8bff" strokeOpacity=".18" strokeDasharray="4 8" className="terra-spin" style={{ animationDuration: '24s' }} />
+          <g className="terra-float" filter={`url(#${uid}-halo)`}>
+            <circle r="44" fill={`url(#${uid}-core)`} stroke="#b7fff0" strokeWidth="1.5" />
+            {/* lucide "orbit" mark, scaled 4x, drawn as a dark monogram on the glowing core */}
+            <g transform="translate(-48 -48) scale(4)" fill="none" stroke="#04131c" strokeWidth="1.7" strokeLinecap="round">
+              <path d="M20.341 6.484A10 10 0 0 1 10.266 21.85" />
+              <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152" />
+              <circle cx="12" cy="12" r="3" fill="#04131c" stroke="none" />
+              <circle cx="19" cy="5" r="2" fill="#04131c" stroke="none" />
+              <circle cx="5" cy="19" r="2" fill="#04131c" stroke="none" />
+            </g>
+          </g>
         </g>
         <g className="terra-spin" style={{ transformBox: 'view-box', transformOrigin: '360px 265px', animationDuration: '20s' }}>
-          <circle cx="434" cy="265" r="3" fill="#b7fff0" style={{ filter: 'drop-shadow(0 0 5px #67e8d0)' }} />
-          <circle cx="300" cy="318" r="2.2" fill="#a5b4fc" style={{ filter: 'drop-shadow(0 0 4px #a5b4fc)' }} />
+          <circle cx="434" cy="265" r="3" fill="#b7fff0" style={{ filter: 'drop-shadow(0 0 5px #5c8bff)' }} />
+          <circle cx="300" cy="318" r="2.2" fill="#90a8ff" style={{ filter: 'drop-shadow(0 0 4px #90a8ff)' }} />
         </g>
         <g>
           {metrics.map((metric, index) => (
             <g key={metric} transform={`translate(${105 + index * 172} 508)`}>
-              <rect width="156" height="30" rx="15" fill="#0b1725" fillOpacity=".9" stroke="#67e8d0" strokeOpacity=".32" />
-              <circle cx="16" cy="15" r="3.5" fill={index === 2 ? '#8ab4ec' : '#67e8d0'} className="terra-light" style={{ animationDelay: `${index * -.6}s` }} />
-              <text x="30" y="19" fill="#b7e7ff" fontSize="11.5" fontWeight="600">{metric}</text>
+              <rect width="156" height="30" rx="15" fill="#0b1725" fillOpacity=".9" stroke="#5c8bff" strokeOpacity=".32" />
+              <circle cx="16" cy="15" r="3.5" fill={index === 2 ? '#789bff' : '#5c8bff'} className="terra-light" style={{ animationDelay: `${index * -.6}s` }} />
+              <text x="30" y="19" fill="#b7e7ff" fontSize="12.5" fontWeight="600">{metric}</text>
             </g>
           ))}
         </g>
         {[[150, 80], [580, 90], [250, 545], [560, 545], [640, 300], [80, 90]].map(([cx, cy], index) => (
-          <circle key={index} cx={cx} cy={cy} r={index % 2 ? 2 : 2.6} fill={index % 3 ? '#67e8d0' : '#a5b4fc'} fillOpacity=".5" className="terra-float" style={{ animationDelay: `${index * -.8}s` }} />
+          <circle key={index} cx={cx} cy={cy} r={index % 2 ? 2 : 2.6} fill={index % 3 ? '#5c8bff' : '#90a8ff'} fillOpacity=".5" className="terra-float" style={{ animationDelay: `${index * -.8}s` }} />
         ))}
+        <rect width="720" height="600" rx="24" fill={`url(#${uid}-vig)`} />
       </svg>
     </AnimatedScene>
   )
@@ -336,7 +416,7 @@ function LayerPanel({ x, y, w, h, accent, title, children }: { x: number; y: num
 const layerScenes = [
   {
     tag: 'CONNECT',
-    accent: '#67e8d0',
+    accent: '#5c8bff',
     detail: 'SDK · gRPC · Webhooks',
     render: (accent: string) => (
       <g>
@@ -352,7 +432,7 @@ const layerScenes = [
   },
   {
     tag: 'ORCHESTRATE',
-    accent: '#8ab4ec',
+    accent: '#789bff',
     detail: 'queue · rate-limit · fanout',
     render: (accent: string) => (
       <g>
@@ -370,7 +450,7 @@ const layerScenes = [
   },
   {
     tag: 'INFERENCE',
-    accent: '#a5b4fc',
+    accent: '#90a8ff',
     detail: 'vLLM · LoRA · batch',
     render: (accent: string) => (
       <g>
@@ -406,9 +486,10 @@ const layerScenes = [
 ]
 
 export function LayerIllustration({ index = 0 }: { index?: number }) {
+  const c = useLandingCopy()
   const scene = layerScenes[Math.max(0, Math.min(index, layerScenes.length - 1))] ?? layerScenes[0]!
   return (
-    <AnimatedScene className="terra-layer-art" label={`四层架构示意：${scene.tag}`}>
+    <AnimatedScene className="terra-layer-art" label={`${c.layers.layerAria}${scene.tag}`}>
       <svg viewBox="0 0 300 205" width="100%" height="100%" fill="none" aria-hidden="true" key={scene.tag}>
         <defs>
           <radialGradient id="layer-glow" cx=".5" cy=".5" r=".6">
@@ -436,9 +517,9 @@ export function LayerIllustration({ index = 0 }: { index?: number }) {
 }
 
 const scenarioMeta = [
-  { title: '校园与实验室', caption: '共享 GPU · 权限边界', nodes: 3, accent: '#67e8d0' },
-  { title: '家庭与工作室', caption: '本地模型 · 可控访问', nodes: 2, accent: '#8ab4ec' },
-  { title: '团队与研究项目', caption: '部署 · 协作 · Agent', nodes: 4, accent: '#c4b5fd' },
+  { nodes: 3, accent: '#5c8bff' },
+  { nodes: 2, accent: '#789bff' },
+  { nodes: 4, accent: '#b56dff' },
 ]
 
 /** 01 Campus: lab building + shared GPU behind a permission gate, student nodes connect in. */
@@ -597,20 +678,22 @@ function TeamScene({ accent, uid }: { accent: string; uid: string }) {
 const scenarioScenes = [CampusScene, HomeLabScene, TeamScene]
 
 export function ScenarioIllustration({ index = 0 }: { index?: number }) {
+  const c = useLandingCopy()
   const uid = useId().replace(/:/g, '')
   const safe = Math.max(0, Math.min(index, scenarioMeta.length - 1))
   const meta = scenarioMeta[safe]!
+  const copy = c.scenarios.items[safe]!
   const Scene = scenarioScenes[safe] ?? scenarioScenes[0]!
   return (
-    <AnimatedScene className="terra-scenario-art" label={`场景示意：${meta.title}`}>
-      <svg viewBox="0 0 360 230" width="100%" height="100%" fill="none" aria-hidden="true" key={meta.title}>
+    <AnimatedScene className="terra-scenario-art" label={`${c.scenarios.ariaPrefix}${copy.title}`}>
+      <svg viewBox="0 0 360 230" width="100%" height="100%" fill="none" aria-hidden="true" key={copy.label}>
         <rect width="360" height="230" rx="16" fill="#0a1520" />
         <path d="M12 12h16M12 12v16M348 12h-16M348 12v16M12 218h16M12 218v-16M348 218h-16M348 218v-16" stroke={meta.accent} strokeOpacity=".3" strokeWidth="1.3" strokeLinecap="round" />
         <Scene accent={meta.accent} uid={uid} />
         <g transform="translate(16 14)">
           <rect width="170" height="34" rx="9" fill="#0d1f2e" fillOpacity=".92" stroke={meta.accent} strokeOpacity=".5" />
-          <text x="12" y="15" fill="#e7fff8" fontSize="11.5" fontWeight="700">{meta.title}</text>
-          <text x="12" y="27" fill={meta.accent} fontSize="8.5" fontWeight="600" letterSpacing=".5">{meta.caption}</text>
+          <text x="12" y="15" fill="#e7fff8" fontSize="11.5" fontWeight="700">{copy.title}</text>
+          <text x="12" y="27" fill={meta.accent} fontSize="8.5" fontWeight="600" letterSpacing=".5">{copy.caption}</text>
         </g>
         <g transform="translate(300 14)">
           <rect width="44" height="34" rx="9" fill="#0d1f2e" fillOpacity=".92" stroke={meta.accent} strokeOpacity=".4" />
@@ -623,155 +706,234 @@ export function ScenarioIllustration({ index = 0 }: { index?: number }) {
 }
 
 const workflowSteps = [
-  { title: 'Connect', accent: '#67e8d0', note: '接入集群与数据源' },
-  { title: 'Deploy', accent: '#8ab4ec', note: '编排推理与批任务' },
-  { title: 'Observe', accent: '#a5b4fc', note: '指标、追踪、告警' },
+  { title: 'Connect', accent: '#5c8bff' },
+  { title: 'Deploy', accent: '#789bff' },
+  { title: 'Observe', accent: '#90a8ff' },
 ]
 
-export function WorkflowIllustration() {
-  const uid = useId().replace(/:/g, '')
+/** 单个步骤的平台图形 + 编号 + 标题卡，宽窄两种排布共用。 */
+function WorkflowStepArt({ step, note, index, uid }: { step: typeof workflowSteps[number]; note: string; index: number; uid: string }) {
   return (
-    <AnimatedScene className="terra-workflow-art" label="三步工作流：Connect、Deploy、Observe">
-      <svg viewBox="0 0 620 280" width="100%" height="100%" fill="none" aria-hidden="true">
-        <defs>
-          <linearGradient id={`${uid}-plat`} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#163244" /><stop offset="1" stopColor="#0e2232" />
-          </linearGradient>
-          <radialGradient id={`${uid}-s`}>
-            <stop offset="0" stopColor="#02070d" stopOpacity=".5" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
-          </radialGradient>
-          <pattern id={`${uid}-grid`} width="20" height="20" patternUnits="userSpaceOnUse" patternTransform="skewX(-30)">
-            <path d="M20 0H0V20" stroke="#67e8d0" strokeOpacity=".07" />
-          </pattern>
-        </defs>
-        <rect width="620" height="280" rx="18" fill="#0a1520" />
-        <path d="M40 200 310 70l270 110-270 80Z" fill={`url(#${uid}-grid)`} />
-        {workflowSteps.map((step, index) => {
-          const offsetX = 70 + index * 175
-          const offsetY = 130 - (index === 1 ? 24 : 0)
-          return (
-            <g key={step.title} transform={`translate(${offsetX} ${offsetY})`}>
-              <ellipse cx="70" cy="92" rx="86" ry="16" fill={`url(#${uid}-s)`} />
-              <path d="M0 40 70 8l78 34-70 34Z" fill={`url(#${uid}-plat)`} stroke={step.accent} strokeOpacity=".55" />
-              <path d="M0 40v18l78 34V76Z" fill="#0b1a27" stroke={step.accent} strokeOpacity=".4" />
-              <path d="M78 76v18l70-34V42Z" fill="#102536" stroke={step.accent} strokeOpacity=".35" />
-              <path d="M8 42 70 14l62 28" stroke="#ffffff" strokeOpacity=".1" />
-              <g transform="translate(40 20) scale(.7)">
-                {index === 0 && <Rack color={step.accent} />}
-                {index === 1 && <Chip label="GPU" color={step.accent} />}
-                {index === 2 && (
-                  <g>
-                    <rect width="90" height="64" rx="10" fill="#0d1f2e" stroke={step.accent} strokeOpacity=".5" />
-                    <rect x="10" y="12" width="70" height="30" rx="5" fill={step.accent} fillOpacity=".12" />
-                    <path d="M18 24h30M18 34h44" stroke={step.accent} strokeOpacity=".7" strokeWidth="2" strokeLinecap="round" />
-                    <text x="45" y="56" textAnchor="middle" fill={step.accent} fontSize="9" fontWeight="700">trace</text>
-                  </g>
-                )}
-              </g>
-              <g transform="translate(-4 -8)">
-                <rect width="30" height="30" rx="10" fill={step.accent} fillOpacity=".18" stroke={step.accent} />
-                <text x="15" y="20" textAnchor="middle" fill={step.accent} fontSize="13" fontWeight="800">0{index + 1}</text>
-              </g>
-              <g transform="translate(16 118)">
-                <rect width="120" height="40" rx="10" fill="#0d1f2e" fillOpacity=".92" stroke={step.accent} strokeOpacity=".45" />
-                <text x="60" y="17" textAnchor="middle" fill="#e7fff8" fontSize="12" fontWeight="700">{step.title}</text>
-                <text x="60" y="31" textAnchor="middle" fill={step.accent} fontSize="9.5" fontWeight="600">{step.note}</text>
-              </g>
+    <g>
+      <ellipse cx="70" cy="92" rx="86" ry="16" fill={`url(#${uid}-s)`} />
+      <path d="M0 40 70 8l78 34-70 34Z" fill={`url(#${uid}-plat)`} stroke={step.accent} strokeOpacity=".55" />
+      <path d="M0 40v18l78 34V76Z" fill="#0b1a27" stroke={step.accent} strokeOpacity=".4" />
+      <path d="M78 76v18l70-34V42Z" fill="#102536" stroke={step.accent} strokeOpacity=".35" />
+      <path d="M8 42 70 14l62 28" stroke="#ffffff" strokeOpacity=".1" />
+      <g transform="translate(40 20) scale(.7)">
+        {index === 0 && <Rack color={step.accent} />}
+        {index === 1 && <Chip label="GPU" color={step.accent} />}
+        {index === 2 && (
+          <g>
+            <rect width="90" height="64" rx="10" fill="#0d1f2e" stroke={step.accent} strokeOpacity=".5" />
+            <rect x="10" y="12" width="70" height="30" rx="5" fill={step.accent} fillOpacity=".12" />
+            <path d="M18 24h30M18 34h44" stroke={step.accent} strokeOpacity=".7" strokeWidth="2" strokeLinecap="round" />
+            <text x="45" y="56" textAnchor="middle" fill={step.accent} fontSize="9" fontWeight="700">trace</text>
+          </g>
+        )}
+      </g>
+      <g transform="translate(-4 -8)">
+        <rect width="30" height="30" rx="10" fill={step.accent} fillOpacity=".18" stroke={step.accent} />
+        <text x="15" y="20" textAnchor="middle" fill={step.accent} fontSize="13" fontWeight="800">0{index + 1}</text>
+      </g>
+      <g transform="translate(16 118)">
+        <rect width="120" height="40" rx="10" fill="#0d1f2e" fillOpacity=".92" stroke={step.accent} strokeOpacity=".45" />
+        <text x="60" y="17" textAnchor="middle" fill="#e7fff8" fontSize="12" fontWeight="700">{step.title}</text>
+        <text x="60" y="31" textAnchor="middle" fill={step.accent} fontSize="9.5" fontWeight="600">{note}</text>
+      </g>
+    </g>
+  )
+}
+
+export function WorkflowIllustration() {
+  const c = useLandingCopy()
+  const uid = useId().replace(/:/g, '')
+  const narrow = useMediaQuery('(max-width: 640px)')
+  const defs = (
+    <defs>
+      <linearGradient id={`${uid}-plat`} x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stopColor="#163244" /><stop offset="1" stopColor="#0e2232" />
+      </linearGradient>
+      <radialGradient id={`${uid}-s`}>
+        <stop offset="0" stopColor="#02070d" stopOpacity=".5" /><stop offset="1" stopColor="#02070d" stopOpacity="0" />
+      </radialGradient>
+      <pattern id={`${uid}-grid`} width="20" height="20" patternUnits="userSpaceOnUse" patternTransform="skewX(-30)">
+        <path d="M20 0H0V20" stroke="#5c8bff" strokeOpacity=".07" />
+      </pattern>
+    </defs>
+  )
+  return (
+    <AnimatedScene className="terra-workflow-art" label={c.illus.workflowAria}>
+      {narrow ? (
+        <svg viewBox="0 0 360 660" width="100%" height="100%" fill="none" aria-hidden="true">
+          {defs}
+          <rect width="360" height="660" rx="18" fill="#0a1520" />
+          {workflowSteps.map((step, index) => (
+            <g key={step.title} transform={`translate(106 ${30 + index * 230})`}>
+              <WorkflowStepArt step={step} note={c.illus.workflowNotes[index]!} index={index} uid={uid} />
             </g>
-          )
-        })}
-        <Flow points={[[240, 150], [270, 138], [300, 128]]} color="#67e8d0" delay={.3} />
-        <Flow points={[[415, 138], [445, 126], [475, 116]]} color="#8ab4ec" delay={.9} />
-        <path d="M540 48h24M552 36v24" stroke="#c4b5fd" strokeOpacity=".4" strokeWidth="1.4" strokeLinecap="round" />
-        <circle cx="70" cy="52" r="3" fill="#67e8d0" className="terra-light" style={{ filter: 'drop-shadow(0 0 4px #67e8d0)' }} />
-        <circle cx="560" cy="220" r="3" fill="#a5b4fc" className="terra-light" style={{ animationDelay: '-1s', filter: 'drop-shadow(0 0 4px #a5b4fc)' }} />
-      </svg>
+          ))}
+          <Flow points={[[180, 196], [180, 226], [180, 254]]} color="#789bff" delay={.3} />
+          <Flow points={[[180, 426], [180, 456], [180, 484]]} color="#90a8ff" delay={.9} />
+          <circle cx="40" cy="60" r="3" fill="#5c8bff" className="terra-light" style={{ filter: 'drop-shadow(0 0 4px #5c8bff)' }} />
+          <circle cx="322" cy="620" r="3" fill="#90a8ff" className="terra-light" style={{ animationDelay: '-1s', filter: 'drop-shadow(0 0 4px #90a8ff)' }} />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 620 280" width="100%" height="100%" fill="none" aria-hidden="true">
+          {defs}
+          <rect width="620" height="280" rx="18" fill="#0a1520" />
+          <path d="M40 200 310 70l270 110-270 80Z" fill={`url(#${uid}-grid)`} />
+          {workflowSteps.map((step, index) => (
+            <g key={step.title} transform={`translate(${70 + index * 175} ${130 - (index === 1 ? 24 : 0)})`}>
+              <WorkflowStepArt step={step} note={c.illus.workflowNotes[index]!} index={index} uid={uid} />
+            </g>
+          ))}
+          <Flow points={[[240, 150], [270, 138], [300, 128]]} color="#5c8bff" delay={.3} />
+          <Flow points={[[415, 138], [445, 126], [475, 116]]} color="#789bff" delay={.9} />
+          <path d="M540 48h24M552 36v24" stroke="#b56dff" strokeOpacity=".4" strokeWidth="1.4" strokeLinecap="round" />
+          <circle cx="70" cy="52" r="3" fill="#5c8bff" className="terra-light" style={{ filter: 'drop-shadow(0 0 4px #5c8bff)' }} />
+          <circle cx="560" cy="220" r="3" fill="#90a8ff" className="terra-light" style={{ animationDelay: '-1s', filter: 'drop-shadow(0 0 4px #90a8ff)' }} />
+        </svg>
+      )}
     </AnimatedScene>
   )
 }
 
 export function GapIllustration() {
+  const c = useLandingCopy()
   const uid = useId().replace(/:/g, '')
+  const narrow = useMediaQuery('(max-width: 640px)')
+  const defs = (
+    <defs>
+      <linearGradient id={`${uid}-left`} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stopColor="#2a1a28" /><stop offset="1" stopColor="#160e16" />
+      </linearGradient>
+      <linearGradient id={`${uid}-right`} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stopColor="#14303a" /><stop offset="1" stopColor="#0c1c26" />
+      </linearGradient>
+      <linearGradient id={`${uid}-bridge`} x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stopColor="#5c8bff" stopOpacity=".2" />
+        <stop offset=".5" stopColor="#5c8bff" stopOpacity=".9" />
+        <stop offset="1" stopColor="#90a8ff" stopOpacity=".35" />
+      </linearGradient>
+      <radialGradient id={`${uid}-hole`} cx=".5" cy="0" r=".8">
+        <stop offset="0" stopColor="#02070d" stopOpacity=".9" />
+        <stop offset="1" stopColor="#02070d" stopOpacity="0" />
+      </radialGradient>
+      <filter id={`${uid}-g`} x="-70%" y="-70%" width="240%" height="240%">
+        <feGaussianBlur stdDeviation="2.4" result="b" />
+        <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+      </filter>
+    </defs>
+  )
   return (
-    <AnimatedScene className="terra-gap-art" label="现状对比：云端昂贵 vs 内网闲置，中间是 Yatterra 断层桥接">
-      <svg viewBox="0 0 560 180" width="100%" height="100%" fill="none" aria-hidden="true">
-        <defs>
-          <linearGradient id={`${uid}-left`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#2a1a28" /><stop offset="1" stopColor="#160e16" />
-          </linearGradient>
-          <linearGradient id={`${uid}-right`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#14303a" /><stop offset="1" stopColor="#0c1c26" />
-          </linearGradient>
-          <linearGradient id={`${uid}-bridge`} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stopColor="#67e8d0" stopOpacity=".2" />
-            <stop offset=".5" stopColor="#67e8d0" stopOpacity=".9" />
-            <stop offset="1" stopColor="#a5b4fc" stopOpacity=".35" />
-          </linearGradient>
-          <radialGradient id={`${uid}-hole`} cx=".5" cy="0" r=".8">
-            <stop offset="0" stopColor="#02070d" stopOpacity=".9" />
-            <stop offset="1" stopColor="#02070d" stopOpacity="0" />
-          </radialGradient>
-          <filter id={`${uid}-g`} x="-70%" y="-70%" width="240%" height="240%">
-            <feGaussianBlur stdDeviation="2.4" result="b" />
-            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-        </defs>
-        <rect width="560" height="180" rx="16" fill="#0a1520" />
-        <g transform="translate(16 18)">
-          <rect width="200" height="144" rx="14" fill={`url(#${uid}-left)`} stroke="#f0a0b0" strokeOpacity=".35" />
-          <text x="16" y="26" fill="#ffb0c0" fontSize="12" fontWeight="700">云端推理</text>
-          <text x="16" y="44" fill="#f0a0b0" fillOpacity=".7" fontSize="10" fontWeight="600">按 token 计费 · 排队</text>
-          {[0, 1, 2].map(i => (
-            <g key={i} transform={`translate(16 ${64 + i * 26})`}>
-              <rect width="168" height="18" rx="6" fill="#1a1018" stroke="#f0a0b0" strokeOpacity=".25" />
-              <rect width={120 - i * 28} height="18" rx="6" fill="#f0a0b0" fillOpacity={.25 - i * .06} />
-              <text x={128 - i * 28} y="13" fill="#ffb0c0" fontSize="9" fontWeight="700">${(i + 1) * 420}/mo</text>
+    <AnimatedScene className="terra-gap-art" label={c.illus.gap.aria}>
+      {narrow ? (
+        <svg viewBox="0 0 360 512" width="100%" height="100%" fill="none" aria-hidden="true">
+          {defs}
+          <rect width="360" height="512" rx="16" fill="#0a1520" />
+          <g transform="translate(16 16)">
+            <rect width="328" height="144" rx="14" fill={`url(#${uid}-left)`} stroke="#f0a0b0" strokeOpacity=".35" />
+            <text x="16" y="26" fill="#ffb0c0" fontSize="12" fontWeight="700">{c.illus.gap.cloudTitle}</text>
+            <text x="16" y="44" fill="#f0a0b0" fillOpacity=".7" fontSize="10" fontWeight="600">{c.illus.gap.cloudNote}</text>
+            {[0, 1, 2].map(i => (
+              <g key={i} transform={`translate(16 ${64 + i * 26})`}>
+                <rect width="296" height="18" rx="6" fill="#1a1018" stroke="#f0a0b0" strokeOpacity=".25" />
+                <rect width={120 - i * 28} height="18" rx="6" fill="#f0a0b0" fillOpacity={.25 - i * .06} />
+                <text x={128 - i * 28} y="13" fill="#ffb0c0" fontSize="9" fontWeight="700">${(i + 1) * 420}/mo</text>
+              </g>
+            ))}
+          </g>
+          <path d="M180 168v40" stroke={`url(#${uid}-bridge)`} strokeWidth="3" strokeLinecap="round" />
+          <path d="M180 304v40" stroke={`url(#${uid}-bridge)`} strokeWidth="3" strokeLinecap="round" />
+          <path d="M148 200c-16 16-16 56 0 72M212 200c16 16 16 56 0 72" stroke="#5c8bff" strokeOpacity=".45" strokeWidth="1.5" strokeDasharray="5 6" className="terra-march" style={{ animationDelay: '-.6s' }} />
+          <g transform="translate(144 212)">
+            <rect width="72" height="56" rx="14" fill="#0d1f2e" stroke="#5c8bff" strokeOpacity=".7" filter={`url(#${uid}-g)`} />
+            <g transform="translate(36 26)">
+              <OrbitMark r={15} accent="#5c8bff" className="terra-float" />
             </g>
-          ))}
-          <path d="M16 146h168" stroke="#f0a0b0" strokeOpacity=".3" strokeDasharray="4 5" className="terra-march" />
-        </g>
-        <g transform="translate(344 18)">
-          <rect width="200" height="144" rx="14" fill={`url(#${uid}-right)`} stroke="#67e8d0" strokeOpacity=".35" />
-          <text x="16" y="26" fill="#8ff0da" fontSize="12" fontWeight="700">内网闲置</text>
-          <text x="16" y="44" fill="#67e8d0" fillOpacity=".7" fontSize="10" fontWeight="600">GPU 吃灰 · 无编排</text>
-          <g transform="translate(24 58)">
-            <Rack scale={.55} />
+            <text x="36" y="70" textAnchor="middle" fill="#9debff" fontSize="9.5" fontWeight="700" letterSpacing=".5">Yatterra</text>
           </g>
-          <g transform="translate(110 70) scale(.45)">
-            <Chip label="A100" color="#67e8d0" />
+          <circle cx="180" cy="240" r="52" fill={`url(#${uid}-hole)`} />
+          <g transform="translate(16 344)">
+            <rect width="328" height="144" rx="14" fill={`url(#${uid}-right)`} stroke="#5c8bff" strokeOpacity=".35" />
+            <text x="16" y="26" fill="#9debff" fontSize="12" fontWeight="700">{c.illus.gap.idleTitle}</text>
+            <text x="16" y="44" fill="#5c8bff" fillOpacity=".7" fontSize="10" fontWeight="600">{c.illus.gap.idleNote}</text>
+            <g transform="translate(36 58)">
+              <Rack scale={.55} />
+            </g>
+            <g transform="translate(230 70) scale(.45)">
+              <Chip label="A100" color="#5c8bff" />
+            </g>
+            <text x="16" y="138" fill="#5c8bff" fillOpacity=".75" fontSize="9.5" fontWeight="700">util 12%</text>
+            <text x="170" y="138" fill="#5c8bff" fillOpacity=".75" fontSize="9.5" fontWeight="700">util 8%</text>
+            <rect x="16" y="118" width="296" height="8" rx="4" fill="#0b1725" stroke="#5c8bff" strokeOpacity=".25" />
+            <rect x="16" y="118" width="24" height="8" rx="4" fill="#5c8bff" fillOpacity=".55" className="terra-light" style={{ animationDelay: '-.4s' }} />
           </g>
-          {[0, 1].map(i => (
-            <text key={i} x={16 + i * 96} y={i === 0 ? 138 : 138} fill="#67e8d0" fillOpacity=".75" fontSize="9.5" fontWeight="700">{i === 0 ? 'util 12%' : 'util 8%'}</text>
-          ))}
-          <rect x="16" y="118" width="168" height="8" rx="4" fill="#0b1725" stroke="#67e8d0" strokeOpacity=".25" />
-          <rect x="16" y="118" width="24" height="8" rx="4" fill="#67e8d0" fillOpacity=".55" className="terra-light" style={{ animationDelay: '-.4s' }} />
-        </g>
-        <path d="M216 90h36" stroke={`url(#${uid}-bridge)`} strokeWidth="3" strokeLinecap="round" />
-        <path d="M308 90h36" stroke={`url(#${uid}-bridge)`} strokeWidth="3" strokeLinecap="round" />
-        <path d="M226 90c14-34 48-34 62 0M272 90c14 34 48 34 62 0" stroke="#67e8d0" strokeOpacity=".45" strokeWidth="1.5" strokeDasharray="5 6" className="terra-march" style={{ animationDelay: '-.6s' }} />
-        <g transform="translate(244 62)">
-          <rect width="72" height="56" rx="14" fill="#0d1f2e" stroke="#67e8d0" strokeOpacity=".7" filter={`url(#${uid}-g)`} />
-          <path d="M36 14 52 22v16L36 46 20 38V22Z" fill="#67e8d0" fillOpacity=".25" stroke="#b7fff0" strokeWidth="1.2" className="terra-float" />
-          <text x="36" y="36" textAnchor="middle" fill="#04131c" fontSize="9" fontWeight="800">YT</text>
-          <text x="36" y="70" textAnchor="middle" fill="#8ff0da" fontSize="9.5" fontWeight="700" letterSpacing=".5">Yatterra</text>
-        </g>
-        <circle cx="280" cy="90" r="40" fill={`url(#${uid}-hole)`} />
-        <text x="280" y="164" textAnchor="middle" fill="#7d93a8" fontSize="10" fontWeight="600" letterSpacing=".4">云 ↔ 内网 · 统一调度</text>
-      </svg>
+          <text x="180" y="500" textAnchor="middle" fill="#7d93a8" fontSize="10" fontWeight="600" letterSpacing=".4">{c.illus.gap.bridge}</text>
+        </svg>
+      ) : (
+        <svg viewBox="0 0 560 180" width="100%" height="100%" fill="none" aria-hidden="true">
+          {defs}
+          <rect width="560" height="180" rx="16" fill="#0a1520" />
+          <g transform="translate(16 18)">
+            <rect width="200" height="144" rx="14" fill={`url(#${uid}-left)`} stroke="#f0a0b0" strokeOpacity=".35" />
+            <text x="16" y="26" fill="#ffb0c0" fontSize="12" fontWeight="700">{c.illus.gap.cloudTitle}</text>
+            <text x="16" y="44" fill="#f0a0b0" fillOpacity=".7" fontSize="10" fontWeight="600">{c.illus.gap.cloudNote}</text>
+            {[0, 1, 2].map(i => (
+              <g key={i} transform={`translate(16 ${64 + i * 26})`}>
+                <rect width="168" height="18" rx="6" fill="#1a1018" stroke="#f0a0b0" strokeOpacity=".25" />
+                <rect width={120 - i * 28} height="18" rx="6" fill="#f0a0b0" fillOpacity={.25 - i * .06} />
+                <text x={128 - i * 28} y="13" fill="#ffb0c0" fontSize="9" fontWeight="700">${(i + 1) * 420}/mo</text>
+              </g>
+            ))}
+            <path d="M16 146h168" stroke="#f0a0b0" strokeOpacity=".3" strokeDasharray="4 5" className="terra-march" />
+          </g>
+          <g transform="translate(344 18)">
+            <rect width="200" height="144" rx="14" fill={`url(#${uid}-right)`} stroke="#5c8bff" strokeOpacity=".35" />
+            <text x="16" y="26" fill="#9debff" fontSize="12" fontWeight="700">{c.illus.gap.idleTitle}</text>
+            <text x="16" y="44" fill="#5c8bff" fillOpacity=".7" fontSize="10" fontWeight="600">{c.illus.gap.idleNote}</text>
+            <g transform="translate(24 58)">
+              <Rack scale={.55} />
+            </g>
+            <g transform="translate(110 70) scale(.45)">
+              <Chip label="A100" color="#5c8bff" />
+            </g>
+            {[0, 1].map(i => (
+              <text key={i} x={16 + i * 96} y={i === 0 ? 138 : 138} fill="#5c8bff" fillOpacity=".75" fontSize="9.5" fontWeight="700">{i === 0 ? 'util 12%' : 'util 8%'}</text>
+            ))}
+            <rect x="16" y="118" width="168" height="8" rx="4" fill="#0b1725" stroke="#5c8bff" strokeOpacity=".25" />
+            <rect x="16" y="118" width="24" height="8" rx="4" fill="#5c8bff" fillOpacity=".55" className="terra-light" style={{ animationDelay: '-.4s' }} />
+          </g>
+          <path d="M216 90h36" stroke={`url(#${uid}-bridge)`} strokeWidth="3" strokeLinecap="round" />
+          <path d="M308 90h36" stroke={`url(#${uid}-bridge)`} strokeWidth="3" strokeLinecap="round" />
+          <path d="M226 90c14-34 48-34 62 0M272 90c14 34 48 34 62 0" stroke="#5c8bff" strokeOpacity=".45" strokeWidth="1.5" strokeDasharray="5 6" className="terra-march" style={{ animationDelay: '-.6s' }} />
+          <g transform="translate(244 62)">
+            <rect width="72" height="56" rx="14" fill="#0d1f2e" stroke="#5c8bff" strokeOpacity=".7" filter={`url(#${uid}-g)`} />
+            <g transform="translate(36 30)">
+              <OrbitMark r={15} accent="#5c8bff" className="terra-float" />
+            </g>
+            <text x="36" y="70" textAnchor="middle" fill="#9debff" fontSize="9.5" fontWeight="700" letterSpacing=".5">Yatterra</text>
+          </g>
+          <circle cx="280" cy="90" r="40" fill={`url(#${uid}-hole)`} />
+          <text x="280" y="164" textAnchor="middle" fill="#7d93a8" fontSize="10" fontWeight="600" letterSpacing=".4">{c.illus.gap.bridge}</text>
+        </svg>
+      )}
     </AnimatedScene>
   )
 }
 
 export function RootsIllustration() {
+  const c = useLandingCopy()
   const uid = useId().replace(/:/g, '')
   const sprouts = [
-    { x: 150, h: 56, accent: '#67e8d0' },
-    { x: 240, h: 78, accent: '#8ab4ec' },
-    { x: 330, h: 64, accent: '#a5b4fc' },
+    { x: 150, h: 56, accent: '#5c8bff' },
+    { x: 240, h: 78, accent: '#789bff' },
+    { x: 330, h: 64, accent: '#90a8ff' },
     { x: 420, h: 48, accent: '#f6c889' },
   ]
   return (
-    <AnimatedScene className="terra-roots-art" label="土壤中的根系生长，向上抽出 Yatterra 枝叶">
+    <AnimatedScene className="terra-roots-art" label={c.illus.rootsAria}>
       <svg viewBox="0 0 560 240" width="100%" height="100%" fill="none" aria-hidden="true">
         <defs>
           <linearGradient id={`${uid}-sky`} x1="0" y1="0" x2="0" y2="1">
@@ -782,8 +944,8 @@ export function RootsIllustration() {
             <stop offset="0" stopColor="#1a2e28" /><stop offset="1" stopColor="#0a1412" />
           </linearGradient>
           <radialGradient id={`${uid}-glow`} cx=".5" cy=".4" r=".6">
-            <stop offset="0" stopColor="#67e8d0" stopOpacity=".2" />
-            <stop offset="1" stopColor="#67e8d0" stopOpacity="0" />
+            <stop offset="0" stopColor="#5c8bff" stopOpacity=".2" />
+            <stop offset="1" stopColor="#5c8bff" stopOpacity="0" />
           </radialGradient>
           <filter id={`${uid}-g`} x="-70%" y="-70%" width="240%" height="240%">
             <feGaussianBlur stdDeviation="2" result="b" />
@@ -793,10 +955,10 @@ export function RootsIllustration() {
         <rect width="560" height="240" rx="16" fill="#0a1520" />
         <rect width="560" height="240" rx="16" fill={`url(#${uid}-sky)`} />
         <rect y="140" width="560" height="100" fill={`url(#${uid}-soil)`} />
-        <path d="M0 140c60-10 120 8 180 2s120-14 180-6 120 14 200 4v10H0Z" fill="#12261f" stroke="#67e8d0" strokeOpacity=".25" />
+        <path d="M0 140c60-10 120 8 180 2s120-14 180-6 120 14 200 4v10H0Z" fill="#12261f" stroke="#5c8bff" strokeOpacity=".25" />
         <ellipse cx="280" cy="150" rx="200" ry="50" fill={`url(#${uid}-glow)`} />
-        <path d="M280 140v96M280 168c-40 8-70 30-88 58M280 168c40 8 70 30 88 58M280 196c-26 6-44 20-56 40M280 196c26 6 44 20 56 40" stroke="#67e8d0" strokeOpacity=".55" strokeWidth="2" strokeLinecap="round" className="terra-march" />
-        <path d="M280 168c-18-10-34-10-50-2M280 186c18-8 36-6 52 4M280 210c-14-8-30-8-44 0" stroke="#8ab4ec" strokeOpacity=".45" strokeWidth="1.5" strokeLinecap="round" className="terra-march" style={{ animationDelay: '-1s' }} />
+        <path d="M280 140v96M280 168c-40 8-70 30-88 58M280 168c40 8 70 30 88 58M280 196c-26 6-44 20-56 40M280 196c26 6 44 20 56 40" stroke="#5c8bff" strokeOpacity=".55" strokeWidth="2" strokeLinecap="round" className="terra-march" />
+        <path d="M280 168c-18-10-34-10-50-2M280 186c18-8 36-6 52 4M280 210c-14-8-30-8-44 0" stroke="#789bff" strokeOpacity=".45" strokeWidth="1.5" strokeLinecap="round" className="terra-march" style={{ animationDelay: '-1s' }} />
         {sprouts.map((sprout, index) => (
           <g key={sprout.x} transform={`translate(${sprout.x} 140)`}>
             <path d={`M0 0c${index % 2 ? '-' : ''}${12 + index * 4} ${-sprout.h / 3} ${index % 2 ? '-' : ''}${8 + index * 3} ${-sprout.h * .7} 0 ${-sprout.h}`} stroke={sprout.accent} strokeOpacity=".7" strokeWidth="2" strokeLinecap="round" className="terra-float" style={{ animationDelay: `${index * -.8}s` }} />
@@ -806,14 +968,14 @@ export function RootsIllustration() {
           </g>
         ))}
         <g transform="translate(248 118)">
-          <path d="M32 0 58 14v32L32 60 6 46V14Z" fill="#67e8d0" fillOpacity=".2" stroke="#b7fff0" strokeWidth="1.4" filter={`url(#${uid}-g)`} className="terra-float" />
-          <path d="M32 0v32M32 32 58 14M32 32 6 14" stroke="#04131c" strokeOpacity=".4" />
-          <text x="32" y="36" textAnchor="middle" fill="#04131c" fontSize="12" fontWeight="800">YT</text>
+          <g transform="translate(32 30)">
+            <OrbitMark r={28} accent="#5c8bff" filter={`url(#${uid}-g)`} className="terra-float" />
+          </g>
         </g>
         {[{ x: 80, y: 60 }, { x: 480, y: 48 }, { x: 120, y: 100 }, { x: 460, y: 96 }].map((mote, index) => (
-          <circle key={index} cx={mote.x} cy={mote.y} r={index % 2 ? 2 : 2.6} fill={index % 2 ? '#a5b4fc' : '#67e8d0'} fillOpacity=".5" className="terra-float" style={{ animationDelay: `${index * -.9}s` }} />
+          <circle key={index} cx={mote.x} cy={mote.y} r={index % 2 ? 2 : 2.6} fill={index % 2 ? '#90a8ff' : '#5c8bff'} fillOpacity=".5" className="terra-float" style={{ animationDelay: `${index * -.9}s` }} />
         ))}
-        <text x="280" y="28" textAnchor="middle" fill="#8ff0da" fontSize="11" fontWeight="700" letterSpacing="2">FROM IDLE METAL TO RUNNING MODELS</text>
+        <text x="280" y="28" textAnchor="middle" fill="#9debff" fontSize="11" fontWeight="700" letterSpacing="2">FROM IDLE METAL TO RUNNING MODELS</text>
       </svg>
     </AnimatedScene>
   )
@@ -990,16 +1152,12 @@ const explorerScenes: Record<ExplorerKind, (props: { accent: string; uid: string
 }
 
 export function ExplorerIllustration({ kind, accent }: { kind: string; accent: string }) {
+  const c = useLandingCopy()
   const uid = useId().replace(/:/g, '')
   const safe = (kind === 'network' || kind === 'idea' ? kind : 'device') as ExplorerKind
   const Scene = explorerScenes[safe]
-  const labels: Record<ExplorerKind, string> = {
-    device: '一台设备：工作站上的 GPU 与本地服务，向外暴露可达入口',
-    network: '一组节点：多地点设备织成一张网，统一调度',
-    idea: '一个想法：从想法到运行时，再到在线服务',
-  }
   return (
-    <AnimatedScene className="terra-explorer-art" label={labels[safe]}>
+    <AnimatedScene className="terra-explorer-art" label={c.explorer.illusAria[safe]}>
       <svg viewBox="0 0 560 230" fill="none" role="img" aria-hidden="true" key={safe}>
         <rect width="560" height="230" rx="14" fill="#0a1520" />
         <path d="M12 12h14M12 12v14M548 12h-14M548 12v14M12 218h14M12 218v-14M548 218h-14M548 218v-14" stroke={accent} strokeOpacity=".3" strokeWidth="1.3" strokeLinecap="round" />

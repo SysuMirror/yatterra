@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/Badge'
 import { DataTable } from '@/components/ui/DataTable'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Dialog } from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
@@ -24,6 +25,8 @@ export default function DevHarness() {
   const [newSessionOpen, setNewSessionOpen] = useState(false)
   const [sessionMode, setSessionMode] = useState('agent')
   const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<string | null>(null)
+  const [deleteHarnessTarget, setDeleteHarnessTarget] = useState<string | null>(null)
 
   const { data: agents, isLoading } = useQuery<any[]>({
     queryKey: ['agents'],
@@ -54,6 +57,7 @@ export default function DevHarness() {
   const runMut = useMutation({
     mutationFn: (data: any) => api.post('/agents/run', data),
     onSuccess: () => toast({ type: 'success', message: 'Agent 运行中' }),
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '运行失败' }),
   })
 
   const stopMut = useMutation({
@@ -76,7 +80,7 @@ export default function DevHarness() {
 
   const deleteSessionMut = useMutation({
     mutationFn: (id: string) => api.post('/agents/session/delete', { id }),
-    onSuccess: () => { toast({ type: 'success', message: '会话已删除' }); qc.invalidateQueries({ queryKey: ['agent-sessions'] }) },
+    onSuccess: () => { toast({ type: 'success', message: '会话已删除' }); setDeleteSessionTarget(null); qc.invalidateQueries({ queryKey: ['agent-sessions'] }) },
     onError: () => toast({ type: 'error', message: '删除失败' }),
   })
 
@@ -88,7 +92,7 @@ export default function DevHarness() {
 
   const deleteHarnessMut = useMutation({
     mutationFn: (name: string) => fetch(`/harness/delete?name=${name}`, { credentials: 'same-origin', method: 'POST' }).then(r => r.json()),
-    onSuccess: () => { toast({ type: 'success', message: '编排已删除' }); qc.invalidateQueries({ queryKey: ['harnesses'] }); setExpandedHarness(null) },
+    onSuccess: () => { toast({ type: 'success', message: '编排已删除' }); setDeleteHarnessTarget(null); qc.invalidateQueries({ queryKey: ['harnesses'] }); setExpandedHarness(null) },
     onError: () => toast({ type: 'error', message: '删除失败' }),
   })
 
@@ -106,16 +110,17 @@ export default function DevHarness() {
 
       {/* AI Insight */}
       {!isLoading && (
+        <div data-onboarding-target="harness-insight" className="mb-5">
         <AiInsightPanel
           page="harness"
           title="编排洞察"
-          className="mb-5"
           context={`Agent 编排: ${agents?.length ?? 0} 个 Agent (${(agents ?? []).filter((a: any) => a.run_id).length} 运行中), ${harnesses?.length ?? 0} 个编排, ${sessions?.length ?? 0} 个会话, 商店 ${storeHarnesses?.length ?? 0} 个\nAgents:\n${(agents ?? []).slice(0, 10).map((a: any) => `  ${a.name ?? a.id} [${a.runner ?? 'host'}] ${a.run_id ? '运行中' : '空闲'}`).join('\n')}\n编排:\n${(harnesses ?? []).slice(0, 10).map((h: any) => `  ${typeof h === 'string' ? h : h.name}`).join('\n')}`}
         />
+        </div>
       )}
 
       {/* Agents + Sessions */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="harness-agents" padding="lg" className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Bot size={16} className="text-muted" />
@@ -186,7 +191,7 @@ export default function DevHarness() {
                   { key: 'actions', title: '', width: '120px', render: (r: any) => (
                     <div className="flex items-center gap-1">
                       <Button variant="ghost" size="sm" onClick={() => loadSessionMut.mutate(r.session_id || r.id)}>加载</Button>
-                      <Button variant="ghost" size="sm" onClick={() => deleteSessionMut.mutate(r.session_id || r.id)}><Trash2 size={14} /></Button>
+                      <Button variant="ghost" size="sm" aria-label="删除会话" onClick={() => setDeleteSessionTarget(r.session_id || r.id)}><Trash2 size={14} /></Button>
                     </div>
                   )},
                 ]}
@@ -210,7 +215,7 @@ export default function DevHarness() {
       </Card>
 
       {/* Harnesses */}
-      <Card padding="lg" className="mb-6">
+      <Card data-onboarding-target="harness-list" padding="lg" className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Settings size={16} className="text-muted" />
@@ -229,7 +234,7 @@ export default function DevHarness() {
                 {r}
               </button>
             )},
-            { key: 'status', title: '状态', render: () => <Badge variant="muted">idle</Badge> },
+            { key: 'status', title: '状态', render: (r: any) => <Badge variant="muted">{(typeof r === 'string' ? undefined : r?.status) ?? '-'}</Badge> },
             { key: 'actions', title: '', width: '100px', render: (r: any) => (
               <div className="flex items-center gap-1">
                 <Button variant="ghost" size="sm" onClick={() => runHarnessMut.mutate(r)}>
@@ -250,14 +255,14 @@ export default function DevHarness() {
 
         {/* Harness Detail */}
         {expandedHarness && (
-          <div className="mt-4 border-t border-black/[0.06] pt-4">
+          <div data-onboarding-target="harness-detail" className="mt-4 border-t border-black/[0.06] pt-4">
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-sm font-semibold">{expandedHarness}</h4>
               <div className="flex items-center gap-2">
                 <Button variant="ghost" size="sm" onClick={() => runHarnessMut.mutate(expandedHarness)}>
                   <Play size={14} /> 运行
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => deleteHarnessMut.mutate(expandedHarness)}>
+                <Button variant="ghost" size="sm" aria-label="删除编排" onClick={() => setDeleteHarnessTarget(expandedHarness)}>
                   <Trash2 size={14} />
                 </Button>
               </div>
@@ -277,7 +282,7 @@ export default function DevHarness() {
       </Card>
 
       {/* Harness Store */}
-      <Card padding="lg">
+      <Card data-onboarding-target="harness-store" padding="lg">
         <div className="flex items-center gap-2 mb-4">
           <Package size={16} className="text-muted" />
           <h2 className="text-sm font-semibold">编排商店</h2>
@@ -293,7 +298,7 @@ export default function DevHarness() {
                     <span className="font-medium text-sm">{item.name}</span>
                   </div>
                   {item.description && <p className="text-xs text-muted">{item.description}</p>}
-                  <Button size="sm" variant="secondary" onClick={() => importStoreMut.mutate(item.name)}>
+                  <Button data-onboarding-target="harness-import" size="sm" variant="secondary" onClick={() => importStoreMut.mutate(item.name)}>
                     <Plus size={14} /> 导入
                   </Button>
                 </div>
@@ -307,6 +312,26 @@ export default function DevHarness() {
           </div>
         )}
       </Card>
+
+      {/* Delete session confirm */}
+      <ConfirmDialog
+        open={!!deleteSessionTarget}
+        onClose={() => setDeleteSessionTarget(null)}
+        onConfirm={() => deleteSessionTarget && deleteSessionMut.mutate(deleteSessionTarget)}
+        loading={deleteSessionMut.isPending}
+        title="删除 Agent 会话"
+        description="会话历史将永久丢失，该操作不可撤销。"
+      />
+
+      {/* Delete harness confirm */}
+      <ConfirmDialog
+        open={!!deleteHarnessTarget}
+        onClose={() => setDeleteHarnessTarget(null)}
+        onConfirm={() => deleteHarnessTarget && deleteHarnessMut.mutate(deleteHarnessTarget)}
+        loading={deleteHarnessMut.isPending}
+        title={`删除编排 ${deleteHarnessTarget ?? ''}`}
+        description="编排定义将被永久删除，该操作不可撤销。"
+      />
 
       {/* New Session Dialog */}
       <Dialog open={newSessionOpen} onClose={() => setNewSessionOpen(false)} title="新建会话">

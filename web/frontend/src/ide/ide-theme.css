@@ -1,0 +1,711 @@
+/**
+ * IDE 专属设计语言 —— 永远暗色,全部规则 scoped 在 .ide-root 下。
+ *
+ * 核心机制:在 .ide-root 上把平台设计变量(--surface-x / --ink / --line / --canvas
+ * 等)整体重映射到 IDE 调色板,面板组件里残留的平台工具类(bg-surface-1 /
+ * text-ink / border-line / bg-ink/5 …)在 IDE 内自动渲染为暗色,无需逐个改类名。
+ * IDE 不再跟随平台 light/dark 主题(强制 color-scheme: dark)。
+ */
+
+/* ── 调色板 + 平台变量映射 ─────────────────────────────────────────── */
+
+.ide-root {
+  color-scheme: dark;
+
+  /* IDE 调色板(GitHub Dark 风格,克制专业) */
+  --ide-bg: #0b0f14;            /* 最深:布局空隙 / 标签栏底 / 代码块底 */
+  --ide-panel: #11161d;         /* 面板面 */
+  --ide-elev: #171e28;          /* 悬浮 / hover / 输入框 */
+  --ide-line: rgba(240, 246, 252, 0.08);
+  --ide-line-strong: rgba(240, 246, 252, 0.14);
+  --ide-ink: #d7dee8;
+  --ide-ink-2: #9aa7b6;
+  --ide-mut: #6e7b8b;
+  --ide-accent: var(--accent, #0a84ff);
+  --ide-diff-add: #3fb950;
+  --ide-diff-del: #f85149;
+  --ide-mono: ui-monospace, 'SF Mono', 'Menlo', 'Consolas', 'Liberation Mono', monospace;
+
+  /* 平台变量映射(工具类自动变暗) */
+  --canvas: var(--ide-bg);
+  --surface-0: var(--ide-panel);
+  --surface-1: var(--ide-panel);
+  --surface-2: var(--ide-elev);
+  --surface-3: var(--ide-elev);
+  --surface-4: var(--ide-bg);
+  --line: var(--ide-line);
+  --line-strong: var(--ide-line-strong);
+  --ink: var(--ide-ink);
+  --ink-soft: var(--ide-ink-2);
+  --muted-foreground: var(--ide-mut);
+  --glass-bg: rgba(17, 22, 29, 0.72);
+  --glass-bg-strong: rgba(17, 22, 29, 0.88);
+  --glass-bg-weak: rgba(17, 22, 29, 0.5);
+
+  color: var(--ide-ink);
+  background: var(--ide-bg);
+  font-size: 13px;
+}
+
+/* IDE 内滚动条统一暗色细条 */
+.ide-root * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ide-line-strong) transparent;
+}
+.ide-root ::-webkit-scrollbar { width: 8px; height: 8px; }
+.ide-root ::-webkit-scrollbar-thumb {
+  background: var(--ide-line-strong);
+  border-radius: 4px;
+}
+.ide-root ::-webkit-scrollbar-track { background: transparent; }
+
+/* ── 动效纪律 ────────────────────────────────────────────────────────
+   hover/active:120-160ms 标准缓动;高频操作零动画;唯一允许的 keyframe
+   是工具过程行的跳动点。 */
+.ide-root .ide-hov {
+  transition: color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-root .ide-press:active { transform: scale(0.97); }
+
+/* 顶栏图标按钮(ghost) */
+.ide-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--ide-mut);
+  transition: color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-icon-btn:hover {
+  color: var(--ide-ink);
+  background: rgba(240, 246, 252, 0.06);
+}
+
+/* 顶栏面板开关(VS Code 活动栏心智):点亮 = 面板在布局里 */
+.ide-toggle-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  color: var(--ide-mut);
+  transition: color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-toggle-btn:hover {
+  color: var(--ide-ink);
+  background: rgba(240, 246, 252, 0.06);
+}
+.ide-toggle-btn-on {
+  color: var(--ide-accent);
+  background: rgba(240, 246, 252, 0.05);
+}
+.ide-toggle-btn-on:hover {
+  color: var(--ide-accent);
+  background: rgba(240, 246, 252, 0.09);
+}
+
+/* ── dockview 容器(absolute 定位,父级给确定尺寸) ─────────────────── */
+
+.ide-dockview-host {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+}
+.ide-dockview-host > * {
+  width: 100%;
+  height: 100%;
+}
+
+/* dockview --dv-* 变量统一重指到 IDE 调色板(不再按 data-theme 分叉)。
+   html 前缀提高特异性,压过 dockview 自带 theme 在根元素上的同名变量。 */
+html .ide-root .ide-dockview-host > * {
+  --dv-background-color: var(--ide-bg);
+  --dv-panel-view-background-color: var(--ide-panel);
+  --dv-group-view-background-color: var(--ide-panel);
+  --dv-tabs-and-actions-container-background-color: var(--ide-bg);
+  --dv-tabs-and-actions-container-height: 34px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-activegroup-visiblepanel-tab-background-color: var(--ide-panel);
+  --dv-activegroup-hidden-panel-tab-background-color: var(--ide-panel);
+  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+  --dv-inactivegroup-hidden-panel-tab-background-color: transparent;
+  --dv-activegroup-visiblepanel-tab-color: var(--ide-ink);
+  --dv-activegroup-hidden-panel-tab-color: var(--ide-ink-2);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--ide-mut);
+  --dv-inactivegroup-hidden-panel-tab-color: var(--ide-mut);
+  --dv-tab-divider-color: var(--ide-line);
+  --dv-separator-border: var(--ide-line);
+  --dv-separator-border-color: var(--ide-line);
+  --dv-text-color: var(--ide-ink-2);
+  --dv-icon-color: var(--ide-mut);
+  --dv-icon-hover-color: var(--ide-ink);
+  --dv-icon-hover-background-color: rgba(240, 246, 252, 0.08);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--ide-accent);
+  --dv-tabs-container-scrollbar-color: var(--ide-line-strong);
+  --dv-drag-over-background-color: rgba(10, 132, 255, 0.14);
+}
+
+/* ── 自定义 dockview 标签(DesktopIdeLayout 的 IdeTab) ─────────────── */
+
+.ide-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px 0 10px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ide-mut);
+  background: transparent;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ide-tab:hover {
+  color: var(--ide-ink-2);
+  background: rgba(240, 246, 252, 0.04);
+}
+.ide-tab-active {
+  color: var(--ide-ink);
+  background: var(--ide-panel);
+  box-shadow: inset 0 2px 0 0 var(--ide-accent);
+}
+.ide-tab-active:hover {
+  color: var(--ide-ink);
+  background: var(--ide-panel);
+}
+/* 标签左侧 8px 圆点:文件类型色 / 面板图标色(JSX 里按面板赋色) */
+.ide-tab-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--dot, var(--ide-mut));
+}
+.ide-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--ide-mono);
+}
+/* 右侧 14px 关闭 ×,hover 才显 */
+.ide-tab-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  border-radius: 3px;
+  color: var(--ide-mut);
+  opacity: 0;
+  transition: opacity 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-tab:hover .ide-tab-close,
+.ide-tab-active .ide-tab-close { opacity: 1; }
+.ide-tab-close:hover {
+  color: var(--ide-ink);
+  background: rgba(240, 246, 252, 0.1);
+}
+
+/* ── 面板空态底纹(极淡点阵) ───────────────────────────────────────── */
+
+.ide-empty {
+  background-image: radial-gradient(
+    rgba(240, 246, 252, 0.05) 1px,
+    transparent 1px
+  );
+  background-size: 18px 18px;
+  background-position: center;
+}
+
+/* mono 注释风空态文案 */
+.ide-cmt {
+  font-family: var(--ide-mono);
+  color: var(--ide-mut);
+  user-select: none;
+}
+.ide-cmt-dim { color: var(--ide-line-strong); }
+
+/* 通用 chip(elev 底 mono 小字) */
+.ide-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--ide-elev);
+  font-family: var(--ide-mono);
+  font-size: 12px;
+  color: var(--ide-ink-2);
+  transition: color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+button.ide-chip:hover {
+  color: var(--ide-ink);
+  background: rgba(240, 246, 252, 0.1);
+}
+
+/* ── 文件树 ────────────────────────────────────────────────────────── */
+
+.ide-ft-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  flex: none;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--ide-line);
+  background: var(--ide-panel);
+}
+.ide-ft-crumb {
+  font-family: var(--ide-mono);
+  font-size: 12px;
+}
+.ide-ft-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding-right: 4px;
+}
+.ide-ft-row-btn {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 6px;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  text-align: left;
+  color: var(--ide-ink-2);
+  transition: background-color 130ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 130ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-ft-row-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ide-ink);
+}
+.ide-ft-row-selected {
+  background: var(--ide-elev);
+  border-left-color: var(--ide-accent);
+  color: var(--ide-ink);
+}
+/* 缩进参考线:每层 1px 竖线 */
+.ide-ft-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ide-line);
+  pointer-events: none;
+}
+
+/* ── 编辑器 ────────────────────────────────────────────────────────── */
+
+.ide-ed-tabbar {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  height: 34px;
+  border-bottom: 1px solid var(--ide-line);
+  background: var(--ide-bg);
+}
+.ide-ed-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  max-width: 220px;
+  flex: none;
+  cursor: pointer;
+  font-family: var(--ide-mono);
+  font-size: 12px;
+  color: var(--ide-mut);
+  border-right: 1px solid var(--ide-line);
+  transition: background-color 130ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 130ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-ed-tab:hover {
+  background: rgba(240, 246, 252, 0.04);
+  color: var(--ide-ink-2);
+}
+.ide-ed-tab-active {
+  background: var(--ide-panel);
+  color: var(--ide-ink);
+  box-shadow: inset 0 2px 0 0 var(--ide-accent);
+}
+/* 底部状态条:行号 / 语言 / 保存态 */
+.ide-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  height: 22px;
+  padding: 0 10px;
+  border-top: 1px solid var(--ide-line);
+  background: var(--ide-panel);
+  font-family: var(--ide-mono);
+  font-size: 11px;
+  color: var(--ide-mut);
+}
+
+/* ── AI 助手栏 ─────────────────────────────────────────────────────── */
+
+.ide-ai-msgs {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 消息流:高密度排版(终端风,同类块间 6px,用户↔AI 10px) */
+.ide-ai-block {
+  padding: 0 10px;
+}
+.ide-ai-block:first-child { padding-top: 8px; }
+.ide-ai-block:last-child { padding-bottom: 8px; }
+.ide-ai-block + .ide-ai-block { margin-top: 6px; }
+.ide-ai-block + .ide-ai-user,
+.ide-ai-user + .ide-ai-block { margin-top: 10px; }
+/* 用户消息:❯ 提示符行(终端风,不占气泡底色) */
+.ide-ai-user {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.ide-ai-user-prompt {
+  flex: none;
+  font-family: var(--ide-mono);
+  font-size: 13px;
+  color: var(--ide-accent);
+  user-select: none;
+}
+.ide-ai-user-body {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--ide-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ide-ink);
+}
+/* AI 回复:正文 13px 行高 1.55 */
+.ide-ai-assistant {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ide-ink);
+}
+/* MarkdownContent 输出的代码块/行内 code 在 IDE 内重配 */
+.ide-root .ide-ai-md pre {
+  background: var(--ide-bg) !important;
+  color: #e6edf3;
+  border-radius: 6px;
+  font-family: var(--ide-mono);
+  font-size: 12.5px;
+  margin: 6px 0;
+}
+.ide-root .ide-ai-md .relative > div:first-child {
+  background: var(--ide-bg) !important;
+  border-radius: 6px 6px 0 0;
+  color: var(--ide-mut);
+}
+.ide-root .ide-ai-md :not(pre) > code {
+  background: var(--ide-elev);
+  color: var(--ide-ink);
+  font-family: var(--ide-mono);
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+/* 工具调用过程行:mono 11px muted,▸ 前缀折叠行 */
+.ide-tool-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 1px 0;
+  font-family: var(--ide-mono);
+  font-size: 11px;
+  color: var(--ide-mut);
+  text-align: left;
+  transition: color 130ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-tool-line:hover { color: var(--ide-ink-2); }
+.ide-tool-line-name { flex: none; color: var(--ide-ink-2); }
+.ide-tool-line-arg {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ide-tool-line-result {
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 2px 0 6px 14px;
+  padding: 8px 10px;
+  background: var(--ide-bg);
+  border-radius: 6px;
+  font-family: var(--ide-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ide-ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 运行中尾部三个跳动点(唯一允许的 keyframe) */
+@keyframes ide-dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40% { transform: translateY(-3px); opacity: 1; }
+}
+.ide-dots {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+  align-self: center;
+}
+.ide-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ide-ink-2);
+  animation: ide-dot-bounce 1.2s infinite ease-in-out;
+}
+.ide-dots i:nth-child(2) { animation-delay: 0.15s; }
+.ide-dots i:nth-child(3) { animation-delay: 0.3s; }
+
+/* diff 卡:单行头(文件+统计+✓/✕ 内联按钮),代码区 11px 紧凑行距 */
+.ide-diff-card {
+  margin: 6px 0 0;
+  border: 1px solid var(--ide-line-strong);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--ide-panel);
+}
+.ide-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 0;
+  font-family: var(--ide-mono);
+  font-size: 11.5px;
+  color: var(--ide-ink-2);
+}
+.ide-diff-headbtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  padding: 3px 6px;
+  text-align: left;
+  color: inherit;
+  transition: background-color 130ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-diff-headbtn:hover { background: var(--ide-elev); }
+.ide-diff-reason { color: var(--ide-mut); }
+.ide-diff-code {
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--ide-line);
+  background: var(--ide-bg);
+  font-family: var(--ide-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.ide-diff-l { display: flex; padding: 0 6px; white-space: pre-wrap; word-break: break-all; }
+.ide-diff-l-add { background: rgba(63, 185, 80, 0.08); color: var(--ide-diff-add); }
+.ide-diff-l-del { background: rgba(248, 81, 73, 0.08); color: var(--ide-diff-del); }
+.ide-diff-l-ctx { color: var(--ide-ink-2); }
+.ide-diff-l-hunk { color: var(--ide-mut); background: rgba(240, 246, 252, 0.03); }
+.ide-diff-sign {
+  width: 14px;
+  flex: none;
+  text-align: center;
+  opacity: 0.75;
+  user-select: none;
+}
+.ide-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-family: var(--ide-mono);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-btn:active { transform: scale(0.97); }
+.ide-btn-accent {
+  background: var(--ide-accent);
+  color: #fff;
+}
+.ide-btn-accent:hover { background: #339dff; }
+.ide-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--ide-line-strong);
+  color: var(--ide-ink-2);
+}
+.ide-btn-ghost:hover {
+  color: var(--ide-ink);
+  border-color: rgba(240, 246, 252, 0.24);
+}
+.ide-btn:disabled { opacity: 0.5; pointer-events: none; }
+
+/* AI 输入区:常驻紧凑上下文行 + 13px 输入 */
+.ide-ai-inputwrap {
+  flex: none;
+  border-top: 1px solid var(--ide-line);
+  background: var(--ide-panel);
+  padding: 5px 8px calc(6px + var(--sab, 0px));
+}
+.ide-ai-context {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 3px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ide-ai-context::-webkit-scrollbar { display: none; }
+.ide-ai-context .ide-chip { font-size: 10px; height: 18px; padding: 0 6px; flex: none; }
+.ide-ai-textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ide-ink);
+  font-family: inherit;
+}
+.ide-ai-textarea::placeholder { color: var(--ide-mut); }
+.ide-send-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--ide-accent);
+  color: #fff;
+  transition: background-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-send-btn:active { transform: scale(0.97); }
+.ide-send-btn:disabled { opacity: 0.4; pointer-events: none; }
+.ide-ghost-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: var(--ide-mut);
+  transition: color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-ghost-btn:hover { color: var(--ide-ink); background: rgba(240, 246, 252, 0.06); }
+
+/* ── 设置面板 ──────────────────────────────────────────────────────── */
+
+.ide-set-card {
+  border: 1px solid var(--ide-line);
+  border-radius: 8px;
+  background: var(--ide-panel);
+  padding: 14px;
+}
+
+/* ── 手机:切换条 + 抽屉 ───────────────────────────────────────────── */
+
+.ide-mbar {
+  flex: none;
+  border-top: 1px solid var(--ide-line);
+  background: var(--ide-bg);
+}
+.ide-mbar-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 48px;
+  color: var(--ide-mut);
+}
+.ide-mbar-item-active { color: var(--ide-accent); }
+.ide-mbar-item-active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--ide-accent);
+}
+.ide-mbar-label {
+  font-size: 10px;
+  margin-top: 2px;
+}
+.ide-mbar-item-active .ide-mbar-label { color: var(--ide-ink); font-weight: 500; }
+
+.ide-drawer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  border-top: 1px solid var(--ide-line-strong);
+  border-radius: 14px 14px 0 0;
+  background: var(--ide-panel);
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.4);
+}
+.ide-drawer-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 44px;
+  touch-action: none;
+  user-select: none;
+  cursor: row-resize;
+  font-size: 11px;
+  color: var(--ide-mut);
+}
+.ide-drawer-grip {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ide-line-strong);
+}
+
+/* ── 手机面板头 chips 行横向滚动不显示滚动条 ────────────────────────── */
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

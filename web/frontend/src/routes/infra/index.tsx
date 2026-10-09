@@ -10,7 +10,8 @@ import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { SkeletonCard } from '@/components/ui/Skeleton'
 import { Button } from '@/components/ui/Button'
-import { CpuRequestPie } from '@/components/domain/CpuRequestPie'
+import { CpuRequestPie, MemRequestPie } from '@/components/domain/CpuRequestPie'
+import { CpuUsagePie, MemUsagePie } from '@/components/domain/LiveUsagePie'
 import { api } from '@/api/client'
 
 export default function InfraOverview() {
@@ -38,27 +39,44 @@ export default function InfraOverview() {
     staleTime: 30_000,
   })
 
+  const { data: usage } = useQuery<any>({
+    queryKey: ['infra-usage'],
+    queryFn: () => api.get('/infra/usage').catch(() => null),
+    staleTime: 10_000,
+  })
+
   const rootDisk = host?.disk?.find((d: any) => d.mount === '/') ?? host?.disk?.[0]
   const proxyMappings = proxy?.mappings ?? proxy?.items ?? []
+
+  // live cgroup usage (actual, not reserved) — top groups by memory
+  const liveTop = (usage?.groups ?? [])
+    .slice(0, 5)
+    .map((g: any) => `${g.name} CPU ${g.cpu_cores}核/内存 ${g.mem_gi}Gi`)
+    .join(', ')
+  const liveCtx = usage
+    ? `, 实时占用: CPU ${usage.used_cores}/${usage.cores}核, 内存 ${usage.used_mem_gi}/${usage.mem_total_gi}Gi` +
+      (liveTop ? `（${liveTop}）` : '')
+    : ''
 
   return (
     <>
       <PageHeader title="基础设施" description="集群基础设施概览" doc={{ section: 'infra', item: 0, label: '基础设施文档' }}>
-        <PageAiAssistant page="infra" context={host ? `基础设施概览: 主机 ${host.hostname ?? '?'}, CPU ${host.cpu?.cores ?? '?'}核, 内存 ${(host.mem?.used_pct ?? 0).toFixed(1)}%, 磁盘 ${(rootDisk?.used_pct ?? 0).toFixed(1)}%, GPU ${host.nvidia?.count ?? 0}块, K3s ${host.k3s?.count ?? 0}节点, 存储桶 ${storage?.buckets?.length ?? 0}个, 代理映射 ${proxyMappings.length}条` : '暂无基础设施数据'} />
+        <PageAiAssistant page="infra" context={host ? `基础设施概览: 主机 ${host.hostname ?? '?'}, CPU ${host.cpu?.cores ?? '?'}核, 内存 ${(host.mem?.used_pct ?? 0).toFixed(1)}%, 磁盘 ${(rootDisk?.used_pct ?? 0).toFixed(1)}%, GPU ${host.nvidia?.count ?? 0}块, K3s ${host.k3s?.count ?? 0}节点, 存储桶 ${storage?.buckets?.length ?? 0}个, 代理映射 ${proxyMappings.length}条${liveCtx}` : '暂无基础设施数据'} />
       </PageHeader>
 
       {/* AI Insight */}
       {!isLoading && host && (
+        <div data-onboarding-target="infra-insight" className="mb-5">
         <AiInsightPanel
           page="infra"
           title="基础设施洞察"
-          className="mb-5"
-          context={`基础设施概览: 主机 ${host.hostname ?? '?'}, CPU ${host.cpu?.cores ?? '?'}核, 内存 ${(host.mem?.used_pct ?? 0).toFixed(1)}%, 磁盘 ${(rootDisk?.used_pct ?? 0).toFixed(1)}%, GPU ${host.nvidia?.count ?? 0}块, K3s ${host.k3s?.count ?? 0}节点, 存储桶 ${storage?.buckets?.length ?? 0}个, 代理映射 ${proxyMappings.length}条, FRP ${host.frpc?.running ?? 0}/${host.frpc?.total ?? 0}`}
+          context={`基础设施概览: 主机 ${host.hostname ?? '?'}, CPU ${host.cpu?.cores ?? '?'}核, 内存 ${(host.mem?.used_pct ?? 0).toFixed(1)}%, 磁盘 ${(rootDisk?.used_pct ?? 0).toFixed(1)}%, GPU ${host.nvidia?.count ?? 0}块, K3s ${host.k3s?.count ?? 0}节点, 存储桶 ${storage?.buckets?.length ?? 0}个, 代理映射 ${proxyMappings.length}条, FRP ${host.frpc?.running ?? 0}/${host.frpc?.total ?? 0}${liveCtx}`}
         />
+        </div>
       )}
 
       {/* Core metrics */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
+      <div data-onboarding-target="infra-stats" className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
         {isLoading ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
@@ -71,11 +89,20 @@ export default function InfraOverview() {
         )}
       </div>
 
-      {/* CPU request pie chart */}
-      <CpuRequestPie />
+      {/* CPU / 内存 request pie charts */}
+      <div data-onboarding-target="infra-requests" className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">
+        <CpuRequestPie />
+        <MemRequestPie />
+      </div>
+
+      {/* CPU / 内存 live-usage pie charts (cgroup v2, 实际占用) */}
+      <div data-onboarding-target="infra-live-usage" className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">
+        <CpuUsagePie />
+        <MemUsagePie />
+      </div>
 
       {/* Service status grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div data-onboarding-target="infra-services" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {/* Host */}
         <ServiceCard
           icon={<Server size={18} className="text-ok" />}
@@ -118,7 +145,7 @@ export default function InfraOverview() {
           ok={databases?.status?.mysql?.ready && databases?.status?.redis?.ready}
         >
           <div className="flex items-center gap-1.5 flex-wrap">
-            {['mysql', 'redis', 'qdrant'].map(svc => {
+            {['mysql', 'redis', 'qdrant', 'postgres'].map(svc => {
               const info = databases?.status?.[svc]
               return (
                 <Badge key={svc} variant={info?.ready ? 'ok' : info?.deployed ? 'warn' : 'bad'} dot className="text-[10px]">
@@ -146,7 +173,7 @@ export default function InfraOverview() {
 
       {/* GPU summary */}
       {host?.nvidia?.gpus?.length > 0 && (
-        <Card padding="lg" className="mb-6">
+        <Card data-onboarding-target="infra-gpu" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <Monitor size={16} className="text-warn" />
             <h2 className="text-sm font-semibold">GPU 摘要</h2>
@@ -176,7 +203,7 @@ export default function InfraOverview() {
       )}
 
       {/* Quick actions */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <section data-onboarding-target="infra-quick" className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <QuickAction
           icon={<HardDriveDownload size={18} />}
           label="初始化存储"
@@ -234,7 +261,7 @@ function QuickAction({ icon, label, desc, to }: { icon: React.ReactNode; label: 
         <span className="text-sm font-semibold group-hover:text-accent transition-colors">{label}</span>
         <p className="text-xs text-muted">{desc}</p>
       </div>
-      <ChevronRight size={14} className="ml-auto text-muted/40 group-hover:text/transition-colors flex-shrink-0" />
+      <ChevronRight size={14} className="ml-auto text-muted/40 group-hover:text-muted transition-colors flex-shrink-0" />
     </Link>
   )
 }

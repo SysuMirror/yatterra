@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Monitor, Thermometer, Zap, Box, Activity, HardDrive } from 'lucide-react'
+import { Monitor, Thermometer, Zap, Box, Activity, HardDrive, AlertTriangle } from 'lucide-react'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
@@ -7,24 +7,37 @@ import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
 import { MetricCard } from '@/components/domain/MetricCard'
+import { GpuPodDonut } from '@/components/domain/GpuPodDonut'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { SkeletonCard } from '@/components/ui/Skeleton'
+import { Button } from '@/components/ui/Button'
 import { api } from '@/api/client'
+import { useThemeStore } from '@/stores/theme'
 import { formatBytes } from '@/lib/format'
-
-const tooltipStyle = {
-  contentStyle: { borderRadius: 10, border: '0.5px solid rgba(0,0,0,0.1)', fontSize: 12, background: 'rgba(255,255,255,0.95)' },
-  labelStyle: { color: '#86868b', fontSize: 11 },
-}
 
 function toRows(series: number[] = []) {
   return series.map((v, i) => ({ i, v: Number.isFinite(v) ? v : 0 }))
 }
 
 export default function InfraGpu() {
-  const { data: gpuData, isLoading: gpuLoading } = useQuery<any>({
+  const dark = useThemeStore((s) => s.resolved) === 'dark'
+
+  // 跟随主题的 recharts tooltip / 坐标轴样式
+  const tooltipStyle = {
+    contentStyle: {
+      borderRadius: 10,
+      border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.1)',
+      fontSize: 12,
+      background: dark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
+      color: dark ? '#f5f5f7' : undefined,
+    },
+    labelStyle: { color: dark ? '#98989d' : '#86868b', fontSize: 11 },
+  }
+  const tickFill = dark ? '#98989d' : '#86868b'
+
+  const { data: gpuData, isLoading: gpuLoading, error: gpuError, refetch: refetchGpu } = useQuery<any>({
     queryKey: ['infra-gpu'],
     queryFn: () => api.get('/infra/gpu'),
     staleTime: 10_000,
@@ -55,7 +68,10 @@ export default function InfraGpu() {
 
   const aiContext = gpus.length > 0
     ? `GPU 总数: ${totalGpu}, 平均利用率: ${avgUtil.toFixed(1)}%, 显存: ${totalMemUsed.toFixed(1)}/${totalMemTotal.toFixed(1)} GB, 最高温度: ${maxTemp}°C\n` +
-      gpus.map((g: any) => `GPU ${g.index ?? '?'}: ${g.name ?? 'unknown'}, 利用率 ${g.util ?? 0}%, 显存 ${g.mem_used ?? 0}/${g.mem_total ?? 0} GB, 温度 ${g.temp ?? 0}°C`).join('\n')
+      gpus.map((g: any) => {
+        const pods = (g.pods ?? []).map((p: any) => `${p.name} ${(p.mem / 1024).toFixed(1)}GB/利用率${(p.util ?? 0).toFixed(0)}%`).join(', ')
+        return `GPU ${g.index ?? '?'}: ${g.name ?? 'unknown'}, 利用率 ${g.util ?? 0}%, 显存 ${g.mem_used ?? 0}/${g.mem_total ?? 0} GB, 温度 ${g.temp ?? 0}°C` + (pods ? `, 按 Pod 实际占用: ${pods}` : '')
+      }).join('\n')
     : '暂无 GPU 数据'
 
   return (
@@ -66,11 +82,24 @@ export default function InfraGpu() {
 
       {/* AI Insight */}
       {!gpuLoading && gpus.length > 0 && (
-        <AiInsightPanel page="gpu" context={aiContext} title="GPU 资源洞察" className="mb-5" />
+        <div data-onboarding-target="gpu-insight" className="mb-5">
+          <AiInsightPanel page="gpu" context={aiContext} title="GPU 资源洞察" />
+        </div>
+      )}
+
+      {/* Error state */}
+      {gpuError && (
+        <Card data-onboarding-target="gpu-error" padding="lg" className="mb-6">
+          <div className="flex items-center gap-3 flex-wrap">
+            <AlertTriangle size={16} className="text-bad flex-shrink-0" />
+            <span className="text-sm text-bad font-medium">GPU 数据加载失败：{(gpuError as any)?.message || '网络异常'}</span>
+            <Button variant="secondary" size="sm" className="ml-auto" onClick={() => refetchGpu()}>重试</Button>
+          </div>
+        </Card>
       )}
 
       {/* Overview metric cards */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
+      <div data-onboarding-target="gpu-stats" className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-6">
         {gpuLoading ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
@@ -84,7 +113,7 @@ export default function InfraGpu() {
       </div>
 
       {/* Per-GPU detail cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      <div data-onboarding-target="gpu-cards" className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {gpus.map((gpu: any) => {
           const memUsed = parseFloat(gpu.mem_used) || 0
           const memTotal = parseFloat(gpu.mem_total) || 1
@@ -133,7 +162,7 @@ export default function InfraGpu() {
 
               {/* Time series charts */}
               {series && (series.util?.length > 1 || series.mem?.length > 1) && (
-                <div className="grid grid-cols-2 gap-4 mb-4">
+                <div data-onboarding-target="gpu-trend" className="grid grid-cols-2 gap-4 mb-4">
                   {series.util?.length > 1 && (
                     <div>
                       <p className="text-[11px] text-muted mb-1">利用率趋势</p>
@@ -146,7 +175,7 @@ export default function InfraGpu() {
                                 <stop offset="100%" stopColor="#0a84ff" stopOpacity={0} />
                               </linearGradient>
                             </defs>
-                            <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#86868b' }} tickLine={false} axisLine={false} width={28} />
+                            <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: tickFill }} tickLine={false} axisLine={false} width={28} />
                             <Tooltip {...tooltipStyle} formatter={(v: any) => [`${Number(v).toFixed(1)}%`, '利用率']} />
                             <Area type="monotone" dataKey="v" stroke="#0a84ff" strokeWidth={1.2} fill={`url(#gpu-util-${gpu.index})`} dot={false} isAnimationActive={false} />
                           </AreaChart>
@@ -166,7 +195,7 @@ export default function InfraGpu() {
                                 <stop offset="100%" stopColor="#ff9f0a" stopOpacity={0} />
                               </linearGradient>
                             </defs>
-                            <YAxis domain={[0, Math.max(...series.mem) * 1.15]} tick={{ fontSize: 9, fill: '#86868b' }} tickLine={false} axisLine={false} width={28} />
+                            <YAxis domain={[0, Math.max(...series.mem) * 1.15]} tick={{ fontSize: 9, fill: tickFill }} tickLine={false} axisLine={false} width={28} />
                             <Tooltip {...tooltipStyle} formatter={(v: any) => [`${Number(v).toFixed(0)} MB`, '显存']} />
                             <Area type="monotone" dataKey="v" stroke="#ff9f0a" strokeWidth={1.2} fill={`url(#gpu-mem-${gpu.index})`} dot={false} isAnimationActive={false} />
                           </AreaChart>
@@ -177,9 +206,14 @@ export default function InfraGpu() {
                 </div>
               )}
 
+              {/* Live per-Pod VRAM / utilisation attribution */}
+              <div className="mb-4">
+                <GpuPodDonut gpu={gpu} />
+              </div>
+
               {/* Assigned pods */}
               {assignedGroups.length > 0 && (
-                <div>
+                <div data-onboarding-target="gpu-assigned">
                   <p className="text-[11px] text-muted mb-1.5">已分配 Pod</p>
                   <div className="flex flex-wrap gap-1.5">
                     {assignedGroups.map((name: string) => (
@@ -199,7 +233,7 @@ export default function InfraGpu() {
       </div>
 
       {/* No GPU fallback */}
-      {!gpuLoading && gpus.length === 0 && (
+      {!gpuLoading && !gpuError && gpus.length === 0 && (
         <Card padding="lg" className="text-center">
           <Monitor size={32} className="mx-auto text-muted/40 mb-2" />
           <p className="text-sm text-muted">未检测到 GPU 设备</p>
