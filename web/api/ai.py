@@ -715,13 +715,13 @@ def ai_page_session_delete():
 # so access must match the permission guarding the underlying module.
 # Pages not listed here are denied by default.
 INSIGHT_PAGE_PERMS = {
-    "dashboard": "infra.host",     # aggregates host/GPU/audit/threat data
+    "dashboard": "infra.host.view",  # aggregates host/GPU/audit/threat data
     "pod": "group.view",
     "pod_ide": "group.view",       # Web IDE (/pods/<name>/ide) 页面级 AI 助手
-    "gpu": "infra.host",
-    "host": "infra.host",
-    "infra": "infra.host",         # aggregates host/storage/db/proxy
-    "fleet": "infra.host",         # multi-host cluster status (fleet_monitor)
+    "gpu": "infra.host.view",
+    "host": "infra.host.view",
+    "infra": "infra.host.view",    # aggregates host/storage/db/proxy
+    "fleet": "infra.host.view",    # multi-host cluster status (fleet_monitor)
     "storage": "infra.storage.read",
     "databases": "infra.db.read",
     "db": "infra.db.read",
@@ -909,8 +909,7 @@ def ai_insight_refresh(page):
 # rebuilding the index requires ops/infra-level permission.
 def _kb_admin(user):
     import users
-    # guest role carries infra.host for viewing; index rebuild needs a
-    # real ops/infra account
+    # index rebuild needs a real ops/infra account; guest (view-only) excluded
     if not user or user.get("role") == "guest":
         return False
     try:

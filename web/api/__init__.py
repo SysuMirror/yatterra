@@ -43,16 +43,20 @@ def _resolve_token():
     return info
 
 
-def api_auth(perm=None):
+def api_auth(perm=None, min_role=None):
     """Decorator: token auth + optional permission check.
     Injects g.api_user = {username, role}.
+    min_role: 可选最低角色(如 "user" 即封禁 guest token)。
     DB errors are caught to prevent 500s from stale connections."""
+    from api._auth import role_rank, _ROLE_RANK
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             u = _resolve_token()
             if not u:
                 return jsonify({"error": "未认证或 token 无效"}), 401
+            if min_role and role_rank(u) < _ROLE_RANK.get(min_role, 1):
+                return jsonify({"error": f"需要至少 {min_role} 角色"}), 403
             if perm:
                 try:
                     has = users.has_perm(u, perm)
@@ -445,7 +449,7 @@ def api_databases_cred_delete(kid):
 
 # ── host / audit / tokens ─────────────────────────────────────
 @api_bp.route("/host/health", methods=["GET"])
-@api_auth("infra.host")
+@api_auth("infra.host.view")
 def api_host_health():
     return jsonify(host_health.host_health())
 
@@ -461,19 +465,19 @@ def api_audit_list_legacy():
 
 
 @api_bp.route("/tokens", methods=["GET"])
-@api_auth()
+@api_auth(min_role="user")
 def api_tokens_list():
     return jsonify({"tokens": users.list_tokens(g.api_user["username"])})
 
 
 @api_bp.route("/tokens", methods=["POST"])
-@api_auth()
+@api_auth(min_role="user")
 def api_tokens_create():
     return jsonify({"token": users.create_token(g.api_user["username"], _body().get("name", ""))}), 201
 
 
 @api_bp.route("/tokens/<tid>", methods=["DELETE"])
-@api_auth()
+@api_auth(min_role="user")
 def api_tokens_delete(tid):
     if not users.delete_token(g.api_user["username"], tid):
         return jsonify({"error": "token 不存在或不属于你"}), 404
@@ -494,6 +498,14 @@ from .llm import llm_bp  # noqa: E402
 from .threat_map import threat_map_bp  # noqa: E402
 from .push import push_bp  # noqa: E402
 from .ai import ai_bp  # noqa: E402
+
+# 上面 `from .<mod> import ...` 会把同名的子模块挂到本包上,覆盖模块顶部
+# `import_module("users")` / `import audit` 绑定的顶层模块 —— 于是 v1 的
+# token 鉴权(users.verify_token)、权限检查(users.has_perm)与审计
+# (audit.record)全都抛 AttributeError,被 except 吞掉后一律 401。这里把两个
+# 被覆盖的名字重新绑定回真正的顶层模块。
+users = import_module("users")  # noqa: F811
+audit = import_module("audit")  # noqa: F811
 
 
 # ── Blueprint registration helper ─────────────────────────────

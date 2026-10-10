@@ -88,6 +88,34 @@ def agent_required_perm(agent_def):
         return AGENT_MODE_PERM[aid]
     return "group.terminal" if agent_def.get("runner") == "pod" else "infra.host"
 
+
+# --- 最小角色下限:root 等价"宿主机"工具 ---
+# 镜像 ai_service._ROLE_RANK(见 ai_service.py:828-833)。宿主机 runner 以 root
+# 执行(agent._run_host,.py:241),guest/user 即便持有 infra.host 也绝不能经 AI 拿到
+# root shell / 任意主机文件读——与平台设计文档一致(frontend/src/routes/reports.data.ts:384)。
+# 这里本地复制而非顶层 import ai_service(两者互相 lazy import 以避免环);单测断言
+# _AGENT_ROLE_RANK == ai_service._ROLE_RANK 以防漂移。
+_AGENT_ROLE_RANK = {"guest": 0, "user": 1, "admin": 2, "super": 3}
+
+# harness 工具名 → 最小角色;仅当 runner == "host" 时生效(pod runner 以 cloud
+# 运行,不是 root 等价)。对应 ai_service:shell_exec/read_file/get_configmaps = 2。
+_HOST_TOOL_MIN_ROLE = {
+    "run": 2, "run_remote": 2, "read_file": 2, "write_file": 2,
+    "edit_file": 2, "grep": 2, "list_dir": 2, "inspect": 2,
+}
+
+
+def _host_tool_denied(tool, runner, user):
+    """宿主机 root 等价工具的角色下限检查。返回拒绝文案,或 None 放行。"""
+    floor = _HOST_TOOL_MIN_ROLE.get(tool)
+    if floor is None or runner != "host":
+        return None
+    rank = _AGENT_ROLE_RANK.get((user or {}).get("role", "guest"), 0) \
+        if isinstance(user, dict) else 0
+    if rank < floor:
+        return f"【安全限制:{tool} 在宿主机上需要 admin 及以上角色,当前权限不足】"
+    return None
+
 # --- active runs: run_id -> stop event ---
 _RUNS = {}
 _RUNS_LOCK = threading.Lock()
@@ -478,6 +506,15 @@ def _runner_for(runner, pod, timeout):
     return lambda cmd, out_max: _run_host(cmd, timeout, out_max)
 
 
+# read_file 永不返回的路径(即使 admin)——与 ai_service._READ_FILE_DENY 对齐。
+# 对 os.path.realpath(path) 做子串匹配(realpath 解析符号链接,可穿透 /tmp 软链)。
+_HOST_READ_DENY = (
+    "k3s.yaml", "/opt/yatterra/.env", "db.conf", "/etc/shadow",
+    "/etc/rancher/", "id_rsa", "id_ed25519", ".ssh/", ".pem", ".key",
+    "/opt/yatterra/llm.conf",
+)
+
+
 def _read_file_host(path, out_max=OUT_MAX):
     """Read a file on the host directly (no shell, no injection risk)."""
     path = (path or "").strip()
@@ -485,6 +522,10 @@ def _read_file_host(path, out_max=OUT_MAX):
         return False, "空路径"
     if ".." in path or not path.startswith("/"):
         return False, "安全限制: 仅允许绝对路径且不含 .."
+    rp = os.path.realpath(path)
+    for _d in _HOST_READ_DENY:
+        if _d in rp:
+            return False, "安全限制: 禁止读取敏感文件"
     try:
         with open(path, errors='replace') as f:
             content = f.read(out_max)
@@ -883,6 +924,11 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None,
         return False, f"【{tool} 已在该 agent 配置中禁用】"
     out_max = cfg["limits"]["out_max_kb"] * 1024
     runner = (agent_def or {}).get("runner", "host")
+    # 角色下限:root 等价主机工具必须 admin 起步。放在审批闸之前且无条件执行,
+    # 故经 resume_approved(_approval_bypass=True)复核进来的动作同样受约束。
+    _denied = _host_tool_denied(tool, runner, user)
+    if _denied:
+        return False, _denied
     # --- 需确认的写动作审批闸(默认仅高危写动作;可用 YATTERRA_APPROVAL_MODE 调整) ---
     if not _approval_bypass:
         try:

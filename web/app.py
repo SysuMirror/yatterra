@@ -200,7 +200,7 @@ def route_perm(path):
     if path.startswith("/proxy"):
         return "infra.proxy", None
     if path.startswith("/host"):
-        return "infra.host", None
+        return "infra.host.view", None
     if path.startswith("/audit"):
         return "ops.audit", None
     if path.startswith("/harness/store") or path in ("/harness/publish", "/harness/unpublish"):

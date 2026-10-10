@@ -755,20 +755,20 @@ TOOL_PERMS = {
     "get_pod_env":        "group.view",        # + pod member check
     "get_group_events":   "group.view",        # + pod member check
     "get_groups": "group.view",
-    "cluster_status":     "infra.host",
+    "cluster_status":     "infra.host.view",
     "shell_exec":         "infra.host",
     "read_file":          "infra.host",
-    "get_gpu_status":     "infra.host",
-    "get_resource_usage": "infra.host",
-    "list_services":      "infra.host",
-    "get_deployments":    "infra.host",
+    "get_gpu_status":     "infra.host.view",
+    "get_resource_usage": "infra.host.view",
+    "list_services":      "infra.host.view",
+    "get_deployments":    "infra.host.view",
     "get_configmaps":     "infra.host",
-    "get_gpu_per_pod":    "infra.host",
-    "get_host_health":    "infra.host",
-    "get_pressure_state": "infra.host",
-    "get_metrics":        "infra.host",
-    "get_push_status":    "infra.host",
-    "get_remote_hosts":   "infra.host",
+    "get_gpu_per_pod":    "infra.host.view",
+    "get_host_health":    "infra.host.view",
+    "get_pressure_state": "infra.host.view",
+    "get_metrics":        "infra.host.view",
+    "get_push_status":    "infra.host.view",
+    "get_remote_hosts":   "infra.host.view",
     "get_storage_buckets": "infra.storage.read",
     "get_db_status":      "infra.db.read",
     "get_proxy_mappings": "infra.proxy",
@@ -797,8 +797,8 @@ TOOL_PERMS = {
     # (见 _TOOL_MIN_ROLE) + 用户 diff 卡片确认后才落盘(见 _pod_edit_file)。
     "pod_edit_file":      "",
     "search_knowledge":   "",                  # kb_service routes by perms
-    # tuple = any-of; plus a min-role floor (see _TOOL_MIN_ROLE) so the
-    # guest role (which carries infra.host for viewing) cannot write KB docs
+    # tuple = any-of; plus a min-role floor (see _TOOL_MIN_ROLE) so guest
+    # (which now carries only infra.host.view) cannot write KB docs
     "save_knowledge":     ("infra.host", "ops.audit"),
     # 页面操作工具: 动作最终由用户自己的浏览器执行(且受 browser_assistant 的
     # 敏感/危险目标规则约束), 不触碰服务端数据, 登录即可用。
@@ -820,8 +820,9 @@ _POD_TARGET_TOOLS = {"get_pod", "pod_logs", "get_pod_events",
                      "pod_edit_file"}
 
 # Host-command tools run as root on the server (shell_exec/read_file).
-# The guest role carries infra.host for *viewing* host health, but must not
-# get root shell/file access through the AI — enforce a minimum account role.
+# The guest role carries only infra.host.view for *viewing* host health, and
+# plain user carries infra.host; neither must get root shell/file access through
+# the AI — enforce a minimum account role.
 # shell_exec/read_file/read of configmaps are root-equivalent (k3s.yaml, .env,
 # k8s Secrets), and there is no HTTP endpoint that grants them, so they are
 # floored at admin (rank 2) — tighter than any read-only perm.
@@ -925,7 +926,7 @@ def _resolve_target_group(target, user):
     ("group-mygroup-<hash>-<suffix>"). Returns (group_name, error_str):
     group_name is None when the target cannot be resolved to a group the
     caller owns. This closes the old bypass where any non-group name fell
-    through to "platform infra pod → infra.host" (held by guest/user).
+    through to "platform infra pod → infra.host" (held by user/admin).
     """
     target = (target or "").strip()
     if not target:

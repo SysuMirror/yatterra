@@ -250,7 +250,7 @@ ROLE_PERMS = {
     "user":  ["group.create", "group.view", "group.terminal", "dev.agent", "dev.llm",
               "ops.shared.read", "ops.threat",
               "infra.host", "infra.storage.read", "infra.db.read"],
-    "guest": ["group.view", "infra.host"],
+    "guest": ["group.view", "infra.host.view"],
 }
 ROLES = [("super", "超级管理员"), ("admin", "管理员"),
          ("user", "普通用户"), ("guest", "游客")]
@@ -264,6 +264,7 @@ PERM_GROUPS = [
     ]),
     ("基础设施", [
         ("infra.host", "主机健康/GPU"),
+        ("infra.host.view", "主机健康只读"),
         ("infra.storage.read", "MinIO 存储只读"),
         ("infra.storage", "MinIO 存储管理"),
         ("infra.db.read", "数据库只读"),
@@ -292,6 +293,10 @@ ALL_PERMS = [k for _, items in PERM_GROUPS for k, _ in items]
 
 
 # --- password hashing ---
+# 100k iterations is below current OWASP guidance for pbkdf2-hmac-sha256
+# (600k). Deliberate point on the cost curve for a small user population's
+# login latency; upgrade condition: raise toward OWASP guidance when login
+# volume or threat model changes (TR-003 §4.1 documents this trade-off).
 def _hash_pw(pw, salt=None):
     if salt is None:
         salt = secrets.token_hex(16)
@@ -327,6 +332,9 @@ def expanded_perms(user):
 _WRITE_IMPLIES_READ = {
     "infra.storage": "infra.storage.read",
     "infra.db": "infra.db.read",
+    # 持有特权 infra.host(admin/user)自动获得只读查看权限;
+    # guest 只拿 infra.host.view,不再持有 infra.host。
+    "infra.host": "infra.host.view",
 }
 
 

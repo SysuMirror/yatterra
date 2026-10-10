@@ -8,13 +8,13 @@ import { useAuth } from '@/hooks/useAuth'
 
 // page → perm (null = login only)
 export const PAGE_PERMS: Record<string, string | null> = {
-  dashboard: 'infra.host',
+  dashboard: 'infra.host.view',
   pod: 'group.view',
   pod_ide: 'group.view',
-  gpu: 'infra.host',
-  host: 'infra.host',
-  infra: 'infra.host',
-  fleet: 'infra.host',
+  gpu: 'infra.host.view',
+  host: 'infra.host.view',
+  infra: 'infra.host.view',
+  fleet: 'infra.host.view',
   storage: 'infra.storage.read',
   databases: 'infra.db.read',
   db: 'infra.db.read',

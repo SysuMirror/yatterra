@@ -25,8 +25,8 @@ function actionVariant(action: string): 'bad' | 'ok' | 'accent' | 'muted' {
 export default function OpsOverview() {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  const { hasPerm, role } = useAuth()
-  const canApprove = hasPerm('infra.host') || role === 'admin' || role === 'super'
+  const { role } = useAuth()
+  const canApprove = role === 'admin' || role === 'super'
 
   const { data: audit, isLoading: auditLoading, error: auditError, refetch: refetchAudit } = useQuery<any>({
     queryKey: ['audit-recent'],

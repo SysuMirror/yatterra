@@ -229,10 +229,10 @@ export default function App() {
             <Route path="/pods/:name" element={<RequirePerm perms={['group.view']}><PodDetail /></RequirePerm>} />
             <Route path="/pods/:name/ide" element={<RequirePerm perms={['group.view']}><PodIdePage /></RequirePerm>} />
             <Route path="/ide" element={<RequirePerm perms={['group.view']}><IdeLandingPage /></RequirePerm>} />
-            <Route path="/infra" element={<RequirePerm perms={['infra.host', 'infra.storage', 'infra.db', 'infra.scheduler', 'infra.proxy']}><InfraOverview /></RequirePerm>} />
-            <Route path="/infra/host" element={<RequirePerm perms={['infra.host']}><HostPage /></RequirePerm>} />
-            <Route path="/infra/gpu" element={<RequirePerm perms={['infra.host']}><GpuPage /></RequirePerm>} />
-            <Route path="/infra/fleet" element={<RequirePerm perms={['infra.host']}><FleetPage /></RequirePerm>} />
+            <Route path="/infra" element={<RequirePerm perms={['infra.host.view', 'infra.storage', 'infra.db', 'infra.scheduler', 'infra.proxy']}><InfraOverview /></RequirePerm>} />
+            <Route path="/infra/host" element={<RequirePerm perms={['infra.host.view']}><HostPage /></RequirePerm>} />
+            <Route path="/infra/gpu" element={<RequirePerm perms={['infra.host.view']}><GpuPage /></RequirePerm>} />
+            <Route path="/infra/fleet" element={<RequirePerm perms={['infra.host.view']}><FleetPage /></RequirePerm>} />
             <Route path="/infra/storage" element={<RequirePerm perms={['infra.storage']}><StoragePage /></RequirePerm>} />
             <Route path="/infra/databases" element={<RequirePerm perms={['infra.db']}><DatabasesPage /></RequirePerm>} />
             <Route path="/infra/proxy" element={<RequirePerm perms={['infra.proxy']}><ProxyPage /></RequirePerm>} />
@@ -242,7 +242,7 @@ export default function App() {
             <Route path="/dev/llm" element={<RequirePerm perms={['dev.llm']}><DevLlm /></RequirePerm>} />
             <Route path="/ops" element={<RequirePerm perms={['ops.audit', 'ops.shared.read', 'ops.shared.write']}><OpsOverview /></RequirePerm>} />
             <Route path="/ops/audit" element={<RequirePerm perms={['ops.audit']}><AuditPage /></RequirePerm>} />
-            <Route path="/ops/approvals" element={<RequirePerm perms={['infra.host', 'admin.users']}><ApprovalsPage /></RequirePerm>} />
+            <Route path="/ops/approvals" element={<RequirePerm perms={['admin.users']}><ApprovalsPage /></RequirePerm>} />
             <Route path="/ops/shared" element={<RequirePerm perms={['ops.shared.read', 'ops.shared.write']}><SharedPage /></RequirePerm>} />
             <Route path="/users" element={<RequirePerm perms={['admin.users']}><UsersPage /></RequirePerm>} />
             <Route path="/profile" element={<ProfilePage />} />

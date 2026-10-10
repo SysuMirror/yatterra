@@ -40,9 +40,9 @@ const navGroups: NavGroup[] = [
     label: '基础设施',
     to: '/infra',
     items: [
-      { to: '/infra/host', icon: <Server size={18} />, label: '主机', perm: 'infra.host' },
-      { to: '/infra/fleet', icon: <Network size={18} />, label: '集群', perm: 'infra.host' },
-      { to: '/infra/gpu', icon: <Monitor size={18} />, label: 'GPU', perm: 'infra.host' },
+      { to: '/infra/host', icon: <Server size={18} />, label: '主机', perm: 'infra.host.view' },
+      { to: '/infra/fleet', icon: <Network size={18} />, label: '集群', perm: 'infra.host.view' },
+      { to: '/infra/gpu', icon: <Monitor size={18} />, label: 'GPU', perm: 'infra.host.view' },
       { to: '/infra/storage', icon: <HardDrive size={18} />, label: '存储', perm: 'infra.storage.read' },
       { to: '/infra/databases', icon: <Database size={18} />, label: '数据库', perm: 'infra.db.read' },
       { to: '/infra/proxy', icon: <Globe size={18} />, label: '子域名', perm: 'infra.proxy' },
@@ -63,7 +63,7 @@ const navGroups: NavGroup[] = [
     to: '/ops',
     items: [
       { to: '/ops/audit', icon: <ShieldCheck size={18} />, label: '审计', perm: 'ops.audit' },
-      { to: '/ops/approvals', icon: <ShieldQuestion size={18} />, label: 'AI 审批', perm: ['infra.host', 'admin.users'] },
+      { to: '/ops/approvals', icon: <ShieldQuestion size={18} />, label: 'AI 审批', perm: ['admin.users'] },
       { to: '/ops/shared', icon: <FolderOpen size={18} />, label: '共享', perm: 'ops.shared.read' },
       { to: '/threat-map', icon: <Swords size={18} />, label: '攻防', perm: 'ops.threat' },
     ],

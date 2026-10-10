@@ -9,12 +9,18 @@ from middleware.error_handler import bad_request, not_found, forbidden
 users_mod = import_module("users")
 import audit
 
-from api._auth import require_auth, current_username, current_user_obj
+from api._auth import require_auth, current_username, current_user_obj, min_role_guard
 
 users_bp = Blueprint("api_users", __name__, url_prefix="/api/users")
 
 # --- Tokens blueprint at /api/tokens (SPA compatibility) ---
 tokens_bp = Blueprint("api_tokens", __name__, url_prefix="/api/tokens")
+
+
+@tokens_bp.before_request
+def _tokens_deny_guest():
+    """封禁 guest 签/管 API token(报告要求)。"""
+    return min_role_guard("user")
 
 
 @tokens_bp.route("", methods=["GET"])

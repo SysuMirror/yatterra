@@ -32,14 +32,14 @@ import math as _math
 
 
 @infra_bp.route("/fleet", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_fleet():
     """Cached fleet readings; never SSH in an HTTP request."""
     return jsonify(_fleet.snapshot())
 
 
 @infra_bp.route("/fleet/<host_id>/history", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_fleet_history(host_id):
     if host_id not in {h["id"] for h in _fleet.inventory()}:
         raise not_found("Fleet host not found")
@@ -62,35 +62,35 @@ def infra_fleet_history(host_id):
 # ── host ──────────────────────────────────────────────────────
 
 @infra_bp.route("/host", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_host():
     """Host health data."""
     return jsonify(host_health.host_health())
 
 
 @infra_bp.route("/gpu", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_gpu():
     """Per-GPU stats: utilization, memory, temperature, power, assigned groups."""
     return jsonify(gpu_stats.gpu_stats())
 
 
 @infra_bp.route("/remote-hosts", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_remote_hosts():
     """Remote hosts list."""
     return jsonify({"hosts": remote_hosts.all_hosts()})
 
 
 @infra_bp.route("/metrics", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_metrics():
     """System metrics snapshot."""
     return jsonify(metrics.metrics_snapshot())
 
 
 @infra_bp.route("/cpu-stats", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_cpu_stats():
     """CPU stats including per-group resource usage."""
     return jsonify(cpu_stats.cpu_stats())
@@ -123,7 +123,7 @@ def _parse_mem_gi_q(s):
 
 
 @infra_bp.route("/cpu-requests", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_cpu_requests():
     """Per-pod CPU/memory requests + limits (live from k8s) for the pie chart.
 
@@ -190,7 +190,7 @@ def infra_cpu_requests():
 
 
 @infra_bp.route("/usage", methods=["GET"])
-@require_auth("infra.host")
+@require_auth("infra.host.view")
 def infra_usage():
     """Live per-group CPU/memory *actually in use* (cgroup v2), for the pie charts.
 

@@ -16,9 +16,15 @@ users = import_module("users")
 import groups
 import audit
 
-from api._auth import require_auth, current_username, current_user_obj
+from api._auth import require_auth, current_username, current_user_obj, min_role_guard
 
 agents_bp = Blueprint("api_agents", __name__, url_prefix="/api/agents")
+
+
+@agents_bp.before_request
+def _agents_deny_guest():
+    """封禁 guest 访问 /api/agents/*(报告要求)。"""
+    return min_role_guard("user")
 
 
 @agents_bp.route("", methods=["GET"])

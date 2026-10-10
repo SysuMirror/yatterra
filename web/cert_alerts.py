@@ -74,13 +74,12 @@ def _send(usernames, event_key, kind, title, body, url, urgency):
 
 
 def admin_users():
-    """具备审批权的用户: admin/super 角色或持有 infra.host 权限。"""
+    """具备审批权的用户: 仅 admin/super 角色(与 approvals._is_approver 一致)。"""
     try:
         import users
         out = []
         for u in users.list_users():
-            if (u.get("role") or "") in ("super", "admin") \
-                    or users.has_perm(u, "infra.host"):
+            if (u.get("role") or "") in ("super", "admin"):
                 out.append(u["username"])
         return out
     except Exception:

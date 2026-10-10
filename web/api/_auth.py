@@ -8,6 +8,29 @@ from flask import request, jsonify, g, session
 users = import_module("users")
 
 
+# 角色等级:用于"最低角色"闸(与 ai_service._ROLE_RANK 同构)。
+_ROLE_RANK = {"guest": 0, "user": 1, "admin": 2, "super": 3}
+
+
+def role_rank(user):
+    """用户 dict 的角色等级;未认证/None → -1(交由 @require_auth 出 401)。"""
+    if not isinstance(user, dict):
+        return -1
+    return _ROLE_RANK.get(user.get("role") or "guest", 0)
+
+
+def min_role_guard(min_role="user"):
+    """Blueprint before_request 守卫:已认证但角色低于 min_role → 403。
+
+    匿名调用放行(返回 None),以便路由自身的 @require_auth 给出 401。
+    """
+    u = _resolve_user()
+    if u is not None and role_rank(u) < _ROLE_RANK.get(min_role, 1):
+        return jsonify({"error": {"code": "FORBIDDEN",
+                                  "message": f"需要至少 {min_role} 角色"}}), 403
+    return None
+
+
 def _resolve_user():
     """Resolve user from Bearer token or session.
 
@@ -43,11 +66,12 @@ def _resolve_user():
     return None
 
 
-def require_auth(perm=None):
+def require_auth(perm=None, min_role=None):
     """Decorator: require authentication (token or session) + optional permission.
 
     Injects g.api_user = user_dict on success.
     DB errors in has_perm are caught to prevent 500s from stale connections.
+    min_role: 可选最低角色(如 "user" 即封禁 guest);未认证仍返回 401。
     """
     def decorator(fn):
         @functools.wraps(fn)
@@ -56,6 +80,9 @@ def require_auth(perm=None):
             if not u:
                 return jsonify({"error": {"code": "UNAUTHORIZED",
                                           "message": "Authentication required"}}), 401
+            if min_role and role_rank(u) < _ROLE_RANK.get(min_role, 1):
+                return jsonify({"error": {"code": "FORBIDDEN",
+                                          "message": f"需要至少 {min_role} 角色"}}), 403
             if perm:
                 try:
                     has = users.has_perm(u, perm)

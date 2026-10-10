@@ -504,6 +504,15 @@ try:
 
     approvals_bp = Blueprint("api_approvals", __name__, url_prefix="/api/agents")
 
+    @approvals_bp.before_request
+    def _approvals_deny_guest():
+        """封禁 guest 访问审批端点。"""
+        _u = _resolve_actor()
+        if _u and (_u.get("role") or "") == "guest":
+            return jsonify({"error": {"code": "FORBIDDEN",
+                                      "message": "游客无权访问审批"}}), 403
+        return None
+
     def _resolve_actor():
         """解析当前操作者(Bearer token > session),失败返回 None。"""
         try:
@@ -532,14 +541,11 @@ try:
         return None
 
     def _is_approver(u):
+        # 仅 admin/super 可审批。infra.host 被 guest 与 user 共同持有,若作为审批
+        # 依据则申请者可自审批自己的高危写动作 → 必须收口到角色。
         if not u:
             return False
-        try:
-            if (u.get("role") or "") in ("super", "admin"):
-                return True
-            return bool(users.has_perm(u, "infra.host"))
-        except Exception:
-            return False
+        return (u.get("role") or "") in ("super", "admin")
 
     def _as_int(v, default, lo=1, hi=200):
         try:
@@ -554,7 +560,7 @@ try:
                                       "message": "需要登录"}}), 401
         if not _is_approver(u):
             return jsonify({"error": {"code": "FORBIDDEN",
-                                      "message": "需要 admin 或 infra.host 权限"}}), 403
+                                      "message": "需要 admin 及以上权限"}}), 403
         return u
 
     @approvals_bp.route("/approvals", methods=["GET"])
