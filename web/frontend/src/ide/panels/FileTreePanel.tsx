@@ -5,7 +5,8 @@
  *  - GET /api/pods/<podName>/files 逐层懒加载目录树(根:/home/cloud 与 /shared)
  *  - 面包屑 + 当前路径导航;按扩展名显示图标(有 size 字段时显示大小)
  *  - 新建文件/目录(POST files/create)、删除(DELETE files,二次确认)、
- *    重命名(POST files/move,后端 mv 保内容;文件/目录均可)
+ *    重命名(POST files/move,后端 mv 保内容;文件/目录均可)、
+ *    下载(GET files/download;文件原样、目录 tar.gz,桌面悬停按钮+手机长按菜单)
  *  - 点击文件 → editorBus.openFile() 通知 EditorPanel 打开
  *  - 手机:行高 ≥44px、长按弹 ActionSheet、目录缩进收敛
  *
@@ -19,6 +20,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronRight,
+  Download,
   File,
   FileArchive,
   FileCode2,
@@ -47,6 +49,7 @@ import { Button } from '@/components/ui/Button'
 import { useLongPress } from '@/hooks/useLongPress'
 import { haptic } from '@/lib/haptic'
 import { cn } from '@/lib/cn'
+import { downloadPodFile } from '@/lib/podDownload'
 
 // ── 常量 ────────────────────────────────────────────────────────────────────
 
@@ -402,6 +405,19 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
     [podName, toast, loadDir],
   )
 
+  /** 下载:文件原样、目录 tar.gz(后端 files/download)。 */
+  const downloadEntry = useCallback(
+    async (entry: FileEntry) => {
+      try {
+        await downloadPodFile(podName, entry.path, entry.is_dir)
+        toast({ type: 'success', message: `已下载 ${entry.name}${entry.is_dir ? '.tar.gz' : ''}` })
+      } catch (e: any) {
+        toast({ type: 'error', message: e?.message || '下载失败' })
+      }
+    },
+    [podName, toast],
+  )
+
   // ── 渲染 ──────────────────────────────────────────────────────────────
 
   const rows = useMemo(() => buildRows(dirs, expanded), [dirs, expanded])
@@ -460,6 +476,12 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
     }
     if (!isRoot) {
       items.push({
+        key: 'download',
+        label: e.is_dir ? '打包下载 (tar.gz)' : '下载',
+        icon: <Download size={16} />,
+        onClick: () => downloadEntry(e),
+      })
+      items.push({
         key: 'del',
         label: e.is_dir ? '删除目录' : '删除文件',
         icon: <Trash2 size={16} />,
@@ -468,7 +490,7 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
       })
     }
     return items
-  }, [sheetTarget, expanded, toggleDir, openFile])
+  }, [sheetTarget, expanded, toggleDir, openFile, downloadEntry])
 
   return (
     <div className="h-full w-full flex flex-col min-h-0 bg-surface-1">
@@ -606,6 +628,7 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
               onRename={(e) =>
                 setNameDialog({ mode: 'rename', baseDir: parentOf(e.path) ?? POD_HOME, target: e })
               }
+              onDownload={downloadEntry}
               onDelete={setConfirmTarget}
             />
           )
@@ -702,6 +725,7 @@ interface TreeRowProps {
   onOpenFile: (e: FileEntry) => void
   onLongPress: (e: FileEntry) => void
   onRename: (e: FileEntry) => void
+  onDownload: (e: FileEntry) => void
   onDelete: (e: FileEntry) => void
 }
 
@@ -786,6 +810,12 @@ function TreeRow(props: TreeRowProps) {
         <>
           <RowActionButton title={`重命名 ${entry.name}`} onClick={() => props.onRename(entry)}>
             <Pencil size={12} />
+          </RowActionButton>
+          <RowActionButton
+            title={entry.is_dir ? `打包下载 ${entry.name} (tar.gz)` : `下载 ${entry.name}`}
+            onClick={() => props.onDownload(entry)}
+          >
+            <Download size={12} />
           </RowActionButton>
           <RowActionButton title={`删除 ${entry.name}`} danger onClick={() => props.onDelete(entry)}>
             <Trash2 size={12} />

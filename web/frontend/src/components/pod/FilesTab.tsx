@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Folder, File, FilePlus, FolderPlus, Trash2, Save, ArrowLeft, RefreshCw, Sparkles, Loader2 } from 'lucide-react'
+import { Folder, File, FilePlus, FolderPlus, Trash2, Save, ArrowLeft, RefreshCw, Sparkles, Loader2, Download } from 'lucide-react'
 import { api } from '@/api/client'
 import { aiApi } from '@/api/ai'
 import { MarkdownContent } from '@/components/ai'
@@ -9,6 +9,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { CodeEditor } from '@/components/terminal/CodeEditor'
 import { useToastStore } from '@/stores/toast'
 import { cn } from '@/lib/cn'
+import { downloadPodFile } from '@/lib/podDownload'
 
 const HOME = '/home/cloud'
 const TEXT_EXT = /\.(txt|md|json|ya?ml|toml|ini|conf|cfg|env|sh|bash|py|js|ts|jsx|tsx|css|html|htm|xml|sql|c|h|cpp|go|rs|java|log|gitignore|dockerfile)$/i
@@ -48,6 +49,19 @@ export function FilesTab({ podName }: { podName: string }) {
       refresh()
     } catch (e: any) {
       toast({ type: 'error', message: e?.message || '创建失败' })
+    }
+  }
+
+  const [downloading, setDownloading] = useState<string | null>(null)
+  const downloadEntry = async (entry: Entry) => {
+    setDownloading(entry.path)
+    try {
+      await downloadPodFile(podName, entry.path, entry.is_dir)
+      toast({ type: 'success', message: `已下载 ${entry.name}${entry.is_dir ? '.tar.gz' : ''}` })
+    } catch (e: any) {
+      toast({ type: 'error', message: e?.message || '下载失败' })
+    } finally {
+      setDownloading(null)
     }
   }
 
@@ -122,6 +136,17 @@ export function FilesTab({ podName }: { podName: string }) {
                 onClick={() => (e.is_dir ? setDir(e.path) : setOpenFile(e.path))}
               >
                 {e.name}
+              </button>
+              <button
+                aria-label={`下载 ${e.name}`}
+                title={e.is_dir ? '打包下载 (tar.gz)' : '下载'}
+                disabled={downloading === e.path}
+                className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-1.5 rounded-md text-muted hover:text-accent hover:bg-accent/10 transition-all disabled:opacity-40"
+                onClick={() => downloadEntry(e)}
+              >
+                {downloading === e.path
+                  ? <Loader2 size={13} className="animate-spin" />
+                  : <Download size={13} />}
               </button>
               <button
                 aria-label={`删除 ${e.name}`}

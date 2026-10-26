@@ -948,6 +948,199 @@ def save_file(name):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  Preview: raw file bytes + pod-local port proxy
+# ═══════════════════════════════════════════════════════════════
+_RAW_MAX = 32 * 1024 * 1024  # 预览文件上限 32MB(超大 pdf/视频请下载后看)
+
+_MIME_BY_EXT = {
+    "pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg",
+    "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+    "svg": "image/svg+xml", "bmp": "image/bmp", "ico": "image/x-icon",
+    "html": "text/html; charset=utf-8", "htm": "text/html; charset=utf-8",
+    "txt": "text/plain; charset=utf-8", "md": "text/markdown; charset=utf-8",
+    "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8",
+    "json": "application/json; charset=utf-8", "mp4": "video/mp4",
+    "webm": "video/webm", "mp3": "audio/mpeg", "wav": "audio/wav",
+}
+
+
+def _pod_runtime_name(name):
+    """Resolve the running pod object name for a group (None if not found)."""
+    r = groups.kubectl("get", "pod", "-l", f"app=group-{name}",
+                       "-o", "jsonpath={.items[0].metadata.name}", check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout.strip()
+
+
+@pods_bp.route("/<name>/files/raw", methods=["GET"])
+@api_pod("member")
+def get_file_raw(name):
+    """原始字节预览:pdf/图片/HTML 等由浏览器原生渲染,IDE 预览面板用。
+
+    与 files/content 同一套路径白名单(/home/cloud/ 与 /shared/),经
+    kubectl exec base64 取回,上限 _RAW_MAX。"""
+    path = request.args.get("path", "")
+    if not path:
+        return jsonify({"error": "缺少 path"}), 400
+    norm = os.path.normpath(path)
+    if not any(norm == pre.rstrip("/") or norm.startswith(pre)
+               for pre in ("/home/cloud/", "/shared/")):
+        return jsonify({"error": "仅允许读取 /home/cloud/ 或 /shared/"}), 403
+    ext = norm.rsplit(".", 1)[-1].lower() if "." in os.path.basename(norm) else ""
+    mime = _MIME_BY_EXT.get(ext, "application/octet-stream")
+    try:
+        # 先 stat 拿大小:超限直接拒绝,不把几十 MB 的 base64 拉回控制面
+        rc, out, err = deploys._exec(
+            name, f"stat -c %s {shlex.quote(norm)} 2>/dev/null", timeout=10)
+        if rc != 0 or not out.strip():
+            return jsonify({"error": "文件不存在或不可读"}), 404
+        if int(out.strip()) > _RAW_MAX:
+            return jsonify({"error": f"文件超过 {_RAW_MAX // (1024*1024)}MB,不支持在线预览"}), 413
+        rc, out, err = deploys._exec(
+            name, f"base64 -w0 {shlex.quote(norm)} 2>/dev/null", timeout=60)
+        if rc != 0 or not out.strip():
+            return jsonify({"error": (err or "读取失败").strip()}), 500
+        data = base64.b64decode(out.strip())
+        # mimetype 参数带 "; charset=..." 时 Flask 会再追加一个 charset,
+        # 重复了 —— 拆开:基础类型给 mimetype,完整串直接写 header
+        resp = Response(data, mimetype=mime.split(";")[0].strip())
+        if ";" in mime:
+            resp.headers["Content-Type"] = mime
+        # 同源 iframe/img 直接用;下载时给个像样的文件名
+        from urllib.parse import quote as _uquote
+        resp.headers["Content-Disposition"] = \
+            f"inline; filename*=UTF-8''{_uquote(os.path.basename(norm))}"
+        # 内容随文件变化:预览刷新即生效,不吃浏览器缓存
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@pods_bp.route("/<name>/files/download", methods=["GET"])
+@api_pod("member")
+def download_file(name):
+    """下载:单文件原样返回;目录打成 tar.gz 返回(attachment)。
+
+    与 files/raw 同一套路径白名单,同样经 kubectl exec base64 取回 ——
+    控制面要先把整个 payload 读进内存,所以设了硬上限:
+    单文件 256MB;目录按未压缩大小 du 预检 1GB(压缩后实际更小)。
+    超限请走 MinIO(§5)或 rsync,别用浏览器拖。"""
+    path = request.args.get("path", "")
+    if not path:
+        return jsonify({"error": "缺少 path"}), 400
+    norm = os.path.normpath(path)
+    if norm in ("/home/cloud", "/home/cloud/", "/shared", "/shared/"):
+        return jsonify({"error": "不能下载整个根目录,请进入子目录"}), 400
+    if not any(norm == pre.rstrip("/") or norm.startswith(pre)
+               for pre in ("/home/cloud/", "/shared/")):
+        return jsonify({"error": "仅允许下载 /home/cloud/ 或 /shared/ 下的内容"}), 403
+    from urllib.parse import quote as _uquote
+    try:
+        # 判断类型 + 预检大小
+        rc, out, err = deploys._exec(
+            name,
+            f"if [ -d {shlex.quote(norm)} ]; then echo dir; du -sk {shlex.quote(norm)}; "
+            f"elif [ -f {shlex.quote(norm)} ]; then echo file; stat -c %s {shlex.quote(norm)}; "
+            f"else echo missing; fi", timeout=15)
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        if not lines or lines[0] == "missing":
+            return jsonify({"error": "路径不存在或不可读"}), 404
+        is_dir = lines[0] == "dir"
+        if is_dir:
+            try:
+                size_k = int(lines[1].split()[0]) if len(lines) > 1 else 0
+            except (ValueError, IndexError):
+                size_k = 0
+            if size_k > 1024 * 1024:  # 1GB 未压缩
+                return jsonify({"error": "目录超过 1GB,不支持打包下载,请用 MinIO 归档"}), 413
+            parent = os.path.dirname(norm) or "/"
+            base = os.path.basename(norm)
+            fname = f"{base}.tar.gz"
+            cmd = (f"tar czf - -C {shlex.quote(parent)} {shlex.quote(base)} "
+                   "2>/dev/null | base64 -w0")
+            timeout = 300
+        else:
+            try:
+                fsize = int(lines[1]) if len(lines) > 1 else 0
+            except (ValueError, IndexError):
+                fsize = 0
+            if fsize > 256 * 1024 * 1024:
+                return jsonify({"error": "文件超过 256MB,不支持浏览器下载,请用 MinIO"}), 413
+            fname = os.path.basename(norm)
+            cmd = f"base64 -w0 {shlex.quote(norm)} 2>/dev/null"
+            timeout = 120
+        rc, out, err = deploys._exec(name, cmd, timeout=timeout)
+        if rc != 0 or not out.strip():
+            return jsonify({"error": (err or "读取失败").strip()}), 500
+        data = base64.b64decode(out.strip())
+        resp = Response(data, mimetype="application/octet-stream")
+        resp.headers["Content-Disposition"] = \
+            f"attachment; filename*=UTF-8''{_uquote(fname)}"
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@pods_bp.route("/<name>/proxy/<int:port>/", defaults={"path": ""})
+@pods_bp.route("/<name>/proxy/<int:port>/<path:path>")
+@api_pod("member")
+def proxy_pod_port(name, port, path):
+    """Pod 本地端口只读代理(IDE 内置浏览器用):GET http://<podIP>:<port>/<path>。
+
+    只允许 member 及以上访问、只做 GET/HEAD、只打到该 pod 自己的 IP ——
+    不会成为任意内网跳板。响应体上限 16MB,超限截断(网页预览够用)。"""
+    if not (1 <= port <= 65535):
+        return jsonify({"error": "端口非法"}), 400
+    if groups.pod_status(name) != "Running":
+        return jsonify({"error": "Pod 未运行"}), 400
+    pod = _pod_runtime_name(name)
+    if not pod:
+        return jsonify({"error": "找不到 Pod"}), 404
+    r = groups.kubectl("get", "pod", pod, "-o",
+                       "jsonpath={.status.podIP}", check=False)
+    ip = r.stdout.strip() if r.returncode == 0 else ""
+    if not ip:
+        return jsonify({"error": "无法获取 Pod IP"}), 500
+    import urllib.request
+    import urllib.error
+    qs = request.query_string.decode("latin-1", errors="replace")
+    url = f"http://{ip}:{port}/{path}" + (f"?{qs}" if qs else "")
+    try:
+        req = urllib.request.Request(url, method=request.method)
+        # 透传常规浏览器头,后端按 Accept/User-Agent 产出的页面更接近真实
+        for h in ("Accept", "Accept-Language", "User-Agent"):
+            v = request.headers.get(h)
+            if v:
+                req.add_header(h, v)
+        with urllib.request.urlopen(req, timeout=20) as upstream:
+            body = upstream.read(16 * 1024 * 1024 + 1)
+            ctype = upstream.headers.get("Content-Type", "application/octet-stream")
+            status = upstream.status
+        if len(body) > 16 * 1024 * 1024:
+            return jsonify({"error": "响应超过 16MB,已中止"}), 502
+        resp = Response(body, status=status, mimetype=ctype.split(";")[0].strip() or None)
+        if ";" in ctype:
+            resp.headers["Content-Type"] = ctype  # 保留 charset
+        resp.headers["Cache-Control"] = "no-cache"
+        # X-Frame-Options 同源放行,内置浏览器是同源 iframe
+        resp.headers.pop("X-Frame-Options", None)
+        return resp
+    except urllib.error.HTTPError as e:
+        # 4xx/5xx 也要把上游内容带回去(iframe 里能看到应用自己的报错页)
+        try:
+            body = e.read(4 * 1024 * 1024)
+        except Exception:
+            body = b""
+        return Response(body, status=e.code,
+                        mimetype=(e.headers.get("Content-Type") or "text/plain").split(";")[0])
+    except Exception as e:
+        return jsonify({"error": f"连接 pod 端口失败: {e}"}), 502
+
+
+# ═══════════════════════════════════════════════════════════════
 #  POST /api/pods/<name>/apply-template  — quickstart template
 # ═══════════════════════════════════════════════════════════════
 @pods_bp.route("/<name>/apply-template", methods=["POST"])
