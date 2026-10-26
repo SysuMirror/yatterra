@@ -16,6 +16,11 @@ low-priority work to relieve the host. This loop does that, by priority:
     stop normal ones. critical is never touched.
   - "Relevant": a non-GPU program ignores gpu pressure (only cpu/mem/bw can
     evict it). Bucket effect: any one relevant metric over threshold triggers.
+  - GPU pressure is read per-card from pressure.json (gpu_cards) and attributed
+    to the *program's own* card; v1 used the cross-card average, which diluted a
+    single-card hog and could evict a neighbour sitting on an idle card.
+  - Resource shares (cpu/mem) come from cgroup v2 (cgroup_stats.sample_live)
+    with `kubectl top` as fallback — instantaneous, not a 1-minute lag.
   - Victims are scored by priority_weight * (0.1 + resource_share): a
     low-priority high-mem program is evicted before a low-priority low-mem one.
   - When all metrics return to low and stay there RECOVER_S seconds, stopped
@@ -163,6 +168,27 @@ def _parse_mem_mib(s):
         return 0.0
 
 
+def pod_usage_by_group():
+    """{group: {"cpu": cores, "mem": mib}} — cgroup v2 first, kubectl top as fallback.
+
+    ``kubectl top pod`` reports a 1-minute rate from metrics-server, so a burst
+    that starts between two cycles is invisible to the victim score. cgroup v2
+    exposes the raw counters the kubelet itself reads (cgroup_stats.sample_live),
+    giving a real current rate. sample_live blocks ~1s (it takes two readings);
+    that is fine at POLL_S=5 and keeps its own snapshot local, so the req_loop's
+    sampling window is not perturbed. Any failure falls back to kubectl top.
+    """
+    try:
+        import cgroup_stats
+        live = cgroup_stats.sample_live()
+        if live:
+            return {g: {"cpu": float(c), "mem": float(m) * 1024.0}  # GiB -> MiB
+                    for g, (c, m) in live.items()}
+    except Exception:
+        pass
+    return pod_top_by_group()
+
+
 def pod_top_by_group():
     """Return {group_name: {"cpu": cores, "mem": mib}} via `kubectl top pod`.
     Pods are matched to groups by name prefix group-<name>- (group names contain
@@ -244,17 +270,52 @@ def relevant_metrics(rec):
     return m
 
 
-def pressure_value(metric, p):
+def gpu_card(p, gpu_idx):
+    """Per-card dict from p['gpu_cards'] for gpu_idx, or None if unavailable."""
+    cards = p.get("gpu_cards")
+    if not isinstance(cards, list) or gpu_idx is None:
+        return None
+    for c in cards:
+        if isinstance(c, dict) and str(c.get("index")) == str(gpu_idx):
+            return c
+    return None
+
+
+def gpu_signal(p, rec=None):
+    """(util, vram_frac) for a GPU program, attributed to *its own* card.
+
+    v1 read the host-wide cross-card average, so a single saturated card was
+    diluted by its idle siblings (a genuine one-card hog read as ~0.33 and never
+    tripped the tier) and a program on an idle card could be evicted for a
+    neighbour's load. When the deploy's card index is known and present in the
+    pressure file we use that card; otherwise fall back to the host max
+    (``gpu_max``) and finally to the v1 average. Never raises.
+    """
+    def _f(x):
+        return float(x) if isinstance(x, (int, float)) else None
+    idx = rec.get("gpu") if isinstance(rec, dict) else None
+    card = gpu_card(p, idx)
+    if card is not None:
+        util, vram = _f(card.get("util")), _f(card.get("mem"))
+        if util is not None or vram is not None:
+            return (util, vram)
+    util = _f(p.get("gpu_max"))
+    if util is None:
+        util = _f(p.get("gpu"))
+    return (util, _f(p.get("gpu_mem")))
+
+
+def pressure_value(metric, p, rec=None):
     if metric == "gpu":
-        # SM utilisation drives the tier, but genuine near-OOM VRAM (gpu_mem >=
-        # GPU_MEM_HARD) escalates to the top tier regardless of SM. Normal
-        # co-located gpu_mem (~0.93) is intentionally ignored so it cannot evict
-        # on its own; this mirrors metric_low()'s symmetric gate.
-        base = p.get("gpu")
-        base = base if isinstance(base, (int, float)) else 0.0
-        if (p.get("gpu_mem") or 0) >= GPU_MEM_HARD:
+        # SM utilisation of the program's own card drives the tier, but genuine
+        # near-OOM VRAM on that card (>= GPU_MEM_HARD) escalates to the top tier
+        # regardless of SM. The normal co-located gpu_mem baseline (~0.93) is
+        # intentionally ignored so it cannot evict on its own; this mirrors
+        # metric_low()'s symmetric gate.
+        util, vram = gpu_signal(p, rec)
+        if (vram or 0) >= GPU_MEM_HARD:
             return 1.0
-        return base
+        return util if util is not None else 0.0
     v = p.get(metric)
     return v if isinstance(v, (int, float)) else 0.0
 
@@ -285,7 +346,7 @@ def build_candidates(p, top, gpu_tot, st):
             if any(s["deploy_id"] == did for s in st.get("stopped", [])):
                 continue
             rel = relevant_metrics(rec)
-            vals = {m: pressure_value(m, p) for m in rel}
+            vals = {m: pressure_value(m, p, rec) for m in rel}
             maxval = max(vals.values()) if vals else 0.0
             if maxval >= THRESH_CRIT:
                 tier = 2
@@ -402,29 +463,30 @@ def do_evict(cands, st, dry):
             "deploy_id": c["deploy_id"], "group": c["group"],
             "name": c.get("kind", ""), "ts": time.time(),
             "score": c["score"], "metrics": c["hit"],
-            "tier": c["tier"],
+            "tier": c["tier"], "gpu": c.get("gpu"),
         })
     return len(stopped_now)
 
 
-def metric_low(p, m):
+def metric_low(p, m, rec=None):
     """Is metric m relaxed below RECOVER_LOW?
 
     For 'gpu' we gate on SM utilisation only, NOT the permanent gpu_mem
     baseline: a host running any co-resident GPU workload sits at a high
     gpu_mem baseline (0.7+), so folding gpu_mem into the gate would pin it shut
     forever. But the gate must stay SYMMETRIC with pressure_value(): if we ever
-    evicted on genuine near-OOM VRAM (gpu_mem >= GPU_MEM_HARD), we must not
-    recover until that VRAM actually drops back below GPU_MEM_HARD. So 'gpu' is
-    relaxed only when SM < RECOVER_LOW AND gpu_mem < GPU_MEM_HARD.
+    evicted on genuine near-OOM VRAM (vram >= GPU_MEM_HARD), we must not recover
+    until that VRAM actually drops back below GPU_MEM_HARD. So 'gpu' is relaxed
+    only when SM < RECOVER_LOW AND vram < GPU_MEM_HARD. Both readings come from
+    the same card the victim was evicted on (via ``rec``; host-wide when None).
     """
     if m == "gpu":
-        v = p.get("gpu")
-        if not isinstance(v, (int, float)):
+        util, vram = gpu_signal(p, rec)
+        if util is None:
             return True  # missing SM can't block recovery
-        if (p.get("gpu_mem") or 0) >= GPU_MEM_HARD:
+        if (vram or 0) >= GPU_MEM_HARD:
             return False  # still near-OOM: symmetric with pressure_value()
-        return v < RECOVER_LOW
+        return util < RECOVER_LOW
     v = p.get(m)
     if not isinstance(v, (int, float)):
         return True  # missing metric can't block recovery
@@ -432,9 +494,14 @@ def metric_low(p, m):
 
 
 def victim_metrics_low(p, entry):
-    """True when every metric this victim was evicted for is relaxed."""
+    """True when every metric this victim was evicted for is relaxed.
+
+    The victim's own card (``entry['gpu']``, recorded at eviction time) is passed
+    through so the gpu gate is measured on the same card it was evicted on.
+    """
     ms = entry.get("metrics") or ["cpu", "mem", "bw"]
-    return all(metric_low(p, m) for m in ms)
+    rec = {"gpu": entry.get("gpu")} if entry.get("gpu") not in (None, "") else None
+    return all(metric_low(p, m, rec) for m in ms)
 
 
 def all_metrics_low(p):
@@ -516,7 +583,7 @@ def cycle(dry=False):
     if p is None:
         return  # no signal, fail-safe
     st = load_state()
-    top = pod_top_by_group()
+    top = pod_usage_by_group()
     gpu_tot = gpu_total_mem()
     cands = build_candidates(p, top, gpu_tot, st)
     if cands:

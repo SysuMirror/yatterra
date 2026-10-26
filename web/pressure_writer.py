@@ -55,7 +55,16 @@ Output contract (what apps read)
   "cpu": 0.82,            // 0..1 overall busy fraction
   "gpu": 0.41,            // 0..1 avg across GPUs (util); null if no nvidia-smi
   "gpu_mem": 0.55,        // 0..1 avg gpu memory fraction
+  "gpu_max": 0.99,        // 0..1 MAX gpu util across cards (single-card hog isn't
+                          //        diluted by the avg); null if no nvidia-smi
+  "gpu_cards": [          // per-card detail (empty list if no nvidia-smi)
+    {"index":0,"util":0.41,"mem":0.95,"temp":27,"power":15.2}
+  ],
+  "gpu_temp_max": 51,     // hottest GPU sensor, Celsius; null if unavailable
   "mem": 0.55,            // 0..1 host memory used / total
+  "swap": 0.10,           // 0..1 swap used / total; null if no swap
+  "psi": {"cpu":0.0,"mem":0.0,"io":0.0},  // 0..1 PSI "some avg10" stall frac
+  "disk": {"/":0.63,"/mnt/sdb":0.41},     // 0..1 used frac per siteconf.DISK_MOUNTS
   "bw": 0.93,             // 0..1 (rx+tx bytes/s) / link_capacity
   "bw_rx_bps": 93000000,  // raw bytes/s inbound
   "bw_tx_bps": 12000000,  // raw bytes/s outbound
@@ -66,11 +75,16 @@ Output contract (what apps read)
 }
 App logic example: if level["bw"] == "high": serve low-res mode.
 
+Additive contract: every key above existed in v1 or is a pure addition, so a v1
+reader keeps working. ``gpu``/``gpu_mem`` stay the cross-card averages; use
+``gpu_max``/``gpu_cards`` when a single saturated card matters.
+
 Tune via env: PRESSURE_POLL_S, PRESSURE_LINK_BPS (default 1 Gbit/s),
 PRESSURE_HIGH (default 0.8), PRESSURE_MED (default 0.5).
 """
 import json
 import os
+import shutil
 import subprocess
 import time
 
@@ -174,6 +188,115 @@ def gpu_frac():
         return (None, None)
 
 
+def _num(x):
+    """Parse a nvidia-smi cell to float, or None ('N/A' / '[Not Supported]')."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def gpu_cards():
+    """Return per-card [{index, util, mem, temp, power}], or [] .
+
+    ``util``/``mem`` are 0..1 fractions; ``temp`` is Celsius; ``power`` is Watts.
+    Unsupported cells (some consumer cards report 'N/A' for power) become null.
+    Never raises: any failure yields ``[]`` so the writer keeps running.
+    """
+    try:
+        out = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,utilization.gpu,memory.used,"
+                "memory.total,temperature.gpu,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if out.returncode != 0:
+            return []
+        cards = []
+        for line in out.stdout.splitlines():
+            p = [x.strip() for x in line.split(",")]
+            if len(p) < 4:
+                continue
+            mu, mt = _num(p[2]), _num(p[3])
+            util = _num(p[1])
+            idx = p[0]
+            cards.append({
+                "index": int(idx) if idx.isdigit() else idx,
+                "util": round(util / 100.0, 3) if util is not None else None,
+                "mem": round(mu / mt, 3) if (mu is not None and mt) else None,
+                "temp": _num(p[4]) if len(p) > 4 else None,
+                "power": _num(p[5]) if len(p) > 5 else None,
+            })
+        return cards
+    except Exception:
+        return []
+
+
+def psi_frac():
+    """Return {"cpu":f,"mem":f,"io":f} from /proc/pressure/* 'some avg10'.
+
+    Each value is the avg10 stall fraction normalised to 0..1 (the kernel prints
+    a 0..100 percentage). Missing kernel PSI support / unreadable files yield
+    null per resource. Never raises.
+    """
+    out = {}
+    for key, path in (("cpu", "/proc/pressure/cpu"),
+                      ("mem", "/proc/pressure/memory"),
+                      ("io", "/proc/pressure/io")):
+        val = None
+        try:
+            with open(path) as f:
+                for line in f:
+                    if not line.startswith("some"):
+                        continue
+                    for tok in line.split():
+                        if tok.startswith("avg10="):
+                            val = round(float(tok.split("=", 1)[1]) / 100.0, 3)
+                            break
+                    break
+        except Exception:
+            val = None
+        out[key] = val
+    return out
+
+
+def disk_frac():
+    """Used fraction (0..1) for each configured mount, or null on failure."""
+    out = {}
+    try:
+        mounts = list(getattr(siteconf, "DISK_MOUNTS", None) or ["/"])
+    except Exception:
+        mounts = ["/"]
+    for m in mounts:
+        try:
+            u = shutil.disk_usage(m)
+            out[m] = round(u.used / u.total, 3) if u.total else None
+        except Exception:
+            out[m] = None
+    return out
+
+
+def swap_frac():
+    """Swap used fraction (0..1), or null when there is no swap."""
+    try:
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                info[k.strip()] = int(v.split()[0]) * 1024
+        total = info.get("SwapTotal", 0)
+        if not total:
+            return None
+        return round((total - info.get("SwapFree", 0)) / total, 3)
+    except Exception:
+        return None
+
+
 def _uplink_ifaces():
     """Interfaces that actually carry off-host traffic: the default-route
     device(s).
@@ -255,12 +378,27 @@ def collect():
     cpu = cpu_frac()
     mem = mem_frac()
     g_util, g_mem = gpu_frac()
+    cards = gpu_cards()
+    # gpu_max = busiest single card's util. Derived from the per-card sample so a
+    # lone saturated card isn't diluted by the cross-card average. Falls back to
+    # the v1 average when per-card detail is unavailable.
+    utils = [c["util"] for c in cards if c.get("util") is not None]
+    g_max = round(max(utils), 3) if utils else g_util
+    # gpu_temp_max powers the thermal alert (host_alerts); null when no sensor.
+    temps = [c["temp"] for c in cards if c.get("temp") is not None]
+    g_temp = max(temps) if temps else None
     bw, rx_bps, tx_bps = bw_frac()
     return {
         "cpu": cpu,
         "gpu": g_util,
         "gpu_mem": g_mem,
+        "gpu_max": g_max,
+        "gpu_cards": cards,
+        "gpu_temp_max": g_temp,
         "mem": mem,
+        "swap": swap_frac(),
+        "psi": psi_frac(),
+        "disk": disk_frac(),
         "bw": bw,
         "bw_rx_bps": rx_bps,
         "bw_tx_bps": tx_bps,

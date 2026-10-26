@@ -72,6 +72,12 @@ _KIND_LABELS = {
     "deploy-result": "部署结果",
     "gpu-evicted": "GPU 驱逐提醒",
     "pressure": "主机压力提醒",
+    "host-disk": "主机磁盘告警",
+    "host-swap": "主机交换分区告警",
+    "gpu-temp": "GPU 温度告警",
+    "fleet-offline": "远程主机掉线",
+    "fleet-stale": "远程主机停报",
+    "daemon-down": "平台服务中断",
     "cert-expiry": "证书到期提醒",
     "attack-surge": "攻击激增提醒",
     "approval-pending": "审批待审",
@@ -510,6 +516,14 @@ def monitor_once():
             count += int(observe_group(name, state))
         except Exception:
             log.exception("monitor failed for %s", name)
+    # Host-level checks (disk/swap/GPU temp/fleet/daemon liveness) ride the same
+    # root daemon so there is still exactly one alert pipeline; never fatal to
+    # the Pod monitoring above.
+    try:
+        import host_alerts
+        count += int(host_alerts.run_checks() or 0)
+    except Exception:
+        log.exception("host checks failed")
     return count
 
 
