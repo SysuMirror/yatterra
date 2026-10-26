@@ -61,11 +61,22 @@ def init_db():
 _MAX_SCAN = max(200, int(os.environ.get("YATTERRA_ALERT_SCAN_LIMIT", "5000")))
 
 
+# 与各推送点实际使用的 kind 保持一致(notify_event/_claim_alert/_send 的 kind
+# 字面量), 否则 _event_view 取不到标题时会退回泛泛的 "事件通知"。payload 里多半
+# 已带 title, 这里只是兜底 —— 兜底文案也要说得清是哪类事件。
 _KIND_LABELS = {
     "pod-down": "Pod 故障提醒",
     "pod-recovery": "Pod 恢复通知",
     "pod-risk": "Pod 风险提醒",
     "deploy-webhook": "Webhook 部署提醒",
+    "deploy-result": "部署结果",
+    "gpu-evicted": "GPU 驱逐提醒",
+    "pressure": "主机压力提醒",
+    "cert-expiry": "证书到期提醒",
+    "attack-surge": "攻击激增提醒",
+    "approval-pending": "审批待审",
+    "agent-done": "AI 任务完成",
+    "quota-warn": "配额预警",
     "broadcast": "平台公告",
     "event": "事件通知",
 }
@@ -118,9 +129,15 @@ def _event_view(row):
     if not isinstance(payload, dict):
         payload = {}
     kind = row["kind"] or "event"
+    pod_kind = kind.startswith("pod-")
     title = payload.get("title") or _KIND_LABELS.get(kind, "通知")
-    body = payload.get("body") or f"Pod「{row['group_name']}」状态异常"
-    url = payload.get("url") or f"/pods/{row['group_name']}"
+    # 兜底文案按 kind 分流: 主机压力/广播类事件的 group_name 是 platform/"*",
+    # 硬套 "Pod「platform」状态异常" 会张冠李戴(且 /pods/platform 是死链)。
+    body = payload.get("body") or (
+        f"Pod「{row['group_name']}」状态异常" if pod_kind
+        else _KIND_LABELS.get(kind, "事件通知"))
+    url = payload.get("url") or (
+        f"/pods/{row['group_name']}" if pod_kind else "/")
     return {
         "event_key": row["event_key"],
         "kind": kind,
@@ -320,6 +337,21 @@ def _claim_alert(event_key, kind, group, payload, recipients=None):
         return cur.rowcount == 1
 
 
+def _update_alert_payload(event_key, payload):
+    """回填已认领事件的 payload(通知中心文案)。
+
+    pod-down 的正文要等 _event_summary(可能调 LLM)算完才有, 而 at-most-once
+    必须在计算前先认领 —— 于是先用占位 payload 认领, 算完再回填真实正文,
+    让通知中心的文案与推送文案一致。回填失败不影响主流程(事件已认领)。
+    """
+    try:
+        with _connect() as db:
+            db.execute("UPDATE alert_event SET payload=? WHERE event_key=?",
+                       (json.dumps(payload, ensure_ascii=False)[:20000], event_key))
+    except Exception:
+        log.exception("alert payload backfill failed for %s", event_key)
+
+
 def notify_event(event_key, group, title, body, url="/", kind="event", extra=None):
     """Generic at-most-once push channel for events raised outside this module.
 
@@ -431,11 +463,18 @@ def observe_group(group, state):
         return False
     key = f"pod-down:{group}:{int(old["updated"])}"
     recipients = _recipients(group)
-    claimed = _claim_alert(key, "pod-down", group, state, recipients)
+    # 先认领占位 payload 保住 at-most-once(避免计算摘要期间重复认领),
+    # 计算完 _event_summary 后再回填, 使通知中心正文 == 推送正文。
+    claimed = _claim_alert(key, "pod-down", group,
+                           {"title": "Pod 故障提醒", "body": f"Pod「{group}」已停止",
+                            "url": f"/pods/{group}"}, recipients)
     _write_state(group, False, streak, False, 1)
     if claimed:
         summary = _event_summary(group, state)
-        _send(group, "Pod 故障提醒", f"Pod「{group}」已停止：{summary}", f"/pods/{group}",
+        body = f"Pod「{group}」已停止：{summary}"
+        _update_alert_payload(key, {"title": "Pod 故障提醒", "body": body,
+                                    "url": f"/pods/{group}"})
+        _send(group, "Pod 故障提醒", body, f"/pods/{group}",
               "pod-down", key, {"urgency": "high"}, recipients)
         return True
     return False

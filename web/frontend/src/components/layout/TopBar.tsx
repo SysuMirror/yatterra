@@ -10,6 +10,7 @@ import { authApi } from '@/api/auth'
 import { pushApi, type PushEvent } from '@/api/notifications'
 import { useLocation, useNavigate } from 'react-router'
 import { haptic } from '@/lib/haptic'
+import { setAppBadge } from '@/lib/app-badge'
 import { ThemePicker } from '@/components/ui/ThemePicker'
 import { formatRelativeTime } from '@/lib/format'
 
@@ -111,6 +112,11 @@ export default function TopBar() {
   const notifEvents: PushEvent[] = notifData?.events ?? []
   const unreadCount = notifData?.unread ?? 0
 
+  // 已安装的 PWA 上把未读数同步到应用图标角标（浏览器标签页里是 no-op）。
+  useEffect(() => {
+    void setAppBadge(unreadCount)
+  }, [unreadCount])
+
   const markRead = useMutation({
     mutationFn: (keys: string[]) => pushApi.markRead(keys),
     onSettled: () => qc.invalidateQueries({ queryKey: ['push-events'] }),
@@ -120,11 +126,18 @@ export default function TopBar() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['push-events'] }),
   })
 
+  // 与后端实际产出的 kind 对齐(见 pwa_alerts._KIND_LABELS / 各 push 调用点);
+  // 行内可横向滚动, 多几个 chip 不影响布局。
   const NOTIF_KIND_CHIPS: { label: string; kind: string }[] = [
     { label: '全部', kind: '' },
     { label: '故障', kind: 'pod-down' },
+    { label: '恢复', kind: 'pod-recovery' },
+    { label: '风险', kind: 'pod-risk' },
     { label: '部署', kind: 'deploy-result' },
+    { label: '压力', kind: 'pressure' },
     { label: '审批', kind: 'approval-pending' },
+    { label: 'AI', kind: 'agent-done' },
+    { label: '配额', kind: 'quota-warn' },
     { label: '系统', kind: 'broadcast' },
   ]
 

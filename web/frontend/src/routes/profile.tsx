@@ -18,6 +18,14 @@ import { useToastStore } from '@/stores/toast'
 import { checkForUpdate } from '@/lib/sw-update'
 import { isPushSupported, getSubscriptionState, subscribePush, unsubscribePush, type PushState } from '@/lib/push'
 import { usePwaInstall } from '@/lib/pwa-install'
+import { isBadgeSupported } from '@/lib/app-badge'
+import {
+  isStoragePersisted,
+  isPeriodicSyncSupported,
+  isPeriodicBadgeSyncEnabled,
+  requestPersistentStorage,
+  syncPeriodicBadgeWithPush,
+} from '@/lib/pwa-storage'
 import { haptic } from '@/lib/haptic'
 import { ThemePicker } from '@/components/ui/ThemePicker'
 
@@ -75,6 +83,17 @@ export default function Profile() {
     getSubscriptionState().then(setPushState)
   }, [])
 
+  // ── PWA 增强能力状态 ───────────────────────────────────────
+  const [persisted, setPersisted] = useState(false)
+  const [periodicSync, setPeriodicSync] = useState(false)
+  const badgeSupported = isBadgeSupported()
+  const periodicSupported = isPeriodicSyncSupported()
+
+  useEffect(() => {
+    isStoragePersisted().then(setPersisted)
+    isPeriodicBadgeSyncEnabled().then(setPeriodicSync)
+  }, [])
+
   const handlePushToggle = async (enabled: boolean) => {
     setPushBusy(true)
     try {
@@ -91,6 +110,9 @@ export default function Profile() {
         setPushState('not-subscribed')
         toast({ type: 'success', message: '推送通知已关闭' })
       }
+      // 后台角标同步跟随推送权限：授权时注册，关闭时注销。
+      await syncPeriodicBadgeWithPush(enabled)
+      setPeriodicSync(await isPeriodicBadgeSyncEnabled())
     } catch (e: any) {
       toast({ type: 'error', message: e.message || '操作失败' })
     } finally {
@@ -102,10 +124,13 @@ export default function Profile() {
   const pushEnabled = pushState === 'subscribed'
 
   // ── 推送偏好 (prefs.push_kinds) ─────────────────────────────
+  // 覆盖后端会推送的全部 kind: 漏掉的会变成"默认总是开、用户关不掉"。
   const PUSH_KINDS: { kind: string; label: string }[] = [
     { kind: 'pod-down', label: '故障告警' },
     { kind: 'pod-recovery', label: '恢复通知' },
+    { kind: 'pod-risk', label: '风险提醒' },
     { kind: 'deploy-result', label: '部署结果' },
+    { kind: 'pressure', label: '主机压力' },
     { kind: 'approval-pending', label: '审批待审' },
     { kind: 'agent-done', label: 'AI 任务完成' },
     { kind: 'quota-warn', label: '配额预警' },
@@ -373,6 +398,29 @@ export default function Profile() {
             ) : (
               <p className="mt-2 text-xs text-muted">也可以使用浏览器菜单中的“安装应用”或“添加到主屏幕”。</p>
             )}
+
+            {/* 增强能力：仅在支持的浏览器/已安装场景下点亮 */}
+            <div className="mt-3 space-y-1.5 border-t border-black/[0.06] pt-3">
+              {[
+                { label: '图标未读角标', on: badgeSupported },
+                { label: '后台同步未读', on: periodicSupported && periodicSync },
+                { label: '离线资源持久化', on: persisted },
+              ].map((cap) => (
+                <div key={cap.label} className="flex items-center gap-2 text-xs">
+                  <span className={`h-1.5 w-1.5 rounded-full ${cap.on ? 'bg-green-500' : 'bg-black/20'}`} />
+                  <span className={cap.on ? 'text-ink-2' : 'text-muted'}>{cap.label}</span>
+                  <span className="ml-auto text-[11px] text-muted">{cap.on ? '已启用' : '不可用'}</span>
+                </div>
+              ))}
+              {!persisted && (
+                <button
+                  className="mt-1 text-xs text-accent hover:underline"
+                  onClick={() => { void requestPersistentStorage().then(setPersisted) }}
+                >
+                  申请持久化存储
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </Card>

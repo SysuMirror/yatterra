@@ -400,12 +400,19 @@ def _analyze(pod, ctx):
         # The reply wasn't valid JSON — usually a truncated object (a large
         # change blows past max_tokens). Salvaging what_changed/risk is still
         # useful; dumping the raw JSON blob into the insight panel is not.
-        salvaged, salvaged_risk = _salvage(content)
+        # 先剥掉 ```json 围栏: _salvage 的 "以 { [ 开头" 判定和 raw-blob 判定都
+        # 依赖它, 否则一个围栏过的截断 JSON 会被原样存成画像摘要(旧 bug)。
+        stripped = _strip_fence(content)
+        salvaged, salvaged_risk = _salvage(stripped)
         if salvaged:
             return salvaged, None, salvaged_risk, "", []
-        if content.lstrip()[:1] in "{[":
-            return None, None, "", "", []   # raw JSON blob: retry next sweep
-        return content.strip(), None, "", "", []
+        if stripped[:1] in "{[":
+            return None, None, "", "", []   # raw/JSON-ish blob: retry next sweep
+        # 非 JSON 的散文回复: 只有像正常中文摘要时才留存, 其余(非中文/乱码/
+        # 答非所问)宁可返回 None 等下一轮重试, 别污染画像历史。
+        if _valid_summary(content):
+            return content.strip(), None, "", "", []
+        return None, None, "", "", []
     prof = data.get("profile") if isinstance(data.get("profile"), dict) else {}
     what = str(data.get("what_changed", "")).strip()
     risk = str(data.get("risk", "")).strip()
@@ -414,7 +421,10 @@ def _analyze(pod, ctx):
         risk_level = ""
     actions = _clean_actions(data.get("suggested_actions"))
     summary = what + (f"（风险：{risk}）" if risk else "")
-    return summary.strip() or content.strip(), prof, risk, risk_level, actions
+    if not summary.strip():
+        # JSON 合法但 what_changed 空 —— 用整段回复兜底, 同样要求像中文摘要。
+        summary = content.strip() if _valid_summary(content) else ""
+    return summary, prof, risk, risk_level, actions
 
 
 def _clean_actions(raw):
@@ -437,6 +447,28 @@ def _clean_actions(raw):
     return out
 
 
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def _valid_summary(text):
+    """整段回复能否当画像摘要留存: 非空且含中日韩汉字。
+
+    没有汉字的多半是模型答非所问(其他语言/乱码)或纯代码块, 存进去只会
+    污染画像历史; 返回 False 让调用方丢回 None、等下一轮重试。
+    """
+    return bool(_CJK_RE.search((text or "").strip()))
+
+
+def _strip_fence(text):
+    """剥掉 ```json / ``` 代码块围栏, 返回内部文本。"""
+    t = (text or "").strip()
+    if not t.startswith("```"):
+        return t
+    t = re.sub(r"^```[A-Za-z0-9_+-]*[ \t]*\r?\n?", "", t)
+    t = re.sub(r"\r?\n?```\s*$", "", t)
+    return t.strip()
+
+
 def _salvage(text):
     """Extract what_changed/risk from a JSON-ish reply that failed to parse.
 
@@ -444,6 +476,7 @@ def _salvage(text):
     usable is found) plus the raw risk text for the alert bridge.
     """
     import re
+    text = _strip_fence(text)
     if text.lstrip()[:1] not in "{[":
         return "", ""
 

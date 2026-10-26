@@ -333,17 +333,20 @@ def _push_pressure_alert(metric):
             return
         bucket = int(time.time() // 600)  # 10 分钟桶防风暴
         event_key = f"pressure:{metric}:{bucket}"
+        # 通知中心留痕的正文必须与推送正文一致: 留痕原先存 body=""，_event_view
+        # 会退化成 "Pod「platform」状态异常"，与推送内容对不上。
+        body = (f"主机 {metric} 压力升至 high, 已触发降级信号"
+                f"(阈值 {THRESH_HIGH}), 低优先级任务可能被驱逐。")
         pwa_alerts.init_db()
         # 借用内部 _claim_alert: at-most-once 去重 + 通知中心留痕(同 cert_alerts 取舍)
         # recipients=admins: 中心可见性与实际推送目标一致(非 admin 不可见)
         if not pwa_alerts._claim_alert(event_key, "pressure", "platform",
-                                       {"title": "主机压力升高", "body": "",
+                                       {"title": "主机压力升高", "body": body,
                                         "url": "/infra/host"}, admins):
             return
         send_to_users(admins, {
             "title": "主机压力升高",
-            "body": f"主机 {metric} 压力升至 high, 已触发降级信号"
-                    f"(阈值 {THRESH_HIGH}), 低优先级任务可能被驱逐。",
+            "body": body,
             "url": "/infra/host", "type": "pressure",
             "event_key": event_key, "urgency": "high"})
     except Exception:
