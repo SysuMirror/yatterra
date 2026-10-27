@@ -73,7 +73,7 @@ export interface PageSessionMessage {
 }
 
 export type AiPageType =
-  | 'dashboard' | 'pod' | 'terminal' | 'audit'
+  | 'dashboard' | 'pod' | 'terminal' | 'audit' | 'billing'
   | 'llm' | 'users' | 'threat-map' | 'storage' | 'databases'
   | 'proxy' | 'shared' | 'profile' | 'mcp' | 'harness' | 'docs'
   | 'dev' | 'infra' | 'ops' | 'gpu' | 'host' | 'fleet'

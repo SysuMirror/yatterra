@@ -20,6 +20,7 @@ export const PAGE_PERMS: Record<string, string | null> = {
   db: 'infra.db.read',
   proxy: 'infra.proxy',
   audit: 'ops.audit',
+  billing: 'ops.audit',
   ops: 'ops.audit',
   users: 'admin.users',
   'threat-map': 'ops.audit',

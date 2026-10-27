@@ -46,7 +46,12 @@ export function UsageTab({ podName }: { podName: string }) {
         {RANGES.map((r) => (
           <button
             key={r.key}
+            type="button"
             onClick={() => setRange(r.key)}
+            data-assistant-control={`usage-range-${r.key}`}
+            data-assistant-label={`用量区间 ${r.label}`}
+            data-assistant-actions="inspect click"
+            aria-pressed={range === r.key}
             className={
               'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ' +
               (range === r.key ? 'bg-accent/10 text-accent' : 'text-muted hover:text-ink hover:bg-black/[0.05]')

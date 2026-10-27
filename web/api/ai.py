@@ -382,6 +382,7 @@ def _build_page_agent(page, question, context, images, history):
         "pod": "你是 Pod/容器助手。帮助分析 Pod 状态、日志错误、部署配置、资源使用。你可以使用工具查看 Pod 详情和日志，给出具体修复建议。",
         "terminal": "你是终端助手。解释命令输出、建议修复命令、生成常用命令。你可以使用工具执行安全的只读命令来查看状态。注意安全，不执行危险命令。",
         "audit": "你是安全审计助手。分析审计事件、发现异常模式、生成安全报告。关注权限变更、异常登录、资源操作。你可以使用工具查询集群状态辅助分析。",
+        "billing": "你是资源计量助手。解释按核时/卡时的超算式账单：CPU 实测核时(cgroup 实测)与申请核时(requests×时长)的差值即「占着不用的浪费」，GPU 按实际使用(显存占用 GiB·h + SM 利用率积分算力卡时)计。帮助识别长期低利用率的组、给出降配或回收建议。单位只有核时/卡时，不折算货币。你可以使用工具查询集群实时状态辅助分析。",
         "llm": "你是 LLM 服务助手。帮助测试 prompt、对比模型输出、优化推理参数、分析用量。你可以使用工具查看 GPU 和集群状态。",
         "users": "你是用户管理助手。帮助批量操作建议、权限审计、角色规划。",
         "threat-map": "你是安全防御助手。分析攻击模式、建议防御策略、评估风险等级。你可以使用工具查询集群安全状态。",
@@ -727,6 +728,7 @@ INSIGHT_PAGE_PERMS = {
     "db": "infra.db.read",
     "proxy": "infra.proxy",
     "audit": "ops.audit",
+    "billing": "ops.audit",        # 平台核时/卡时账单 (usage_meter)
     "ops": "ops.audit",            # aggregates audit + threat feed
     "users": "admin.users",
     "threat-map": "ops.audit",

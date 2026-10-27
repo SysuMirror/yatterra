@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts'
 import { Cpu, Download, Gauge, MemoryStick, Receipt, Zap } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
+import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { MetricCard } from '@/components/domain/MetricCard'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -45,6 +46,16 @@ export default function OpsBilling() {
   const series = (data?.series ?? []).map((r) => ({ ...r, label: bucketLabel(r.bucket_start, bucket) }))
   const perGroup = data?.per_group ?? []
 
+  // 给 AI 助手的页面上下文摘要（顶部浪费核时 Top 5）。
+  const aiContext = t
+    ? `计费区间 ${range} · ${bucket === 'day' ? '按天' : '按小时'}\n` +
+      `总计: 实测 ${t.core_hours.toFixed(2)} 核时, 申请 ${t.request_core_hours.toFixed(2)} 核时, ` +
+      `利用率 ${t.cpu_utilization == null ? '—' : (t.cpu_utilization * 100).toFixed(1) + '%'}, 算力卡时 ${t.compute_card_hours.toFixed(2)}\n` +
+      `浪费核时 Top:\n` +
+      [...perGroup].sort((a, b) => b.gap_core_hours - a.gap_core_hours).slice(0, 5)
+        .map((r) => `  ${r.group_name} 实测 ${r.core_hours.toFixed(2)} 申请 ${r.request_core_hours.toFixed(2)} 浪费 ${r.gap_core_hours.toFixed(2)}`).join('\n')
+    : ''
+
   const exportCsv = () => {
     const header = '组,实测核时,申请核时,浪费核时,GPU显存GiB·h,算力卡时'
     const body = perGroup.map((r) =>
@@ -65,12 +76,17 @@ export default function OpsBilling() {
         count={perGroup.length > 0 ? `${perGroup.length} 个组` : undefined}
         doc={{ section: 'ops', item: 0, label: '计费说明' }}
       >
+        <PageAiAssistant page="billing" context={aiContext} />
         <Button variant="secondary" size="sm" disabled={!perGroup.length} onClick={exportCsv}><Download size={14} /> 导出</Button>
       </PageHeader>
 
       <div className="flex items-center gap-1.5 mb-4 flex-wrap">
         {RANGES.map((r) => (
-          <button key={r.key} onClick={() => setRange(r.key)}
+          <button key={r.key} type="button" onClick={() => setRange(r.key)}
+            data-assistant-control={`billing-range-${r.key}`}
+            data-assistant-label={`计费区间 ${r.label}`}
+            data-assistant-actions="inspect click"
+            aria-pressed={range === r.key}
             className={'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ' +
               (range === r.key ? 'bg-accent/10 text-accent' : 'text-muted hover:text-ink hover:bg-black/[0.05]')}>
             {r.label}
@@ -78,7 +94,11 @@ export default function OpsBilling() {
         ))}
         <span className="mx-1 text-muted/40">|</span>
         {BUCKETS.map((b) => (
-          <button key={b.key} onClick={() => setBucket(b.key)}
+          <button key={b.key} type="button" onClick={() => setBucket(b.key)}
+            data-assistant-control={`billing-bucket-${b.key}`}
+            data-assistant-label={`汇总粒度 ${b.label}`}
+            data-assistant-actions="inspect click"
+            aria-pressed={bucket === b.key}
             className={'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ' +
               (bucket === b.key ? 'bg-accent/10 text-accent' : 'text-muted hover:text-ink hover:bg-black/[0.05]')}>
             {b.label}
