@@ -32,6 +32,7 @@ export const APP_ROUTES: AppRoute[] = [
   { path: '/dev/llm', label: 'LLM', perms: ['dev.llm'] },
   { path: '/ops', label: '运维总览', perms: ['ops.audit', 'ops.shared.read', 'ops.shared.write'] },
   { path: '/ops/audit', label: '审计', perms: ['ops.audit'] },
+  { path: '/ops/billing', label: '计费', perms: ['ops.audit'] },
   { path: '/ops/approvals', label: 'AI 审批', perms: ['admin.users'] },
   { path: '/ops/shared', label: '共享', perms: ['ops.shared.read', 'ops.shared.write'] },
   { path: '/threat-map', label: '攻防(威胁地图)', perms: ['ops.threat'] },

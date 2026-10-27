@@ -2,7 +2,7 @@ import { lazy, Suspense, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Terminal as TermIcon, Activity, Key, Rocket, Users, Settings, Play, Square, RotateCw, ArrowLeft, FolderOpen, Plus, Trash2, ScrollText, Link2, Lock, Globe, Code2 } from 'lucide-react'
+import { Terminal as TermIcon, Activity, Key, Rocket, Users, Settings, Play, Square, RotateCw, ArrowLeft, FolderOpen, Plus, Trash2, ScrollText, Link2, Lock, Globe, Code2, Gauge } from 'lucide-react'
 import { Tabs } from '@/components/ui/Tabs'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -19,6 +19,7 @@ const MembersTab = lazy(() => import('@/components/pod/MembersTab').then(m => ({
 const DeploysTab = lazy(() => import('@/components/pod/DeploysTab').then(m => ({ default: m.DeploysTab })))
 const AppLogsTab = lazy(() => import('@/components/pod/AppLogsTab').then(m => ({ default: m.AppLogsTab })))
 const ProfileTab = lazy(() => import('@/components/pod/ProfileTab').then(m => ({ default: m.ProfileTab })))
+const UsageTab = lazy(() => import('@/components/pod/UsageTab').then(m => ({ default: m.UsageTab })))
 import { CredentialCard } from '@/components/domain/CredentialCard'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { LogViewer } from '@/components/domain/LogViewer'
@@ -42,6 +43,7 @@ const tabDefs = [
   { key: 'domains', label: '子域名', icon: <Globe size={15} /> },
   { key: 'deploys', label: '部署', icon: <Rocket size={15} /> },
   { key: 'profile', label: '项目画像', icon: <Activity size={15} /> },
+  { key: 'usage', label: '用量', icon: <Gauge size={15} /> },
   { key: 'members', label: '成员', icon: <Users size={15} /> },
   { key: 'settings', label: '设置', icon: <Settings size={15} /> },
 ]
@@ -202,6 +204,7 @@ export default function PodDetail() {
           {activeTab === 'domains' && <SubdomainsTab podName={name!} />}
           {activeTab === 'deploys' && <DeploysTab podName={name!} canManage={canManage} />}
           {activeTab === 'profile' && <ProfileTab podName={name!} />}
+          {activeTab === 'usage' && <UsageTab podName={name!} />}
           {activeTab === 'members' && <MembersTab podName={name!} canManage={canManage} />}
           {activeTab === 'settings' && <SettingsTab podName={name!} pod={pod} canManage={canManage} />}
           </Suspense>

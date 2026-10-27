@@ -5,7 +5,7 @@ import { useDrag } from '@use-gesture/react'
 import {
   LayoutDashboard, Box, Server, HardDrive, Database, Globe, Monitor, Network,
   Workflow, Plug, Bot, Code2, ShieldCheck, FolderOpen, Users, User,
-  BookOpen, Swords, ChevronLeft, ChevronRight, X, ShieldQuestion,
+  BookOpen, Swords, ChevronLeft, ChevronRight, X, ShieldQuestion, Receipt,
 } from 'lucide-react'
 import { useSidebarStore } from '@/stores/sidebar'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
@@ -63,6 +63,7 @@ const navGroups: NavGroup[] = [
     to: '/ops',
     items: [
       { to: '/ops/audit', icon: <ShieldCheck size={18} />, label: '审计', perm: 'ops.audit' },
+      { to: '/ops/billing', icon: <Receipt size={18} />, label: '计费', perm: 'ops.audit' },
       { to: '/ops/approvals', icon: <ShieldQuestion size={18} />, label: 'AI 审批', perm: ['admin.users'] },
       { to: '/ops/shared', icon: <FolderOpen size={18} />, label: '共享', perm: 'ops.shared.read' },
       { to: '/threat-map', icon: <Swords size={18} />, label: '攻防', perm: 'ops.threat' },
