@@ -645,7 +645,7 @@ exec python app.py`)}
             {H4('机制')}
             {UL(
               <>压力信号：pressure_writer 每 2 秒把主机 CPU/GPU/内存/带宽压力写入 hostPath 共享目录下的 pressure/pressure.json</>,
-              <>应用自降级：应用读取压力文件，压力升高时主动降低自己的吞吐（sdpy 层）</>,
+              <>应用自降级：应用读取压力文件，压力升高时主动降低自己的吞吐（sdpy 层）。文件里的 <code>level</code> 是带滞回的「稳定档」（GPU 看逐卡最大而非均值，与驱逐层同基准），另有 <code>level_raw</code> 瞬时档与 <code>stats.*</code> 滑动平均/峰值；租户份额看匿名分布 <code>tenants</code>（自己的份额本地自算）</>,
               <>兜底驱逐：priority_kill 循环按 PRIORITY 环境变量驱逐低优先级程序。每个程序组部署时带 PRIORITY=critical / normal / best_effort；压力越过高阈值（默认 0.80）先停 best_effort，越过临界阈值（默认 0.92）再停 normal，critical 永不动</>,
               <>驱逐打分：priority_weight × (0.1 + 资源占比)，低优先级且占用大的先被停；压力回落并稳定 30 秒后按相反顺序自动恢复（带回滞与冷却）</>,
               <>非 GPU 程序忽略 GPU 压力，只受 CPU/内存/带宽压力驱逐</>,

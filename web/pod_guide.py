@@ -1,40 +1,32 @@
 #!/usr/bin/env python3
-"""In-pod programming guide — single source of truth + delivery.
+"""In-pod programming guide — single source of truth.
 
-Every group Pod mounts this guide **read-only** at ``/etc/yatterra/README.md``
-(a ConfigMap named ``yatterra-pod-guide`` in the group namespace), and the
-container init script additionally symlinks it into the pod home
-(``~/README.md`` / ``~/AGENTS.md`` / ``~/CLAUDE.md``) so that both humans and AI
-coding agents that scan the working directory pick it up automatically.
+The canonical text lives in ``GUIDE`` below and is published to the read-only
+shared disk as ``/shared/README.md`` (host path ``siteconf.SHARED_ROOT``). Every
+group Pod mounts that disk read-only at ``/shared``, and the container init
+script additionally symlinks it into the pod home (``~/README.md`` /
+``~/AGENTS.md`` / ``~/CLAUDE.md``) so that both humans and AI coding agents that
+scan the working directory pick it up automatically.
 
-Keeping the text here means the platform can update the conventions in one place:
-edit ``GUIDE`` and call ``apply_configmap()`` (or just redeploy a group — see
-``groups.apply_group``), and every Pod that mounts the ConfigMap sees the new
-content (kubelet refreshes mounted ConfigMap files in place).
-
-The group Deployment that references the ConfigMap is generated in ``groups.py``
-(``deployment_yaml``); this module owns the ConfigMap object and its content.
+To update the conventions: edit ``GUIDE`` and call ``publish()`` (the shared
+root is root-owned, so this runs as root), then redeploy the affected groups
+(``groups.apply_group``) so fresh pods relink against the new copy.
 """
 import os
-import subprocess
-import tempfile
 
 import audit
 
 import siteconf
 
-NS = siteconf.GROUP_NS
-CONFIGMAP = "yatterra-pod-guide"
-MOUNT_DIR = "/etc/yatterra"
-GUIDE_KEY = "README.md"
-GUIDE_PATH = f"{MOUNT_DIR}/{GUIDE_KEY}"
+GUIDE_REL = "README.md"
+GUIDE_PATH = os.path.join(siteconf.SHARED_ROOT, GUIDE_REL)
 
 
 GUIDE = '''# YatTerra 容器（Pod）内编程规范
 
-> 你正运行在一台 **YatTerra 组容器** 里。本文件是 **只读** 的（平台以 ConfigMap 挂载在
-> `/etc/yatterra/README.md`），你的主目录里也放了一份软链（`~/README.md`、`~/AGENTS.md`、
-> `~/CLAUDE.md`）。动手写代码前请先读一遍 —— 尤其是 **§2 持久化、§3 /shared、§5 MinIO**。
+> 你正运行在一台 **YatTerra 组容器** 里。本文件是 **只读** 的（平台放在只读共享盘
+> `/shared/README.md`），你的主目录里有软链（`~/README.md`、`~/AGENTS.md`、`~/CLAUDE.md`）
+> 指向它。动手写代码前请先读一遍 —— 尤其是 **§2 持久化、§3 /shared、§5 MinIO**。
 
 ## 0. 环境速览
 - 镜像 Ubuntu 24.04，登录用户 `cloud`（uid 1000），普通用户（`sudo` 可用但容器本身非特权）。
@@ -137,15 +129,73 @@ Qdrant 用集合名前缀约定）。凭证按组名注入到环境变量（§4�
 宿主机整体压力（CPU / GPU / 显存 / 内存 / 带宽）每 ~2s 刷新一次到 **`/shared/pressure/pressure.json`**（只读）。
 
 ```json
-{"cpu":0.4,"gpu":0.2,"gpu_mem":0.3,"mem":0.5,"bw":0.1,
- "bw_rx_bps":0,"bw_tx_bps":0,
- "level":{"cpu":"low","gpu":"low","mem":"medium","bw":"low"},
+{"schema":3,
+ "cpu":0.4,"gpu":0.2,"gpu_mem":0.3,"gpu_max":0.99,
+ "gpu_cards":[{"index":0,"util":0.99,"mem":0.95,"temp":51,"power":229.4}],
+ "gpu_temp_max":51,"mem":0.5,"swap":0.01,
+ "psi":{"cpu":0.0,"mem":0.0,"io":0.0},
+ "disk":{"/":0.63,"/mnt/sdb":0.41},
+ "bw":0.1,"bw_rx_bps":0,"bw_tx_bps":0,
+ "host_cores":64,"host_mem_gib":251.7,
+ "stats":{"cpu":{"now":0.4,"avg":0.34,"peak":0.71,"n":15},
+          "gpu_max":{"now":0.99,"avg":0.88,"peak":1.0,"n":15}, "...":{}},
+ "level":{"cpu":"low","gpu":"high","gpu_mem":"med","gpu_temp":"low",
+          "mem":"med","swap":"low","psi":"low","disk":"low","bw":"low"},
+ "level_raw":{"cpu":"low","gpu":"med","mem":"med","bw":"low"},
+ "tenants":{"n":41,"top":0.44,"shares":{"cpu":[0.44,0.12],"mem":[0.31]}},
  "ts":1699999999.0}
 ```
 
-- 各指标是 0~1 的利用率；`level` 是 `low` / `medium` / `high`。
-- **约定**：启动重活（大批训练 / 推理 / 下载 / 大规模 IO）前先看一眼；任一 `level == "high"` 就 **降级或退避**
-  （减小并发 / 分片、拉长间隔、让出 GPU），等它回落再继续。别在别人满载时硬刚。
+- 各指标是 0~1 的利用率；`level` 取值 `low` / `med` / `high`（**注意是 `med` 不是 `medium`**）。
+- `gpu` / `gpu_mem` 是 **所有卡的均值**；单卡打满会被均值稀释。判断“有没有人在抢卡”用
+  **`gpu_max`**（最忙那张卡的利用率）或 `gpu_cards`（逐卡 `util`/`mem`/`temp`/`power`）。
+- **`level` 是 v3 的“稳定档”**：与 infra 驱逐层层同基准（GPU 看 `gpu_max` 逐卡最大，不是均值），
+  且带滞回（热到阈值要持续几拍才升 high，回落要持续更久才降）。**自降级逻辑请读 `level`。**
+- `level_raw` 是旧语义的**瞬时档**（GPU 用均值），保留给仪表盘/边沿检测；`stats.<指标>.avg/peak`
+  是 ~30s 滑窗的均值与峰值。需要“抖动也立刻反应”时看 `level_raw` 或 `stats.*.peak`。
+- `psi`（cpu/mem/io）是内核 PSI 的 `some avg10` 停顿占比（0~1），比单纯利用率更能反映
+  “卡不卡”；`swap` 是交换分区占用比；`disk` 是各挂载点使用比。
+- `level` 自 v3 起**有意重定义**（GPU 基准由均值改为逐卡最大，并加滞回），旧语义见 `level_raw`；
+  其余字段只**追加**，不删改已有键。`level.gpu_mem` 用近 OOM 阈值（0.97/0.90）——共置 GPU 的常驻
+  显存基线（~0.94）会读成 `med`，只有真·显存耗尽才 `high`；`level.gpu_temp` 用摄氏度阈值。
+- 文件里 `ts` 是采样时刻；读到的内容超过 ~30 秒没刷新说明信号中断，按“压力未知”处理（保守起见当作 high）。
+
+**算你自己占了多少**（`tenants` 是匿名分布，不含名字；你自己的份额本地自算）：
+```python
+import json, os
+p = json.load(open("/shared/pressure/pressure.json"))
+# 读自己的 cgroup(cgroup v2;容器内即本 Pod 的 slice)
+cpu_usec = int(next(l.split()[1] for l in open("/sys/fs/cgroup/cpu.stat") if l.startswith("usage_usec")))
+mem_b    = int(open("/sys/fs/cgroup/memory.current").read())
+# 瞬时占比: 内存 = 自己/整机; CPU 用两次采样的 usage_usec 差分除以墙钟时间再除以 host_cores
+mem_share = mem_b / (p["host_mem_gib"] * 1024**3)
+```
+`tenants.shares.cpu/mem` 是**降序**的匿名份额列表（最多 10 条），`tenants.top` 是最大单组 CPU 份额；
+据此可判断“压力是不是别人造成的 / 集中度多高”（GPU 压力看 `gpu_cards`/`gpu_max`，本身已逐卡给出）。
+
+### 8.1 Agent 降级手册（写给容器里的 AI agent / 长驻服务）
+
+你的进程不是这台机器上唯一的租户。**把 pressure.json 当作环境信号，主动让路**，
+而不是等平台 `priority_kill` 把你停掉（被驱逐 = 无警告丢进度）。
+
+轮询建议：长驻服务每 10~30 秒读一次；交互式 agent 在**启动重活之前**读一次。
+
+| 信号 | 动作 |
+| --- | --- |
+| 任一 `level == "high"`（或 `stats.<指标>.peak` 已达 high，或 `psi` 任一 > 0.2，或 `swap` > 0.5） | **立即降载**：并发减半、batch 拆小、限流请求；GPU 活暂停或让出 |
+| `level == "med"` 持续 | **延后非紧急活动**：批量下载、索引重建、大文件拷贝、定时全量任务 → 排队等 low |
+| `psi.cpu` 或 `psi.io` 高但利用率不高 | 你在和别人抢 CPU/IO 时间片：拉长轮询间隔、降低线程数 |
+| `gpu_cards` 里你占的卡 `mem` > 0.9（或 `level.gpu_mem == "high"`） | 你快把这张卡挤爆了：减小模型 batch / KV cache，或换空闲卡（看 `util` 低的） |
+| 全部 `low` 且 `psi` ≈ 0 | 放心跑；把之前排队延后的任务补上 |
+
+具体手段（按优先级）：
+1. **调并发**：worker 数 / 线程池 / `max_concurrent_requests` 这类旋钮做成可运行时改的（env 或配置文件），别写死。
+2. **异步延后**：非关键任务（日志压缩、缓存预热、统计汇总、向 MinIO 归档）丢进队列，压力高时暂停消费。
+3. **降质量**：推理换小 batch / 截断上下文；下载限速；视频/图片处理降分辨率。
+4. **让出资源**：GPU 任务存 checkpoint 后主动退出，等 low 再由 supervisor 拉起续跑。
+
+你的 `$PRIORITY`（`low` / `normal` / `high`）决定压力高时平台先驱逐谁：**low 优先级的进程必须实现降级逻辑**，
+否则第一个被停的就是你；high 优先级也别无顾忌 —— 机器卡了对谁都没好处。
 
 ## 9. 其它约定与坑
 - 受管部署用 **supervisor** 拉起：入口写成前台进程，日志写到 `$LOG_DIR` / `~/deploy/<name>/logs/`。
@@ -155,39 +205,27 @@ Qdrant 用集合名前缀约定）。凭证按组名注入到环境变量（§4�
 - 需要新的对外端口 / 更大配额 / 往共享盘写 → 找管理员，别改集群 manifest。
 
 ---
-_本文件由 YatTerra 平台生成并 **只读挂载**（`/etc/yatterra/README.md`）。请勿修改 —— 改了也会在下次挂载时还原；
-最新规范以平台为准。_
+_本文件由 YatTerra 平台维护，位于 **只读共享盘**（`/shared/README.md`，宿主机 `SHARED_ROOT`）。共享盘在容器里只读，
+改了也不会生效；最新规范以平台为准。_
 '''
 
 
-def _kubectl(*args, **kw):
-    return subprocess.run(["kubectl", "-n", NS] + list(args), **kw)
+def publish():
+    """(Re)write the guide to ``<shared_root>/README.md`` (world-readable).
 
-
-def apply_configmap():
-    """Create/update the read-only guide ConfigMap in the group namespace.
-
-    Imperative `create --dry-run=client | apply` avoids hand-escaping the whole
-    document into YAML. Idempotent. Raises on failure (callers decide whether a
-    failure should abort a deploy).
+    The shared root is root-owned, so this must run as root — the platform's
+    root systemd helpers, or an interactive admin via ``sudo``. Idempotent.
+    Raises on failure (callers decide whether it should abort a deploy).
     """
-    with tempfile.TemporaryDirectory() as d:
-        p = os.path.join(d, GUIDE_KEY)
-        with open(p, "w") as f:
-            f.write(GUIDE)
-        gen = _kubectl("create", "configmap", CONFIGMAP,
-                       f"--from-file={GUIDE_KEY}={p}",
-                       "--dry-run=client", "-o", "yaml",
-                       capture_output=True, text=True, timeout=30)
-    if gen.returncode != 0:
-        raise RuntimeError(f"生成 ConfigMap 失败: {gen.stderr.strip()}")
-    app = _kubectl("apply", "-f", "-",
-                   input=gen.stdout, capture_output=True, text=True, timeout=30)
-    if app.returncode != 0:
-        raise RuntimeError(f"应用 ConfigMap 失败: {app.stderr.strip()}")
-    audit.record("pod_guide_configmap", detail=f"{NS}/{CONFIGMAP}", module="pod_guide")
-    return app.stdout
+    os.makedirs(siteconf.SHARED_ROOT, exist_ok=True)
+    tmp = GUIDE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(GUIDE)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, GUIDE_PATH)
+    audit.record("pod_guide_publish", detail=GUIDE_PATH, module="pod_guide")
+    return GUIDE_PATH
 
 
 if __name__ == "__main__":
-    print(apply_configmap())
+    print(publish())

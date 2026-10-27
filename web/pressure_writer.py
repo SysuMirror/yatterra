@@ -22,8 +22,10 @@ ConfigMap). One host write fans out to every pod.
 Standalone
 ----------
 Does NOT import yatterra core (groups/scheduler/...). Collects directly from
-/proc and nvidia-smi so it can't break the panel or the gpu_loop. Runs as
-root only because /mnt/sdb/shared is root-owned; the file it writes is
+/proc and nvidia-smi so it can't break the panel or the gpu_loop. The tenant
+view reads cgroup_stats (stdlib-only, guarded imports) and the raw state
+JSONs (gpu_alloc.json / deploys.json) — never the core modules that own them.
+Runs as root only because /mnt/sdb/shared is root-owned; the file it writes is
 world-readable so pods (uid 1000) can read it.
 
 Atomic writes: tmp file + os.replace, so apps never observe a half-written
@@ -48,40 +50,90 @@ Suggested unit /etc/systemd/system/sse-pressure-writer.service:
     [Install]
     WantedBy=multi-user.target
 
-Output contract (what apps read)
---------------------------------
+Output contract v3 (what apps read)
+-----------------------------------
 /shared/pressure/pressure.json:
 {
-  "cpu": 0.82,            // 0..1 overall busy fraction
-  "gpu": 0.41,            // 0..1 avg across GPUs (util); null if no nvidia-smi
-  "gpu_mem": 0.55,        // 0..1 avg gpu memory fraction
-  "gpu_max": 0.99,        // 0..1 MAX gpu util across cards (single-card hog isn't
-                          //        diluted by the avg); null if no nvidia-smi
-  "gpu_cards": [          // per-card detail (empty list if no nvidia-smi)
+  "schema": 3,           // signal schema version (this doc)
+  "cpu": 0.82,           // 0..1 overall busy fraction (instantaneous)
+  "gpu": 0.41,           // 0..1 avg across GPUs (util); null if no nvidia-smi
+  "gpu_mem": 0.55,       // 0..1 avg gpu memory fraction
+  "gpu_max": 0.99,       // 0..1 MAX gpu util across cards (single-card hog isn't
+                         //        diluted by the avg); null if no nvidia-smi
+  "gpu_cards": [         // per-card detail (empty list if no nvidia-smi)
     {"index":0,"util":0.41,"mem":0.95,"temp":27,"power":15.2}
   ],
-  "gpu_temp_max": 51,     // hottest GPU sensor, Celsius; null if unavailable
-  "mem": 0.55,            // 0..1 host memory used / total
-  "swap": 0.10,           // 0..1 swap used / total; null if no swap
+  "gpu_temp_max": 51,    // hottest GPU sensor, Celsius; null if unavailable
+  "mem": 0.55,           // 0..1 host memory used / total
+  "swap": 0.10,          // 0..1 swap used / total; null if no swap
   "psi": {"cpu":0.0,"mem":0.0,"io":0.0},  // 0..1 PSI "some avg10" stall frac
   "disk": {"/":0.63,"/mnt/sdb":0.41},     // 0..1 used frac per siteconf.DISK_MOUNTS
-  "bw": 0.93,             // 0..1 (rx+tx bytes/s) / link_capacity
-  "bw_rx_bps": 93000000,  // raw bytes/s inbound
-  "bw_tx_bps": 12000000,  // raw bytes/s outbound
-  "level": {              // discrete classification for easy app branching
+  "bw": 0.93,            // 0..1 (rx+tx bytes/s) / link_capacity
+  "bw_rx_bps": 93000000, // raw bytes/s inbound
+  "bw_tx_bps": 12000000, // raw bytes/s outbound
+  "host_cores": 64,      // host logical CPU count (denominator for self-share)
+  "host_mem_gib": 251.7, // host MemTotal in GiB (denominator for self-share)
+  "stats": {             // sliding window over PRESSURE_WINDOW_S (default 30s):
+    "cpu": {"now":0.39,"avg":0.34,"peak":0.71,"n":15},
+    "gpu_max": {...}, "gpu": {...}, "gpu_mem": {...}, "gpu_mem_max": {...},
+    "gpu_temp_max": {...}, "mem": {...}, "swap": {...}, "bw": {...},
+    "psi_cpu": {...}, "psi_mem": {...}, "psi_io": {...}, "psi_max": {...},
+    "disk_max": {...}
+  },
+  "level": {             // v3: hysteretic STABLE tier, per-dimension, on the
+                         // same basis tier-2 (priority_kill) evicts on —
+                         // gpu is the per-card MAX (gpu_max), not the average.
+    "cpu": "high", "gpu": "high", "gpu_mem": "med", "gpu_temp": "low",
+    "mem": "med", "swap": "low", "psi": "low", "disk": "low", "bw": "high"
+  },
+  "level_raw": {         // v2 semantics kept for compatibility: instantaneous
+                         // tier, gpu on the cross-card average.
     "cpu": "high", "gpu": "med", "mem": "med", "bw": "high"
   },
-  "ts": 1724500000.0      // epoch seconds (time.time())
+  "tenants": {           // anonymous per-tenant footprint (NO names — the file
+                         // is one inode shared by every pod, so it cannot be
+                         // personalised per reader). Compute YOUR OWN share
+                         // locally: read your cgroup's cpu.stat / memory.current
+                         // and divide by host_cores / host_mem_gib.
+    "n": 41,             // number of tenant groups seen
+    "top": 0.44,         // largest single-group cpu share (0..1)
+    "shares": {"cpu": [0.44, 0.12, ...],       // desc, capped at TENANT_TOP
+               "mem": [0.31, ...]}             // (GPU: see gpu_cards/gpu_max)
+  },
+  "ts": 1724500000.0     // epoch seconds (time.time())
 }
 App logic example: if level["bw"] == "high": serve low-res mode.
 
-Additive contract: every key above existed in v1 or is a pure addition, so a v1
-reader keeps working. ``gpu``/``gpu_mem`` stay the cross-card averages; use
-``gpu_max``/``gpu_cards`` when a single saturated card matters.
+Contract notes
+--------------
+- Top-level instantaneous keys (cpu/gpu/gpu_mem/gpu_max/gpu_cards/.../bw/ts)
+  keep their v1/v2 meaning and are NEVER redefined — tier-2 (priority_kill)
+  evicts on them and must not shift under it.
+- v3 INTENTIONALLY redefines ``level`` (v2 built level.gpu on the cross-card
+  average, which diluted a single saturated card to "med" while tier-2 would
+  evict on the same card — the two tiers disagreed on one machine). The old
+  instantaneous average-based tier is preserved verbatim as ``level_raw``.
+- ``level`` is hysteretic: entering "high" needs avg>=HIGH or peak>=HIGH for
+  PRESSURE_DWELL_UP consecutive cycles (~4s at defaults); leaving "high" needs
+  avg<MED for PRESSURE_DWELL_DOWN cycles (~10s). med<->low follows the raw
+  tier (benign flapping). So ``level`` is the stable branch for self-degrade
+  logic; ``level_raw``/``stats.peak`` are for dashboards and edge detection.
+- gpu_temp levels use PRESSURE_TEMP_HIGH (default 85C) / PRESSURE_TEMP_MED
+  (default 75C), and gpu_mem uses a near-OOM band PRESSURE_GPU_MEM_HIGH (0.97)
+  / PRESSURE_GPU_MEM_MED (0.90) — NOT the 0..1 thresholds — because co-located
+  GPU workloads hold a permanent ~0.94 VRAM baseline that must not read "high"
+  (mirrors tier-2's GPU_MEM_HARD gate).
+- Additive contract: apart from the documented ``level`` redefinition, keys
+  are only ever added, never removed or silently changed.
 
-Tune via env: PRESSURE_POLL_S, PRESSURE_LINK_BPS (default 1 Gbit/s),
-PRESSURE_HIGH (default 0.8), PRESSURE_MED (default 0.5).
+Tune via env: PRESSURE_POLL_S, PRESSURE_LINK_BPS (default: auto from
+/sys/class/net/<uplink>/speed, fallback 1 Gbit/s), PRESSURE_HIGH (0.8),
+PRESSURE_MED (0.5), PRESSURE_WINDOW_S (30), PRESSURE_DWELL_UP (2),
+PRESSURE_DWELL_DOWN (5), PRESSURE_TEMP_HIGH (85), PRESSURE_TEMP_MED (75),
+PRESSURE_GPU_MEM_HIGH (0.97), PRESSURE_GPU_MEM_MED (0.90),
+PRESSURE_TENANT_EVERY (5), YATTERRA_PRESSURE_TENANTS (=0 disables tenants).
 """
+import collections
 import json
 import os
 import shutil
@@ -93,10 +145,30 @@ import siteconf
 OUT_DIR = siteconf.PRESSURE_DIR
 OUT_FILE = os.path.join(OUT_DIR, "pressure.json")
 POLL_S = float(os.environ.get("PRESSURE_POLL_S", "2"))
-# Link capacity in bytes/s for bw fraction. Default 1 Gbit/s = 125_000_000 B/s.
-LINK_BPS = float(os.environ.get("PRESSURE_LINK_BPS", "125000000"))
+# Link capacity in bytes/s for bw fraction. Auto-calibrated from the uplink's
+# /sys/class/net/<if>/speed when the env override is absent; final fallback is
+# 1 Gbit/s = 125_000_000 B/s.
+LINK_BPS = float(os.environ.get("PRESSURE_LINK_BPS", "0") or 0)
 THRESH_HIGH = float(os.environ.get("PRESSURE_HIGH", "0.8"))
 THRESH_MED = float(os.environ.get("PRESSURE_MED", "0.5"))
+TEMP_HIGH = float(os.environ.get("PRESSURE_TEMP_HIGH", "85"))
+TEMP_MED = float(os.environ.get("PRESSURE_TEMP_MED", "75"))
+# gpu_mem has its own (much higher) thresholds: co-located GPU workloads keep a
+# high permanent VRAM baseline (~0.7-0.94), so reusing the 0.8/0.5 thresholds
+# would pin level.gpu_mem at "high" forever. Mirror tier-2's near-OOM gate.
+GPU_MEM_HIGH = float(os.environ.get("PRESSURE_GPU_MEM_HIGH", "0.97"))
+GPU_MEM_MED = float(os.environ.get("PRESSURE_GPU_MEM_MED", "0.90"))
+# Sliding window (seconds) behind stats.* avg/peak and the level hysteresis.
+WINDOW_S = float(os.environ.get("PRESSURE_WINDOW_S", "30"))
+# Hysteresis dwell, in collection cycles (POLL_S each): cycles the window must
+# stay hot before level enters "high", and stay cool before it leaves.
+DWELL_UP = int(os.environ.get("PRESSURE_DWELL_UP", "2"))
+DWELL_DOWN = int(os.environ.get("PRESSURE_DWELL_DOWN", "5"))
+# Tenant view: sample every N cycles (cgroup sampling shells out to kubectl,
+# so it must not run on every 2s cycle). 0/1-disable via env.
+TENANT_EVERY = max(1, int(os.environ.get("PRESSURE_TENANT_EVERY", "5")))
+TENANTS_ON = (os.environ.get("YATTERRA_PRESSURE_TENANTS", "1") or "1") != "0"
+TENANT_TOP = 10  # cap per share list, keeps the file small
 
 
 def _level(frac):
@@ -107,6 +179,65 @@ def _level(frac):
     if frac >= THRESH_MED:
         return "med"
     return "low"
+
+
+def _level_temp(celsius):
+    """level() for a Celsius reading (gpu_temp uses its own thresholds)."""
+    if celsius is None:
+        return None
+    if celsius >= TEMP_HIGH:
+        return "high"
+    if celsius >= TEMP_MED:
+        return "med"
+    return "low"
+
+
+# --- sliding window (stats avg/peak + level hysteresis basis) ------------------
+
+# stat key -> (high, med) thresholds for its *level* classification. Keys with
+# None thresholds never produce a level (they only feed stats).
+_WINDOW_KEYS = ("cpu", "gpu", "gpu_mem", "gpu_mem_max", "gpu_max",
+                "gpu_temp_max", "mem", "swap", "bw",
+                "psi_cpu", "psi_mem", "psi_io", "psi_max", "disk_max")
+
+_win = {k: collections.deque(maxlen=max(1, int(WINDOW_S / max(POLL_S, 0.1))))
+        for k in _WINDOW_KEYS}
+
+
+def _push(key, val):
+    """Append a sample to the window; None is stored as-is (skipped in stats)."""
+    if val is not None:
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return
+    _win[key].append(val)
+
+
+def _stat(key, now):
+    """{now, avg, peak, n} for a window key. avg/peak skip None samples."""
+    vals = [v for v in _win[key] if v is not None]
+    if not vals:
+        return {"now": now, "avg": None, "peak": None, "n": 0}
+    return {"now": now,
+            "avg": round(sum(vals) / len(vals), 3),
+            "peak": round(max(vals), 3),
+            "n": len(vals)}
+
+
+def _link_bps():
+    """Effective link capacity: env override > /sys speed of the uplink > 1G."""
+    if LINK_BPS > 0:
+        return LINK_BPS
+    try:
+        for ifname in sorted(_uplink_ifaces() or []):
+            with open(f"/sys/class/net/{ifname}/speed") as f:
+                mbits = int(f.read().strip())
+            if mbits > 0:
+                return mbits * 125000  # Mbit/s -> bytes/s
+    except Exception:
+        pass
+    return 125000000  # 1 Gbit/s
 
 
 # --- collectors (each returns a number or None, never raises) -----------------
@@ -154,6 +285,18 @@ def mem_frac():
         return round(1.0 - avail / total, 3)
     except Exception:
         return None
+
+
+def host_mem_gib():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                if k.strip() == "MemTotal":
+                    return round(int(v.split()[0]) / (1024 * 1024), 1)
+    except Exception:
+        pass
+    return None
 
 
 def gpu_frac():
@@ -367,11 +510,133 @@ def bw_frac(sample_s=1.0):
     dtx = b[1] - a[1]
     rx_bps = drx / sample_s
     tx_bps = dtx / sample_s
-    frac = round((rx_bps + tx_bps) / LINK_BPS, 3) if LINK_BPS > 0 else None
+    link = _link_bps()
+    frac = round((rx_bps + tx_bps) / link, 3) if link > 0 else None
     return (frac, int(rx_bps), int(tx_bps))
 
 
+# --- level v3: hysteretic stable tier ------------------------------------------
+# level = Schmitt-stabilised tier on the SAME basis tier-2 evicts on (per-card
+# max for gpu). Entering "high" needs the window hot (avg>=HIGH or peak>=HIGH)
+# for DWELL_UP cycles; leaving needs avg<MED for DWELL_DOWN cycles. med<->low
+# follows the raw tier (benign flapping, no state). level_raw keeps the exact
+# v2 instantaneous average-based tier for compatibility.
+#
+# dim -> window key whose stat feeds that dimension's level/hysteresis.
+_LEVEL_DIMS = {
+    "cpu": "cpu",
+    "gpu": "gpu_max",          # v3: per-card max, aligned with tier-2
+    "gpu_mem": "gpu_mem_max",
+    "gpu_temp": "gpu_temp_max",
+    "mem": "mem",
+    "swap": "swap",
+    "psi": "psi_max",
+    "disk": "disk_max",
+    "bw": "bw",
+}
+_hyst = {d: {"lvl": None, "up": 0, "down": 0} for d in _LEVEL_DIMS}
+
+
+def _dim_thresholds(dim):
+    """(high, med) cut-offs for a dimension. gpu_temp uses Celsius; gpu_mem uses
+    its near-OOM band; everything else the 0..1 PRESSURE_HIGH/MED."""
+    if dim == "gpu_temp":
+        return TEMP_HIGH, TEMP_MED
+    if dim == "gpu_mem":
+        return GPU_MEM_HIGH, GPU_MEM_MED
+    return THRESH_HIGH, THRESH_MED
+
+
+def _raw_level(dim, val):
+    """Instantaneous tier for one dimension on its own thresholds."""
+    if val is None:
+        return None
+    hi, med = _dim_thresholds(dim)
+    if val >= hi:
+        return "high"
+    if val >= med:
+        return "med"
+    return "low"
+
+
+def _stable_level(dim, raw):
+    """Advance the hysteresis state machine one cycle; return the stable tier."""
+    key = _LEVEL_DIMS[dim]
+    st = _stat(key, None)
+    avg, peak = st["avg"], st["peak"]
+    high_v, med_v = _dim_thresholds(dim)
+    h = _hyst[dim]
+    if h["lvl"] is None:
+        h["lvl"] = raw  # first cycle: baseline, no dwell
+        return raw
+    if h["lvl"] == "high":
+        if avg is not None and avg < med_v:
+            h["down"] += 1
+            if h["down"] >= DWELL_DOWN:
+                h["lvl"] = _raw_level(dim, avg) or "low"
+                h["down"] = h["up"] = 0
+        else:
+            h["down"] = 0
+    else:
+        hot = ((avg is not None and avg >= high_v)
+               or (peak is not None and peak >= high_v))
+        if hot:
+            h["up"] += 1
+            if h["up"] >= DWELL_UP:
+                h["lvl"] = "high"
+                h["up"] = h["down"] = 0
+        else:
+            h["up"] = 0
+            # med<->low follows the raw tier directly (no state to flap into)
+            if raw in ("med", "low"):
+                h["lvl"] = raw
+    return h["lvl"]
+
+
+# --- tenant view (anonymous shares) --------------------------------------------
+
+def collect_tenants():
+    """Anonymous per-tenant footprint: {n, top, shares:{cpu,mem}}.
+
+    The pressure file is ONE inode read by every pod, so it cannot name one
+    reader's own entry — names would leak across tenants. Instead we publish
+    the anonymous distribution (is the pressure concentrated or spread?), and
+    each pod computes its OWN share locally from its cgroup counters divided
+    by host_cores/host_mem_gib (see pod_guide §8). Lists are sorted desc and
+    capped at TENANT_TOP entries.
+
+    Only cpu/mem are published: cgroup v2 measures those per group directly.
+    GPU contention is NOT attributed per tenant here (a co-resident ``serve``
+    deploy reserves no vram, so a per-tenant vram split would read as all-zero
+    noise) — read per-card ``gpu_cards``/``gpu_max`` to see GPU pressure.
+    Never raises.
+    """
+    out = {"n": 0, "top": None, "shares": {"cpu": [], "mem": []}}
+    try:
+        import cgroup_stats  # stdlib-only, guarded imports — safe standalone
+        live = cgroup_stats.sample_groups()
+        host_cores = os.cpu_count() or 1
+        host_mib = (host_mem_gib() or 1) * 1024
+        cpu_shares, mem_shares = [], []
+        for group, (cores, gib) in live.items():
+            cpu_shares.append(round(cores / host_cores, 4))
+            mem_shares.append(round(gib * 1024 / host_mib, 4))
+        cpu_shares.sort(reverse=True)
+        mem_shares.sort(reverse=True)
+        out["n"] = len(cpu_shares)
+        out["top"] = cpu_shares[0] if cpu_shares else None
+        out["shares"]["cpu"] = cpu_shares[:TENANT_TOP]
+        out["shares"]["mem"] = mem_shares[:TENANT_TOP]
+    except Exception:
+        pass
+    return out
+
+
 # --- writer -------------------------------------------------------------------
+
+_cycle = [0]          # loop counter for TENANT_EVERY
+_tenants_cache = None
+
 
 def collect():
     """Collect all metrics. cpu/bw sample internally; gpu/mem are instant."""
@@ -384,11 +649,69 @@ def collect():
     # the v1 average when per-card detail is unavailable.
     utils = [c["util"] for c in cards if c.get("util") is not None]
     g_max = round(max(utils), 3) if utils else g_util
+    # per-card max vram fraction: level.gpu_mem basis (mirrors gpu_max).
+    mems = [c["mem"] for c in cards if c.get("mem") is not None]
+    g_mem_max = round(max(mems), 3) if mems else g_mem
     # gpu_temp_max powers the thermal alert (host_alerts); null when no sensor.
     temps = [c["temp"] for c in cards if c.get("temp") is not None]
     g_temp = max(temps) if temps else None
+    psi = psi_frac()
+    psi_vals = [v for v in psi.values() if v is not None]
+    psi_max = max(psi_vals) if psi_vals else None
+    disk = disk_frac()
+    disk_vals = [v for v in disk.values() if v is not None]
+    disk_max = max(disk_vals) if disk_vals else None
     bw, rx_bps, tx_bps = bw_frac()
-    return {
+    swap = swap_frac()
+
+    # sliding window: stats avg/peak + hysteresis basis
+    _push("cpu", cpu)
+    _push("gpu", g_util)
+    _push("gpu_mem", g_mem)
+    _push("gpu_mem_max", g_mem_max)
+    _push("gpu_max", g_max)
+    _push("gpu_temp_max", g_temp)
+    _push("mem", mem)
+    _push("swap", swap)
+    _push("bw", bw)
+    _push("psi_cpu", psi.get("cpu"))
+    _push("psi_mem", psi.get("mem"))
+    _push("psi_io", psi.get("io"))
+    _push("psi_max", psi_max)
+    _push("disk_max", disk_max)
+    stats = {k: _stat(k, {"cpu": cpu, "gpu": g_util, "gpu_mem": g_mem,
+                          "gpu_mem_max": g_mem_max, "gpu_max": g_max,
+                          "gpu_temp_max": g_temp, "mem": mem, "swap": swap,
+                          "bw": bw, "psi_cpu": psi.get("cpu"),
+                          "psi_mem": psi.get("mem"), "psi_io": psi.get("io"),
+                          "psi_max": psi_max, "disk_max": disk_max}[k])
+             for k in _WINDOW_KEYS}
+
+    # level_raw: exact v2 semantics (instantaneous, gpu on the cross-card avg)
+    level_raw = {
+        "cpu": _level(cpu),
+        "gpu": _level(g_util),
+        "mem": _level(mem),
+        "bw": _level(bw),
+    }
+    # level: v3 hysteretic stable tier, per-dimension, tier-2-aligned basis
+    now_vals = {"cpu": cpu, "gpu_max": g_max, "gpu_mem_max": g_mem_max,
+                "gpu_temp_max": g_temp, "mem": mem, "swap": swap,
+                "psi_max": psi_max, "disk_max": disk_max, "bw": bw}
+    level = {}
+    for dim, key in _LEVEL_DIMS.items():
+        level[dim] = _stable_level(dim, _raw_level(dim, now_vals[key]))
+
+    # tenant view: sampled every TENANT_EVERY cycles (cgroup sampling shells
+    # out to kubectl — too heavy for the 2s cycle), cached in between.
+    global _tenants_cache
+    if TENANTS_ON:
+        _cycle[0] += 1
+        if _tenants_cache is None or _cycle[0] % TENANT_EVERY == 0:
+            _tenants_cache = collect_tenants()
+
+    payload = {
+        "schema": 3,
         "cpu": cpu,
         "gpu": g_util,
         "gpu_mem": g_mem,
@@ -396,20 +719,22 @@ def collect():
         "gpu_cards": cards,
         "gpu_temp_max": g_temp,
         "mem": mem,
-        "swap": swap_frac(),
-        "psi": psi_frac(),
-        "disk": disk_frac(),
+        "swap": swap,
+        "psi": psi,
+        "disk": disk,
         "bw": bw,
         "bw_rx_bps": rx_bps,
         "bw_tx_bps": tx_bps,
-        "level": {
-            "cpu": _level(cpu),
-            "gpu": _level(g_util),
-            "mem": _level(mem),
-            "bw": _level(bw),
-        },
+        "host_cores": os.cpu_count(),
+        "host_mem_gib": host_mem_gib(),
+        "stats": stats,
+        "level": level,
+        "level_raw": level_raw,
         "ts": round(time.time(), 3),
     }
+    if TENANTS_ON and _tenants_cache is not None:
+        payload["tenants"] = _tenants_cache
+    return payload
 
 
 def write_once():
@@ -438,8 +763,9 @@ def write_once():
 
 
 # --- 压力降级通知(kind='pressure') -------------------------------------------
-# 层级切换点: 任一指标(cpu/gpu/mem/bw)从非 high 跃迁到 high 即视为触发降级
-# (terra→sdpy→app 三层降级由 app 侧按 level 字段执行, 这里只报切换边沿)。
+# 层级切换点: 任一 level 维度从非 high 跃迁到 high 即视为触发降级
+# (terra→sdpy→app 三层降级由 app 侧按 level 字段执行, 这里只报切换边沿;
+#  v3 起 level 带 DWELL_UP 滞回, 边沿最多滞后 DWELL_UP*POLL_S ≈ 4s)。
 # 刻意不 import cert_alerts(避免在独立进程里重复拉起检查线程), 本地实现
 # 同款 _claim_alert 去重 + send_to_users(admin) 直发; 全部 lazy + 吞异常,
 # 通知失败绝不影响压力信号写入。

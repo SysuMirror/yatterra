@@ -427,7 +427,8 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_pressure_state",
-            "description": "获取资源压力状态(CPU/内存/GPU 压力指标、被驱逐的 Pod、压力降级层级)",
+            "description": "获取资源压力状态(CPU/内存/GPU 压力指标、稳定档 level/瞬时档 level_raw、"
+                           "滑窗 stats.now/avg/peak、匿名租户集中度摘要、被驱逐的 Pod、压力降级层级)",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1580,6 +1581,11 @@ def _execute_tool_inner(name, arguments, user=None):
                 st = priority_kill.read_pressure()
                 if not st:
                     return "暂无压力数据"
+                # 裁剪租户块: 匿名份额最多 10 条/维 × 每卡一组, 全量灌进上下文
+                # 又长又没用; 只留规模与集中度摘要, 分布细节让 agent 直接读文件。
+                tenants = None
+                if isinstance(st, dict):
+                    tenants = st.pop("tenants", None) or None
                 lines = []
                 if isinstance(st, dict):
                     for key, val in st.items():
@@ -1587,10 +1593,17 @@ def _execute_tool_inner(name, arguments, user=None):
                             lines.append(f"{key}:")
                             for k2, v2 in val.items():
                                 lines.append(f"  {k2}: {v2}")
+                        elif isinstance(val, list) and len(val) > 8:
+                            lines.append(f"{key}: [{len(val)} items]")
                         else:
                             lines.append(f"{key}: {val}")
                 else:
                     lines.append(str(st)[:2000])
+                if tenants:
+                    n = tenants.get("n")
+                    top = tenants.get("top")
+                    lines.append(f"tenants: 共 {n} 组, 最大 CPU 份额 {top}"
+                                 " (匿名分布, 明细见 /shared/pressure/pressure.json)")
                 return "\n".join(lines)
             except Exception as e:
                 return f"查询压力状态失败: {e}"
