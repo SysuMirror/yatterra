@@ -12,7 +12,6 @@
  *     icon: MyLucideIcon,
  *     component: MyPanel,       // (props: PanelProps) => JSX
  *     minSize: 160,             // 可选:手机堆叠最小高度(px)
- *     mobileDrawer: false,      // 可选:手机吸附为底部抽屉
  *   })
  */
 import {
@@ -22,6 +21,7 @@ import {
   Sparkles,
   ScrollText,
   Settings as SettingsIcon,
+  Globe,
 } from 'lucide-react'
 import type { PanelContract } from './types'
 import { FileTreePanel } from './panels/FileTreePanel'
@@ -30,6 +30,7 @@ import { TerminalPanel } from './panels/TerminalPanel'
 import { AiPanel } from './panels/AiPanel'
 import { LogsPanel } from './panels/LogsPanel'
 import { SettingsPanel } from './panels/SettingsPanel'
+import { BrowserPanel } from './panels/BrowserPanel'
 
 const registry = new Map<string, PanelContract>()
 
@@ -73,6 +74,8 @@ registerPanel({
   icon: TerminalIcon,
   component: TerminalPanel,
   minSize: 200,
+  // 可开多个独立实例(终端:1/终端:2 各自一条 PTY + resume token)
+  multi: true,
 })
 
 registerPanel({
@@ -81,8 +84,6 @@ registerPanel({
   icon: Sparkles,
   component: AiPanel,
   minSize: 200,
-  // 手机上吸附为底部抽屉(25/50/90 三档),不进垂直堆叠
-  mobileDrawer: true,
 })
 
 registerPanel({
@@ -91,6 +92,14 @@ registerPanel({
   icon: ScrollText,
   component: LogsPanel,
   minSize: 120,
+})
+
+registerPanel({
+  id: 'browser',
+  title: '浏览器',
+  icon: Globe,
+  component: BrowserPanel,
+  minSize: 220,
 })
 
 registerPanel({

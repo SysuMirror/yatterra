@@ -29,6 +29,7 @@ import {
 import { preloadSocketIO } from '@/components/pod/TerminalPane'
 import { api } from '@/api/client'
 import { useEditorPrefsStore } from '@/stores/editorPrefs'
+import { useIdeBusStore } from '../ideBus'
 import { cn } from '@/lib/cn'
 import type { PanelProps } from '../types'
 
@@ -45,7 +46,7 @@ function touchDistance(touches: TouchList): number {
   return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
 }
 
-export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: PanelProps) {
+export function TerminalPanel({ podName, panelKey, surface, maximized, toggleMaximize, openInstance }: PanelProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const paneRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<any>(null)
@@ -97,11 +98,17 @@ export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: P
   // ── xterm + SocketIO 主装配(同 TerminalPane 协议) ─────────────────────
   useEffect(() => {
     if (!running) return
+    // 每个终端实例独立的 resume token:裸 'terminal' 沿用旧 key(老会话能
+    // 续上),多实例('terminal:2'…)各存各的 —— 否则两个面板抢同一个 PTY。
+    const tokenKey = panelKey.includes(':')
+      ? `yatterra.term.token.${podName}.${panelKey}`
+      : `yatterra.term.token.${podName}`
     let disposed = false
     let term: any = null
     let fit: any = null
     let socket: any = null
     let resizeObs: ResizeObserver | null = null
+    let winResize: (() => void) | null = null
 
     setStatus('connecting')
     setError('')
@@ -161,10 +168,69 @@ export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: P
         sendResizeRef.current = sendResize
         resizeObs = new ResizeObserver(sendResize)
         resizeObs.observe(containerRef.current)
+        // 窗口缩放不一定改变容器自身尺寸(RO 不触发),补一个窗口级监听
+        winResize = () => sendResizeRef.current?.()
+        window.addEventListener('resize', winResize)
+
+        // 等容器拿到真实尺寸再建连: 面板在标签页动画/隐藏中 mount 为 0×0,
+        // fit 失败被吞 → cols/rows 退回 xterm 默认 80×24, PTY 以错误尺寸
+        // 启动, claude code 等全屏 TUI 首帧就按错误宽度排版。
+        for (let i = 0; i < 40; i++) { // rAF 重试, ~2s 上限
+          const el = containerRef.current
+          if (disposed) return
+          if (el && el.clientWidth > 0 && el.clientHeight > 0) break
+          await new Promise((r) => requestAnimationFrame(r))
+        }
+        try { fit.fit() } catch { /* 仍 0×0: 按默认 80×24 建连, 连上后 sendResize 会纠正 */ }
         sendResize()
 
-        socket = io('/', { query: { name: podName } })
-        socket.on('connect', () => { if (!disposed) setStatus('open') })
+        // 断点续传:上次会话的 resume token 随握手带上,命中则后端重绑 PTY
+        // 并回放缓冲(term_replay),shell 状态不丢;socket.io 自动重连时
+        // 复用同一 query,token 不变即续上同一会话。
+        let resumeToken = ''
+        try { resumeToken = localStorage.getItem(tokenKey) || '' } catch { /* private mode */ }
+        socket = io('/', {
+          query: { name: podName, cols: term.cols, rows: term.rows, resume: resumeToken },
+        })
+        socket.on('connect', () => {
+          if (disposed) return
+          setStatus('open')
+          // 连接(含重连)后补发一次尺寸:建连前的 emit 全部丢失
+          sendResizeRef.current?.()
+        })
+        socket.on('term_ready', (msg: any) => {
+          // 新建的 PTY 会话:记住 token 供断线重连
+          try { if (msg?.token) localStorage.setItem(tokenKey, msg.token) } catch { /* ignore */ }
+        })
+        socket.on('term_replay', (msg: any) => {
+          // 续传成功:清屏重放服务端缓冲(可能截断了头部,属预期)
+          try { term.clear() } catch { /* ignore */ }
+          const data = typeof msg === 'string' ? msg : msg?.data
+          if (data) { term.write(data); scheduleTail() }
+        })
+        // ── 终端尾部快照 → ideBus(AiPanel 注入「最近终端输出」)──
+        // 节流 2s:输出密集时也不频繁读 buffer;只取可视行文本(丢颜色/光标控制)
+        let tailTimer: ReturnType<typeof setTimeout> | null = null
+        const publishTail = () => {
+          tailTimer = null
+          if (disposed) return
+          try {
+            const buf = term.buffer.active
+            const end = buf.length
+            const start = Math.max(0, end - 120)
+            const lines: string[] = []
+            for (let i = start; i < end; i++) {
+              const line = buf.getLine(i)
+              lines.push(line?.translateToString(true) ?? '')
+            }
+            const text = lines.join('\n').trim()
+            if (text) useIdeBusStore.getState().setTerminalTail({ panelKey, text })
+          } catch { /* buffer 不可读时静默跳过 */ }
+        }
+        const scheduleTail = () => {
+          if (tailTimer) return
+          tailTimer = setTimeout(publishTail, 2000)
+        }
         socket.on('connect_error', (e: any) => {
           if (disposed) return
           setStatus('error')
@@ -172,14 +238,22 @@ export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: P
         })
         socket.on('term_output', (msg: any) => {
           const data = typeof msg === 'string' ? msg : msg?.data
-          if (data) term.write(data)
+          if (data) { term.write(data); scheduleTail() }
         })
         socket.on('term_exit', (msg: any) => {
           if (disposed) return
+          // shell 进程已退出:token 作废,下次连接开新会话
+          try { localStorage.removeItem(tokenKey) } catch { /* ignore */ }
           setStatus('closed')
           term.write(`\r\n\x1b[90m— ${(typeof msg === 'string' ? msg : msg?.data) || '会话已结束'} —\x1b[0m\r\n`)
         })
-        socket.on('disconnect', () => { if (!disposed) setStatus('closed') })
+        socket.on('disconnect', () => {
+          if (disposed) return
+          // 有 token 时 socket.io 会自动重连续传,显示重连中而非已断开
+          let tok = ''
+          try { tok = localStorage.getItem(tokenKey) || '' } catch { /* ignore */ }
+          setStatus(tok ? 'connecting' : 'closed')
+        })
         term.onData((data: string) => {
           if (socket?.connected) socket.emit('term_input', { data })
         })
@@ -202,13 +276,14 @@ export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: P
     return () => {
       disposed = true
       resizeObs?.disconnect()
+      if (winResize) window.removeEventListener('resize', winResize)
       try { socket?.close() } catch { /* ignore */ }
       try { term?.dispose() } catch { /* ignore */ }
       termRef.current = null
       fitRef.current = null
       sendResizeRef.current = null
     }
-  }, [podName, running, nonce])
+  }, [podName, panelKey, running, nonce])
 
   // 字号变化(设置面板滑杆 / +/- 按钮)→ 应用到活终端并 refit
   useEffect(() => {
@@ -400,7 +475,9 @@ export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: P
 
   // ── 渲染(hooks 全部在前,条件 return 在后) ────────────────────────────
   const mobile = surface === 'mobile'
-  const iconBtn = mobile ? 'h-9 w-9' : 'h-8 w-8'
+  // 手机 44×44(与 .ide-m-actbtn 同):h-10 只有 40,竖屏靠 globals 的
+  // min-height 兜到 44、横向仍 40,横屏则连高度也没了 → 直接写实 44
+  const iconBtn = mobile ? 'h-11 w-11' : 'h-8 w-8'
 
   if (!statusKnown) {
     return (
@@ -445,8 +522,10 @@ export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: P
         {/* 状态条 + 字号 + 最大化/全屏 */}
         <div
           className={cn(
-            'flex items-center gap-1.5 shrink-0 mb-1.5',
-            fullscreen ? 'text-white' : 'text-muted',
+            'flex items-center gap-1.5 shrink-0',
+            fullscreen ? 'text-white mb-1.5' : 'text-muted',
+            !fullscreen && mobile && 'ide-m-panelhead',
+            (!fullscreen && !mobile) && 'mb-1.5',
           )}
         >
           <span className={cn('w-1.5 h-1.5 rounded-full shrink-0',
@@ -496,6 +575,20 @@ export function TerminalPanel({ podName, surface, maximized, toggleMaximize }: P
                 fullscreen ? 'text-white/80 hover:bg-white/10' : 'text-muted hover:bg-ink/5')}
             >
               <RotateCw size={14} />
+            </button>
+          )}
+          {/* 新开一个终端实例(仅桌面 + multi 面板;手机按类型单实例) */}
+          {!mobile && openInstance && (
+            <button
+              type="button"
+              aria-label="新开一个终端"
+              title="新开一个终端"
+              onClick={openInstance}
+              className={cn('flex items-center justify-center rounded-lg transition-colors',
+                iconBtn,
+                fullscreen ? 'text-white/80 hover:bg-white/10' : 'text-muted hover:bg-ink/5')}
+            >
+              <Plus size={14} />
             </button>
           )}
           {/* 布局层最大化(桌面=group 最大化;手机单面板全屏模式下无意义,隐藏) */}

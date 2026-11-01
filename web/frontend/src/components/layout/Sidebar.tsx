@@ -8,6 +8,7 @@ import {
   BookOpen, Swords, ChevronLeft, ChevronRight, X, ShieldQuestion, Receipt,
 } from 'lucide-react'
 import { useSidebarStore } from '@/stores/sidebar'
+import { openPodPicker } from '@/ide/PodPicker'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 import { cn } from '@/lib/cn'
 import { haptic } from '@/lib/haptic'
@@ -120,6 +121,8 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
                 data-assistant-label={item.label}
                 data-assistant-actions="navigate inspect"
                 end={item.to === '/console'}
+                // IDE 项右键 = Pod 切换器(桌面;手机用底栏 IDE Tab 长按)
+                onContextMenu={item.to === '/ide' ? (e) => { e.preventDefault(); openPodPicker() } : undefined}
                 onClick={() => { haptic('light'); onNavigate?.() }}
                 title={collapsed ? item.label : undefined}
                 className={({ isActive: active }) =>
@@ -150,9 +153,18 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
 
 const DRAWER_W = 260
 
-export default function Sidebar() {
+/**
+ * @param forceMobile 强制走手机分支(常驻侧栏换成抽屉)。
+ *   手机横屏(844×390)宽度过了 768 线,平台 md: 判桌面 → 常驻 220px 侧栏
+ *   常驻,既抢走窄屏宽度,又让 IDE 顶栏的 ☰ 调起抽屉时无人渲染(mobileOpen
+ *   是给手机分支用的)→ 按钮点了没反应。IDE 页面用 useIsIdeDesktop 断定是
+ *   "手机",于是把同样的结论透传到这里,让平台 chrome 与 IDE 内核同一个断言。
+ *   注意:forceMobile 时兜底的 `md:hidden` 也要撤掉,否则 844px 宽下抽屉
+ *   自己会被 width 断点藏起来。
+ */
+export default function Sidebar({ forceMobile = false }: { forceMobile?: boolean } = {}) {
   const { collapsed, toggle, mobileOpen, setMobileOpen } = useSidebarStore()
-  const isDesktop = useIsDesktop()
+  const isDesktop = useIsDesktop() && !forceMobile
 
   // Mobile drawer: Esc closes; page scroll locks while open
   useEffect(() => {
@@ -199,13 +211,13 @@ export default function Sidebar() {
 
   // Mobile: framer-motion drawer with swipe-to-close (never rendered on desktop)
   return (
-    <div className="md:hidden">
-      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} />
+    <div className={forceMobile ? undefined : 'md:hidden'}>
+      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} forceMobile={forceMobile} />
     </div>
   )
 }
 
-function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+function MobileDrawer({ open, onClose, forceMobile = false }: { open: boolean; onClose: () => void; forceMobile?: boolean }) {
   const x = useMotionValue(open ? 0 : -DRAWER_W)
 
   // Sync position when open state changes externally (hamburger button, escape key)
@@ -257,7 +269,10 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
   return (
     <AnimatePresence>
       {open && (
-        <motion.div className="fixed inset-0 z-[var(--z-drawer)] md:hidden" exit={{ pointerEvents: 'none' }}>
+        <motion.div
+          className={cn('fixed inset-0 z-[var(--z-drawer)]', forceMobile ? undefined : 'md:hidden')}
+          exit={{ pointerEvents: 'none' }}
+        >
           {/* Backdrop */}
           <motion.div
             className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"

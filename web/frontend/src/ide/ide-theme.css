@@ -86,6 +86,22 @@
   background: rgba(240, 246, 252, 0.06);
 }
 
+/* 顶栏 pod 名按钮(= Pod 切换器入口):名字 + ▾ */
+.ide-pod-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 42vw;
+  padding: 3px 6px;
+  border-radius: 7px;
+  color: var(--ide-ink);
+  transition: background-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ide-pod-btn:hover { background: rgba(240, 246, 252, 0.06); }
+.ide-pod-btn:active { transform: scale(0.97); }
+
 /* 顶栏面板开关(VS Code 活动栏心智):点亮 = 面板在布局里 */
 .ide-toggle-btn {
   display: grid;
@@ -586,6 +602,41 @@ button.ide-chip:hover {
 }
 .ide-ai-context::-webkit-scrollbar { display: none; }
 .ide-ai-context .ide-chip { font-size: 10px; height: 18px; padding: 0 6px; flex: none; }
+
+/* /goal 目标行:常显,不被聚焦淡入影响(输入区顶上一条) */
+.ide-ai-goalrow {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 3px;
+}
+.ide-ai-goalrow .ide-chip {
+  font-size: 10px;
+  height: 18px;
+  padding: 0 6px;
+  flex: none;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 目标 chip 上的取消 ×(点击即调 /api/ai/page/goal/clear) */
+.ide-goal-x {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 1px;
+  border-radius: 3px;
+  color: var(--ide-mut);
+  font-size: 12px;
+  line-height: 1;
+}
+.ide-goal-x:hover {
+  color: var(--ide-ink);
+  background: rgba(240, 246, 252, 0.1);
+}
 .ide-ai-textarea {
   width: 100%;
   background: transparent;
@@ -598,6 +649,10 @@ button.ide-chip:hover {
   font-family: inherit;
 }
 .ide-ai-textarea::placeholder { color: var(--ide-mut); }
+/* slash 命令选择框高亮项 */
+.ide-ai-slash-active {
+  background: var(--ide-line);
+}
 .ide-send-btn {
   flex: none;
   display: grid;
@@ -635,70 +690,7 @@ button.ide-chip:hover {
   padding: 14px;
 }
 
-/* ── 手机:切换条 + 抽屉 ───────────────────────────────────────────── */
-
-.ide-mbar {
-  flex: none;
-  border-top: 1px solid var(--ide-line);
-  background: var(--ide-bg);
-}
-.ide-mbar-item {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 48px;
-  color: var(--ide-mut);
-}
-.ide-mbar-item-active { color: var(--ide-accent); }
-.ide-mbar-item-active::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 20px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--ide-accent);
-}
-.ide-mbar-label {
-  font-size: 10px;
-  margin-top: 2px;
-}
-.ide-mbar-item-active .ide-mbar-label { color: var(--ide-ink); font-weight: 500; }
-
-.ide-drawer {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 20;
-  border-top: 1px solid var(--ide-line-strong);
-  border-radius: 14px 14px 0 0;
-  background: var(--ide-panel);
-  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.4);
-}
-.ide-drawer-handle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  height: 44px;
-  touch-action: none;
-  user-select: none;
-  cursor: row-resize;
-  font-size: 11px;
-  color: var(--ide-mut);
-}
-.ide-drawer-grip {
-  width: 40px;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--ide-line-strong);
-}
+/* (手机底部抽屉的样式已随 2026-10 布局重构移除:AI 现在是普通全屏面板 Tab) */
 
 /* ── 手机面板头 chips 行横向滚动不显示滚动条 ────────────────────────── */
 
@@ -708,4 +700,191 @@ button.ide-chip:hover {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* ── 手机:原生 App 感(顶栏 / Tab 条 / 抽屉 / 卡片化面板头) ─────────
+   全部规则 scoped 在 .ide-root + 手机断点下,桌面零影响。
+   基准字号 15px(桌面 13px),CodeMirror 14px,行高 48px,圆角 12–20px。
+   断点 = 「<768px 宽,或 <480px 高」,与 JS 侧 useIsIdeDesktop()
+   (min-width:768px) and (min-height:480px) 严格互补 —— 手机横屏(844×390)
+   宽度过线但高度极小,仍按手机渲染,所以这里也必须跟着命中,否则壳是手机的、
+   样式是桌面的。 */
+@media (max-width: 768px), (max-height: 479.98px) {
+  .ide-root { font-size: 15px; }
+  .ide-root .cm-content { font-size: 14px; }
+
+  /* 触控兜底:globals.css 只在 max-width:768px 里给 button{min-height:44px},
+     手机横屏(844×390)宽度过线 → 那条失效;而 IDE 手机布局仍按
+     max-height:479.98px 命中。结果:竖屏靠兜底被撑到 44 的控件,横屏会塌回
+     各自的声明值(40px / 28px)。这里在 .ide-root 内按 IDE 自己的断点把同一条
+     重放一遍,让 IDE 手机布局与朝向无关。只兜高度——宽度由各控件自己写实
+     (.ide-m-actbtn / .ide-m-iconbtn 均为 44×44)。 */
+  .ide-root button,
+  .ide-root [role='button'],
+  .ide-root a,
+  .ide-root summary,
+  .ide-root select,
+  .ide-root input[type='checkbox'],
+  .ide-root input[type='radio'] {
+    min-height: 44px;
+  }
+
+  /* 手机唯一顶栏:高度对齐 var(--topbar-h)(48px + 安全区,内联设置),
+     44×44 图标按钮 + pod 名 16px semibold。平台 TopBar 在 IDE 页让位。 */
+  .ide-m-header {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+    padding: 0 6px;
+    background: var(--ide-bg);
+    border-bottom: 1px solid var(--ide-line);
+  }
+  .ide-m-iconbtn {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    color: var(--ide-ink);
+    transition: background-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+      transform 100ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .ide-m-iconbtn:active {
+    background: rgba(240, 246, 252, 0.08);
+    transform: scale(0.94);
+  }
+  .ide-m-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ide-ink);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* pod 名按钮(手机):44px 命中区,名字过长截断,▾ 提示可点 */
+  .ide-m-podbtn {
+    height: 44px;
+    padding: 0 8px;
+    border-radius: 12px;
+    transition: background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .ide-m-podbtn:active { background: rgba(240, 246, 252, 0.08); }
+
+  /* 底部 Tab 条:与平台 .mobile-tabbar 同质感(玻璃底 + 发丝顶边),
+     面板切换 pill 由 framer-motion layoutId 渲染 */
+  .ide-m-tabbar {
+    flex: none;
+    background: rgba(16, 24, 33, 0.92);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    backdrop-filter: blur(20px) saturate(160%);
+    border-top: 0.5px solid rgba(255, 255, 255, 0.1);
+  }
+  .ide-m-tabbar-item {
+    position: relative;
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 56px;
+    color: var(--ide-mut);
+    transition: transform 100ms cubic-bezier(0.23, 1, 0.32, 1),
+      color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .ide-m-tabbar-item:active { transform: scale(0.9); }
+  .ide-m-tabbar-item-active { color: var(--ide-accent); }
+  .ide-m-tabbar-label {
+    font-size: 10px;
+    margin-top: 3px;
+  }
+  .ide-m-tabbar-item-active .ide-m-tabbar-label {
+    color: var(--ide-ink);
+    font-weight: 500;
+  }
+  .ide-m-tab-pill {
+    position: absolute;
+    top: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 24px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--ide-accent);
+  }
+  /* 面板切换过渡:只动画进入面板(面板保持挂载,display:none 切换) */
+  .ide-m-panel-active { animation: ide-panel-in 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+
+  /* 面板头:44px 轻量工具行 —— 透明底、无下边框,读起来是面板的一部分,
+     不是第二条栏(面板名已在底部 Tab 条上,头里只放该面板特有的信息/动作)。
+     顶栏 .ide-m-header 自带下边框,头再画一条会把它夹成一条空栏。
+     高度取 44px 而非 40px:globals.css 的移动端触控兜底
+     (button{min-height:44px})优先级高于任何 inline height,头若只给 40px,
+     里面的按钮会被撑到 44px 并上下各溢出 2px;两头对齐反而干净。 */
+  .ide-m-panelhead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 44px;
+    flex: none;
+    padding: 0 8px;
+    background: transparent;
+  }
+  .ide-m-panelhead-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ide-ink);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ide-m-actbtn {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    color: var(--ide-ink-2);
+    transition: background-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+      transform 100ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .ide-m-actbtn:active {
+    background: rgba(240, 246, 252, 0.08);
+    transform: scale(0.94);
+  }
+
+  /* 卡片化列表容器 + 48px 行 */
+  .ide-m-listcard {
+    margin: 10px;
+    border: 1px solid var(--ide-line);
+    border-radius: 12px;
+    background: var(--ide-panel);
+    overflow: hidden;
+  }
+  .ide-m-row { min-height: 48px; }
+  .ide-m-row-selected {
+    background: color-mix(in srgb, var(--ide-accent) 14%, transparent);
+  }
+
+  /* 触控补偿:折叠行/卡片头命中区 */
+  .ide-tool-line { padding: 5px 0; }
+  .ide-diff-headbtn { padding: 7px 6px; }
+  .ide-diff-head { padding: 2px 4px 2px 0; }
+  .ide-ai-block { padding: 0 12px; }
+  .ide-diff-card { border-radius: 12px; }
+
+  /* AI 现在是普通面板(不再是屏幕底部抽屉):输入区上方还有 Tab 条,
+     安全区已由 Tab 条消费,面板内不要再垫一次 --sab */
+  .ide-m-panel .ide-ai-inputwrap { padding-bottom: 6px; }
+}
+
+@keyframes ide-panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ide-m-panel-active { animation: none; }
 }

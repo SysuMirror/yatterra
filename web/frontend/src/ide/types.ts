@@ -33,7 +33,6 @@
  *          icon: SomeLucideIcon,        // lucide-react 图标组件
  *          component: MyPanel,
  *          minSize: 160,               // 可选,px,手机堆叠最小高度/桌面最小尺寸
- *          mobileDrawer: false,        // 可选,手机上吸附为底部抽屉(目前仅 ai 面板)
  *        })
  *   3. 若要进内置布局预设,在 layout.ts 的 BUILTIN_PRESETS 里引用该 id。
  *   注册后桌面/手机渲染器自动可用,无需改布局内核。
@@ -42,14 +41,13 @@
  *
  *   * 组件必须自适应填满父容器(父容器有确定高度;用 h-full/w-full 或
  *     absolute inset-0),不能假设视口高度,也不能给外层加页面级 padding。
- *   * 手机渲染器会**卸载**不可见面板(切换 tab、最大化其它面板、抽屉收起)。
+ *   * 手机渲染器用 display:none 保活非活动面板(切换 Tab 不断连),但仍应把
+ *     重资源当成可能被重建来处理。
  *     重资源(xterm 实例、SSE/WS 连接、定时器)必须在 useEffect 清理函数里
  *     释放,内部状态要么自行持久化(localStorage / 后端),要么能接受重建。
  *   * 字号请用 var(--ide-fs)(编辑器)/ var(--ide-tfs)(终端),缩放用
  *     var(--ide-scale),由 editorPrefs store 全局写入,勿各存一份。
  *   * 手机上 44px 是最小命中区,面板内自定义按钮请保证 ≥44px 命中。
- *   * mobileDrawer 面板在手机上不进垂直堆叠,而是底部抽屉(25/50/90 三档),
- *     组件同样会被卸载/重建,要求同上。
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import type React from 'react'
@@ -59,12 +57,22 @@ import type { LucideIcon } from 'lucide-react'
 export interface PanelProps {
   podName: string
   panelId: string
+  /**
+   * 本实例的布局 key(dockview panel id)。多实例面板(multi)形如
+   * 'terminal:2';单实例面板与 panelId 相同。resume token 等按实例
+   * 区分的状态应挂在这个 key 上,而不是 panelId。
+   */
+  panelKey: string
   surface: 'desktop' | 'mobile'
   maximized: boolean
   /** 让布局层激活/定位到本面板。 */
   activate: () => void
   /** 切换本面板最大化。 */
   toggleMaximize: () => void
+  /**
+   * 再开一个同类型实例(仅 multi 面板在桌面内核下提供;其余为 undefined)。
+   */
+  openInstance?: () => void
 }
 
 /** 注册表里的单个面板契约。 */
@@ -79,8 +87,27 @@ export interface PanelContract {
   component: React.ComponentType<PanelProps>
   /** 最小尺寸 px(手机=堆叠最小高度,桌面传给 dockview minimum)。 */
   minSize?: number
-  /** 手机上吸附为底部抽屉而非垂直堆叠(仅 AI 类面板用)。 */
-  mobileDrawer?: boolean
+  /**
+   * 允许多实例(如终端可开 N 个)。多实例的布局 key 带 ':N' 后缀
+   * ('terminal:2'),component 仍按本 id 解析;第一个实例保持裸 id,
+   * 旧布局快照无需迁移。手机渲染器仍按类型单实例。
+   */
+  multi?: boolean
+}
+
+/**
+ * 面板 key → registry 类型 id:'terminal:2' → 'terminal',裸 id → 自身。
+ * 布局树/dockview 里存的是 key,取 component/契约时必须先过这个函数。
+ */
+export function panelType(key: string): string {
+  const i = key.indexOf(':')
+  return i < 0 ? key : key.slice(0, i)
+}
+
+/** 实例 key 的展示标题:裸 id 用契约标题,'terminal:2' → '终端 2'。 */
+export function panelTitle(key: string, contract: PanelContract): string {
+  const i = key.indexOf(':')
+  return i < 0 ? contract.title : `${contract.title} ${key.slice(i + 1)}`
 }
 
 // ── 布局 JSON 树 ───────────────────────────────────────────────────────────
@@ -114,24 +141,14 @@ export interface StoredIdeLayout {
   tree: LayoutNode
   /** 桌面 dockview 的 toJSON 快照(精确恢复拖拽边界/分组)。 */
   dockview?: unknown
-  /** 手机渲染器覆盖:面板顺序与占比(与 tree 的面板集合保持一致)。 */
+  /** 手机渲染器覆盖:当前激活面板。 */
   mobile?: MobileLayoutOverride
 }
 
-/** 手机堆叠布局的持久化覆盖。 */
+/** 手机布局的持久化覆盖。 */
 export interface MobileLayoutOverride {
-  /**
-   * 堆叠槽位顺序。槽位 key = 该 tabs 节点 panels 的 join('/')
-   * (不含 mobileDrawer 面板所在的 tabs 组)。
-   */
-  /** 旧堆叠时代的槽位顺序(手机渲染器已不写,仅旧记录/桌面兼容保留)。 */
-  order?: string[]
-  /** 与 order 一一对应的占比权重(0–1,和为 1)。 */
-  weights?: number[]
-  /** 底部抽屉(mobileDrawer 面板)高度档位。 */
-  drawerSnap?: 0.25 | 0.5 | 0.9
-  /** 底部抽屉是否展开(收起时只剩 44px 把手条)。 */
-  drawerOpen?: boolean
   /** 当前激活的面板 id(MobileIdeLayout 持久化)。 */
   activePanel?: string
+  /** 顶栏 "…" 里被显式关掉的面板 id(MobileIdeLayout 持久化;不在表里 = 按默认开关)。 */
+  hidden?: string[]
 }

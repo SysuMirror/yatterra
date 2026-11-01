@@ -8,6 +8,10 @@
  *       pushEdit()          保存/创建/删除文件时上报,AiPanel 注入「最近编辑动作」;
  *       ask()               「选中即问」: {question, path?, code?},
  *                           AiPanel 消费(consumeAsk)后组装成首条用户消息并 activate()。
+ *   - TerminalPanel → AiPanel:
+ *       setTerminalTail()   发布最近终端输出尾部(~120 行, 节流 2s),
+ *                           AiPanel 注入「最近终端输出」——「修复最近的报错」
+ *                           才真的看得到报错。
  *   - AiPanel → EditorPanel:
  *       notifySaved(path)   用户接受 diff 卡片、PUT files/save 写入成功后调用;
  *                           EditorPanel 订阅 savedSignal 变化即可刷新对应文件。
@@ -43,17 +47,27 @@ export interface IdeAskRequest {
   ts: number
 }
 
+/** TerminalPanel 发布的最近终端输出尾部(xterm buffer 尾 ~120 行)。 */
+export interface IdeTerminalTail {
+  panelKey: string
+  text: string
+  ts: number
+}
+
 interface IdeBusState {
   editorContext: IdeEditorContext | null
   recentEdits: IdeEditAction[]
   askRequest: IdeAskRequest | null
   /** 文件被外部写入(如 AI diff 被接受)的信号;订阅方比较 ts 判断新事件 */
   savedSignal: { path: string; ts: number } | null
+  /** 最近终端输出(多终端时取最新一条;AiPanel 注入「最近终端输出」上下文) */
+  terminalTail: IdeTerminalTail | null
   setEditorContext: (ctx: IdeEditorContext | null) => void
   pushEdit: (action: Omit<IdeEditAction, 'ts'>) => void
   ask: (req: Omit<IdeAskRequest, 'ts'>) => void
   consumeAsk: () => void
   notifySaved: (path: string) => void
+  setTerminalTail: (tail: Omit<IdeTerminalTail, 'ts'>) => void
 }
 
 export const useIdeBusStore = create<IdeBusState>((set, get) => ({
@@ -61,10 +75,12 @@ export const useIdeBusStore = create<IdeBusState>((set, get) => ({
   recentEdits: [],
   askRequest: null,
   savedSignal: null,
+  terminalTail: null,
   setEditorContext: (ctx) => set({ editorContext: ctx }),
   pushEdit: (action) =>
     set({ recentEdits: [{ ...action, ts: Date.now() }, ...get().recentEdits].slice(0, 20) }),
   ask: (req) => set({ askRequest: { ...req, ts: Date.now() } }),
   consumeAsk: () => set({ askRequest: null }),
   notifySaved: (path) => set({ savedSignal: { path, ts: Date.now() } }),
+  setTerminalTail: (tail) => set({ terminalTail: { ...tail, ts: Date.now() } }),
 }))

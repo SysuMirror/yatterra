@@ -498,14 +498,14 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
       <div
         className={cn(
           'flex items-center gap-1 shrink-0 border-b px-1.5',
-          isMobile ? 'h-10 border-line' : 'ide-ft-toolbar',
+          isMobile ? 'ide-m-panelhead px-2' : 'ide-ft-toolbar',
         )}
       >
         <nav
           aria-label="当前目录"
           className={cn(
             'flex items-center gap-0.5 min-w-0 flex-1 overflow-x-auto no-scrollbar',
-            isMobile ? 'text-xs font-mono' : 'ide-ft-crumb',
+            isMobile ? 'text-sm font-mono' : 'ide-ft-crumb',
           )}
         >
           <button
@@ -513,10 +513,10 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
             title={rootOfCurrent}
             className={cn(
               'flex items-center rounded-md text-muted hover:text-ink hover:bg-ink/5 transition-colors',
-              isMobile ? 'h-9 w-9 justify-center' : 'h-7 w-7',
+              isMobile ? 'h-11 w-11 justify-center' : 'h-7 w-7',
             )}
           >
-            <RootIcon size={isMobile ? 15 : 13} />
+            <RootIcon size={isMobile ? 16 : 13} />
           </button>
           {crumbs.map((c, i) => {
             const prefix = rootOfCurrent + '/' + crumbs.slice(0, i + 1).join('/')
@@ -527,9 +527,9 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
                   onClick={() => navigateTo(prefix)}
                   title={prefix}
                   className={cn(
-                    'rounded px-1 transition-colors',
+                    'rounded px-1.5 transition-colors',
                     isLast ? 'text-ink font-medium' : 'text-muted hover:text-ink',
-                    isMobile ? 'h-9' : 'h-7',
+                    isMobile ? 'h-11' : 'h-7',
                   )}
                 >
                   {c}
@@ -564,15 +564,18 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
         </div>
       </div>
 
-      {/* 树主体 */}
-      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain py-1" role="tree">
+      {/* 树主体(手机:卡片化容器) */}
+      <div
+        className={cn('flex-1 min-h-0 overflow-y-auto overscroll-contain py-1', isMobile && 'ide-m-listcard')}
+        role="tree"
+      >
         {rows.map((row, rowIndex) => {
           if (row.kind === 'loading') {
             return (
               <div
                 key={`loading-${row.dirPath}`}
                 className="flex items-center gap-1.5 px-2 text-muted"
-                style={{ paddingLeft: row.depth * indentStep + 24, minHeight: isMobile ? 44 : 28 }}
+                style={{ paddingLeft: row.depth * indentStep + 24, minHeight: isMobile ? 48 : 28 }}
               >
                 <Loader2 size={12} className="animate-spin" />
                 <span className="text-xs">加载中…</span>
@@ -584,7 +587,7 @@ export function FileTreePanel({ podName, surface }: PanelProps) {
               <div
                 key={`empty-${rowIndex}`}
                 className="flex items-center gap-1.5 pr-2 text-muted/70 select-none"
-                style={{ paddingLeft: row.depth * indentStep + 24, minHeight: isMobile ? 44 : 28 }}
+                style={{ paddingLeft: row.depth * indentStep + 24, minHeight: isMobile ? 48 : 28 }}
               >
                 <span className="text-xs italic">（空目录）</span>
               </div>
@@ -704,7 +707,7 @@ function ToolbarButton({
       onClick={onClick}
       className={cn(
         'flex items-center justify-center rounded-md text-muted hover:text-ink hover:bg-ink/5 transition-colors',
-        isMobile ? 'h-9 w-9' : 'h-7 w-7',
+        isMobile ? 'ide-m-actbtn' : 'h-7 w-7',
       )}
     >
       {children}
@@ -752,7 +755,7 @@ function TreeRow(props: TreeRowProps) {
 
   return (
     <div
-      className={cn('group relative', isMobile ? 'flex items-center pr-1 min-h-[44px]' : 'ide-ft-row')}
+      className={cn('group relative', isMobile ? 'flex items-center pr-1 min-h-[48px]' : 'ide-ft-row')}
       style={{ paddingLeft: depth * indentStep }}
     >
       {/* 缩进参考线:每层一条 1px 竖线(纯装饰) */}
@@ -773,9 +776,9 @@ function TreeRow(props: TreeRowProps) {
           'flex min-w-0 flex-1 items-center gap-1.5 text-left',
           isMobile
             ? cn(
-                'h-11 py-0 rounded-md px-1.5 transition-colors',
+                'h-12 py-0 rounded-lg px-2 mx-1 transition-colors',
                 selected || isCurrentDir
-                  ? 'bg-accent-light text-accent'
+                  ? 'ide-m-row-selected text-accent'
                   : 'hover:bg-ink/5 text-ink-2',
               )
             : cn('ide-ft-row-btn px-1.5', selected || isCurrentDir ? 'ide-ft-row-selected' : ''),

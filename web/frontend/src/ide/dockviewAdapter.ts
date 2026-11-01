@@ -9,6 +9,7 @@
  */
 import type { DockviewApi } from 'dockview-react'
 import type { LayoutNode, SplitLayoutNode, TabsLayoutNode } from './types'
+import { panelTitle, panelType } from './types'
 import { getPanel } from './registry'
 import { sanitizeTree } from './layout'
 
@@ -23,14 +24,16 @@ export function buildDockviewFromTree(
   tree: LayoutNode,
   podName: string,
 ): string | undefined {
-  const addPanel = (panelId: string, position?: { referencePanel: string; direction: 'left' | 'right' | 'above' | 'below' | 'within' }) => {
+  // panelKey 是布局 key(可带 :N 实例后缀);component/契约按其类型 id 解析
+  const addPanel = (panelKey: string, position?: { referencePanel: string; direction: 'left' | 'right' | 'above' | 'below' | 'within' }) => {
+    const panelId = panelType(panelKey)
     const contract = getPanel(panelId)
     if (!contract) return
     api.addPanel({
-      id: panelId,
+      id: panelKey,
       component: panelId,
-      title: contract.title,
-      params: { podName, panelId },
+      title: panelTitle(panelKey, contract),
+      params: { podName, panelId, panelKey },
       ...(position ? { position } : {}),
     })
   }

@@ -21,6 +21,7 @@ import {
 import 'dockview-react/dist/styles/dockview.css'
 import './ide-theme.css'
 import type { StoredIdeLayout } from './types'
+import { panelTitle, panelType } from './types'
 import { getPanel, listPanels } from './registry'
 import { buildDockviewFromTree, dockviewToTree, isValidDockviewSnapshot } from './dockviewAdapter'
 import { setPanelToggleHandler, setVisiblePanels } from './panelToggles'
@@ -33,6 +34,21 @@ function fileDotColor(path: string | null | undefined): string {
   if (/\.(js|mjs|cjs|jsx|ts|tsx)$/i.test(name)) return '#e3b341'
   if (/\.json$/i.test(name)) return '#f0883e'
   return '#6e7b8b'
+}
+
+/**
+ * 为 multi 面板生成下一个实例 key:第一个实例保持裸 id(旧布局快照兼容),
+ * 之后 'terminal:2'、'terminal:3'……后缀取当前布局里同类型最大值 +1。
+ */
+function nextPanelKey(api: DockviewApi, panelId: string): string {
+  let max = 0
+  for (const p of api.panels) {
+    if (panelType(p.id) !== panelId) continue
+    const i = p.id.indexOf(':')
+    const n = i < 0 ? 1 : parseInt(p.id.slice(i + 1), 10)
+    if (Number.isFinite(n) && n > max) max = n
+  }
+  return max === 0 ? panelId : `${panelId}:${max + 1}`
 }
 
 /** 面板图标色(非 editor 面板的标签圆点)。 */
@@ -122,13 +138,14 @@ export function DesktopIdeLayout({ podName, stored, rebuildNonce, onPersist }: D
     const map: Record<string, React.FC<IDockviewPanelProps>> = {}
     for (const contract of listPanels()) {
       map[contract.id] = (props) => {
-        const params = (props.params ?? {}) as { podName?: string }
+        const params = (props.params ?? {}) as { podName?: string; panelKey?: string }
         const Comp = contract.component
         const group = props.api.group
         return (
           <Comp
             podName={params.podName ?? podName}
             panelId={contract.id}
+            panelKey={params.panelKey ?? props.api.id}
             surface="desktop"
             maximized={!!group && group.api.isMaximized()}
             activate={() => props.api.setActive()}
@@ -137,6 +154,8 @@ export function DesktopIdeLayout({ podName, stored, rebuildNonce, onPersist }: D
               if (group.api.isMaximized()) group.api.exitMaximized()
               else group.api.maximize()
             }}
+            // multi 面板提供「再开一个实例」入口(经 ref 取最新闭包)
+            openInstance={contract.multi ? () => addInstanceRef.current(contract.id) : undefined}
           />
         )
       }
@@ -165,26 +184,50 @@ export function DesktopIdeLayout({ podName, stored, rebuildNonce, onPersist }: D
 
   // ── 顶栏面板开关(增删 dockview 面板;经 panelToggles 总线)──
 
+  /** 打开一个 multi 面板的新实例(面板头「＋」按钮 → openInstance)。 */
+  const addInstance = useCallback((panelId: string) => {
+    const api = apiRef.current
+    if (!api) return
+    const contract = getPanel(panelId)
+    if (!contract?.multi) return
+    const key = nextPanelKey(api, panelId)
+    const ref = api.activePanel ?? api.panels[0]
+    api.addPanel({
+      id: key,
+      component: panelId,
+      title: panelTitle(key, contract),
+      params: { podName, panelId, panelKey: key },
+      ...(ref ? { position: { referencePanel: ref.id, direction: 'below' } } : {}),
+    })
+    setVisiblePanels(api.panels.map((p) => p.id))
+  }, [podName])
+  const addInstanceRef = useRef(addInstance)
+  addInstanceRef.current = addInstance
+
   const handleToggle = useCallback((panelId: string, open: boolean) => {
     const api = apiRef.current
     if (!api) return
-    const instances = api.panels.filter((p) => p.id === panelId)
+    // 实例按类型匹配:key 可能带 :N 后缀('terminal:2' 也是 terminal 实例)
+    const instances = api.panels.filter((p) => panelType(p.id) === panelId)
     if (!open) {
       // 关闭该面板的所有实例
       for (const p of instances) p.api.close()
     } else {
-      if (instances.length > 0) return
       const contract = getPanel(panelId)
       if (!contract) return
+      // 已有实例则不重复开(multi 面板的第 2+ 个实例走面板头「＋」按钮,
+      // 即 addInstance;顶栏按钮语义 = 开第一个 / 关掉全部)
+      if (instances.length > 0) return
+      const key = nextPanelKey(api, panelId)
       const ref = api.activePanel ?? api.panels[0]
       // files 靠左 / ai 靠右 / terminal·logs 在活动 group 下方
       const direction: 'left' | 'right' | 'below' =
         panelId === 'files' ? 'left' : panelId === 'ai' ? 'right' : 'below'
       api.addPanel({
-        id: panelId,
+        id: key,
         component: panelId,
-        title: contract.title,
-        params: { podName, panelId },
+        title: panelTitle(key, contract),
+        params: { podName, panelId, panelKey: key },
         ...(ref ? { position: { referencePanel: ref.id, direction } } : {}),
       })
     }

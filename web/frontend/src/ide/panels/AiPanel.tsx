@@ -18,10 +18,11 @@
  *    工具过程折叠行、按钮命中区 ≥44px;面板被卸载时 SSE/语音识别全部释放,
  *    消息快照与 diff 卡片持久化到 localStorage,重挂载即恢复。
  */
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import type { ReactNode } from 'react'
 import {
   Send, StopCircle, Plus, Mic, MicOff,
-  ChevronDown, ChevronRight, FileDiff, ArrowDown, ShieldAlert,
+  ChevronDown, ChevronRight, FileDiff, ArrowDown, ShieldAlert, ShieldCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { apiFetch } from '@/api/client'
@@ -83,6 +84,23 @@ interface DiffCard {
   outcome?: string
 }
 
+/** ide_agent 的 pod_bash 确认卡(高危命令弹卡) */
+interface BashAsk {
+  runId: string
+  actionId: string
+  command: string
+  resolved: '' | 'allowed' | 'denied' | 'timeout'
+}
+
+/** ide_agent 的 pod_bash 实时输出流(opencode bash.ts 风格) */
+interface BashStream {
+  runId: string
+  command: string
+  output: string
+  done: boolean
+  exit?: number | null
+}
+
 interface StoredRun {
   run_id: string
   question: string
@@ -95,6 +113,21 @@ const lsKeys = {
   sid: (u: string, p: string) => `yatterra.ide.ai.sid.${encodeURIComponent(u)}.${encodeURIComponent(p)}`,
   runs: (u: string, p: string) => `yatterra.ide.ai.runs.${encodeURIComponent(u)}.${encodeURIComponent(p)}`,
   msgs: (u: string, p: string) => `yatterra.ide.ai.msgs.${encodeURIComponent(u)}.${encodeURIComponent(p)}`,
+  auto: (u: string, p: string) => `yatterra.ide.ai.auto.${encodeURIComponent(u)}.${encodeURIComponent(p)}`,
+}
+
+/** AI 确认策略(后端 ide_agent.AUTO_MODES 对应) */
+type AutoMode = 'all' | 'smart' | 'none'
+const AUTO_ORDER: AutoMode[] = ['all', 'smart', 'none']
+const AUTO_LABEL: Record<AutoMode, string> = {
+  all: '全部确认',
+  smart: '仅危险确认',
+  none: '全自动',
+}
+const AUTO_DESC: Record<AutoMode, string> = {
+  all: '所有命令和修改都需要你确认',
+  smart: '修改与普通命令自动执行,删除/强推/卸载等危险操作仍需确认',
+  none: '所有命令和修改自动执行,不弹任何确认',
 }
 
 const readLS = <T,>(key: string): T | null => {
@@ -269,7 +302,7 @@ function applyUnifiedDiff(oldText: string, diffText: string): string | null {
 
 // ── pod_edit_file 载荷提取 ──────────────────────────────────────
 
-interface EditPayload { path?: string; newContent?: string; diff?: string }
+interface EditPayload { path?: string; newContent?: string; diff?: string; reason?: string }
 
 /** 归一成文件 REST API 认的绝对路径。
  *  后端 pod_edit_file 的 path 相对 /home/cloud(如 "app.py"),
@@ -345,7 +378,9 @@ function formatProfile(data: ProfileResponse | null): string {
 const TOOL_VERBS: Record<string, string> = {
   run: '执行命令', run_remote: '远程执行', shell_exec: '执行命令',
   read_file: '读文件', write_file: '写文件', edit_file: '编辑文件',
-  grep: '搜索', list_dir: '列目录', web_search: '搜索网页', fetch_url: '抓取网页',
+  pod_bash: '执行命令', read: '读文件', edit: '编辑文件', glob: '找文件',
+  grep: '搜索', list_dir: '列目录', spawn_agent: '派出子代理',
+  web_search: '搜索网页', fetch_url: '抓取网页',
   inspect: 'K8s 查询', pod_file: '读文件', pod_logs: '看日志',
   list_pods: '列 Pod', get_pod: '查 Pod', cluster_status: '查集群',
   pod_code_search: '代码检索', pod_code_read: '读代码', pod_code_symbols: '查符号',
@@ -429,28 +464,41 @@ function IdeReasoning({ text, loading }: { text: string; loading?: boolean }) {
   )
 }
 
-function AssistantBody({ msg, streaming }: { msg: ChatMsg; streaming: boolean }) {
+function AssistantBody({ msg, streaming, overlay }: {
+  msg: ChatMsg
+  streaming: boolean
+  /** 把确认卡/控制台按到达锚点插进时间线: overlay(n) = 第 n 段之后要渲染的挂件。 */
+  overlay?: (n: number) => ReactNode
+}) {
   const segs = msg.segments?.length ? msg.segments : fallbackSegments(msg)
   const hasText = segs.some((s) => s.kind === 'text')
   const hasTools = segs.some((s) => s.kind === 'tools')
   return (
     <>
+      {overlay?.(0)}
       {segs.map((seg, i) => {
         const isLast = i === segs.length - 1
+        let node: ReactNode = null
         if (seg.kind === 'reasoning') {
-          return <IdeReasoning key={i} text={seg.text} loading={streaming && isLast} />
-        }
-        if (seg.kind === 'tools') {
+          node = <IdeReasoning text={seg.text} loading={streaming && isLast} />
+        } else if (seg.kind === 'tools') {
           const calls = seg.calls.filter((c) => c.name !== 'pod_edit_file')
-          if (!calls.length) return null
-          return <IdeToolLines key={i} calls={calls} />
+          node = calls.length ? <IdeToolLines calls={calls} /> : null
+        } else {
+          node = (
+            <div className="ide-ai-md [&>div]:text-[length:inherit]">
+              <MarkdownContent content={seg.text} />
+            </div>
+          )
         }
         return (
-          <div key={i} className="ide-ai-md [&>div]:text-[length:inherit]">
-            <MarkdownContent content={seg.text} />
-          </div>
+          <Fragment key={i}>
+            {node}
+            {overlay?.(i + 1)}
+          </Fragment>
         )
       })}
+      {overlay?.(Number.POSITIVE_INFINITY)}
       {streaming && !hasText && (
         <div className="ide-tool-line" style={{ width: 'auto' }}>
           <span className="ide-dots" aria-label="运行中"><i /><i /><i /></span>
@@ -472,11 +520,12 @@ const DIFF_LINE_CLS: Record<DiffLine['kind'], string> = {
 const DIFF_PREFIX: Record<DiffLine['kind'], string> = { hunk: '@', ctx: ' ', add: '+', del: '-' }
 
 function DiffCardView({
-  card, onAccept, onReject,
+  card, onAccept, onReject, mobile,
 }: {
   card: DiffCard
   onAccept: (c: DiffCard) => void
   onReject: (c: DiffCard) => void
+  mobile?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const base = card.path.split('/').pop() || card.path
@@ -507,6 +556,7 @@ function DiffCardView({
               disabled={busy}
               onClick={() => onReject(card)}
               className="ide-btn ide-btn-ghost"
+              style={mobile ? { height: 36, width: 44 } : undefined}
               title="拒绝修改"
             >
               ✕
@@ -516,6 +566,7 @@ function DiffCardView({
               disabled={busy}
               onClick={() => onAccept(card)}
               className="ide-btn ide-btn-accent"
+              style={mobile ? { height: 36, width: 44 } : undefined}
               title={busy ? '写入中…' : '接受修改'}
             >
               {busy ? '…' : '✓'}
@@ -574,10 +625,69 @@ function getSpeechCtor(): SpeechCtor | null {
 
 // ── 主组件 ──────────────────────────────────────────────────────
 
-const IDE_HINTS = ['解释当前打开的文件', '修复最近的报错', '审查我的代码并提建议', '帮我写单元测试', '这个项目的架构是什么？']
+const IDE_HINTS = ['解释当前打开的文件', '修复最近的报错', '审查我的代码并提建议', '帮我写单元测试', '这个项目的架构是什么？', '/goal 帮我把首页改成暗色主题']
+
+// ── slash 命令(Claude Code / opencode 风格: 输入 / 弹选择框)────────
+interface SlashCmd {
+  /** 命令名(不含 /) */
+  name: string
+  /** 参数提示(选择框里灰显) */
+  argsHint?: string
+  desc: string
+  /** 选中后的行为: complete=补全到输入框继续输入; action=立即执行 */
+  behavior: 'complete' | 'action'
+}
+
+const SLASH_CMDS: SlashCmd[] = [
+  {
+    name: 'fix',
+    desc: '修复最近的报错(自动带上终端里的真实报错)',
+    behavior: 'action',
+  },
+  {
+    name: 'explain',
+    desc: '解释当前打开的文件(自动带上文件内容)',
+    behavior: 'action',
+  },
+  {
+    name: 'run',
+    desc: '把项目跑起来,报错就修,直到能正常运行',
+    behavior: 'action',
+  },
+  {
+    name: 'plan',
+    argsHint: '<需求>',
+    desc: '计划模式:AI 只调研并给出分步计划,你确认后才动手改',
+    behavior: 'complete',
+  },
+  {
+    name: 'goal',
+    argsHint: '<需求>',
+    desc: '目标模式:持续推进并自动核查完成度;目标会存盘,平台重启后自动继续;发 /goal off 取消',
+    behavior: 'complete',
+  },
+  {
+    name: 'new',
+    desc: '开始新对话(清空当前会话)',
+    behavior: 'action',
+  },
+  {
+    name: 'auto',
+    desc: '切换 AI 确认策略(全部确认 / 仅危险确认 / 全自动)',
+    behavior: 'action',
+  },
+]
+
+/** 动作命令展开成的一句话模板(context 注入会自动补上报错/文件/画像) */
+const ACTION_TEMPLATES: Record<string, string> = {
+  fix: '修复最近的报错:查看上面提供的终端输出,定位原因并直接修改代码修好它。',
+  explain: '解释当前打开的文件:它做什么、整体结构如何、关键逻辑在哪,用通俗的语言。',
+  run: '把项目跑起来:根据项目画像找到入口和启动方式并运行它;有报错就修复再试,直到项目能正常运行。',
+}
 
 export function AiPanel(props: PanelProps) {
-  const { podName, activate } = props
+  const { podName, activate, surface } = props
+  const mobile = surface === 'mobile'
   const user = useAuthStore((s) => s.user)
   const aiAllowed = usePageAiAllowed('pod_ide')
   const toast = useToastStore((s) => s.add)
@@ -593,13 +703,26 @@ export function AiPanel(props: PanelProps) {
   const [inputFocused, setInputFocused] = useState(false)
   /** 项目画像是否已就位(输入区 context chips 展示用,纯展示状态) */
   const [profileReady, setProfileReady] = useState(false)
+  /** AI 确认策略(all/smart/none),按 用户+Pod 持久化 */
+  const [autoMode, setAutoMode] = useState<AutoMode>('all')
+  /** 本会话挂着的 /goal 目标(服务端落盘, 平台重启会自动拉起复核; 完成即消失) */
+  const [goal, setGoal] = useState<{ text: string; resumes: number } | null>(null)
+  /** slash 命令选择框: 当前高亮项;slashOff=Esc 关闭(输入变化后自动复位) */
+  const [slashIdx, setSlashIdx] = useState(0)
+  const [slashOff, setSlashOff] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   // 每个 run 一份: 流式段缓冲 + 停止控制器(后台执行, 卸载不中止服务端任务)
   const runSegments = useRef(new Map<string, Segment[]>())
   const runCtrls = useRef(new Map<string, AbortController>())
+  /** run 开始时间(顶栏计时器用) */
+  const runStarts = useRef(new Map<string, number>())
   const cardsRef = useRef<DiffCard[]>([])
+  /** 确认卡/控制台在消息时间线里的插入锚点: `runId|id` → 到达时已有的段数。
+   *  流式期间按到达顺序记录(只记第一次),渲染时插到第 n 段之后——而不是
+   *  全部堆在消息末尾(那样展开的工具输出会吊在最新回答下面)。 */
+  const itemAnchor = useRef(new Map<string, number>())
   const profileRef = useRef<ProfileResponse | null>(null)
   const attachRef = useRef<((runId: string, question: string, resume: boolean) => Promise<void>) | null>(null)
   const sendRef = useRef<(text?: string) => void>(() => {})
@@ -612,6 +735,29 @@ export function AiPanel(props: PanelProps) {
   const loading = activeRunIds.size > 0
 
   useEffect(() => { cardsRef.current = cards }, [cards])
+
+  // ── ide_agent harness 的确认卡 + 实时输出流 ──
+  const [bashAsks, setBashAsks] = useState<BashAsk[]>([])
+  const [bashStreams, setBashStreams] = useState<Record<string, BashStream>>({})
+
+  /** 记录挂件(卡/弹卡/控制台)的到达锚点;同一 id 只记第一次(事件是增量到达的)。 */
+  const markAnchor = useCallback((runId: string, id: string) => {
+    const k = `${runId}|${id}`
+    if (!itemAnchor.current.has(k)) {
+      itemAnchor.current.set(k, (runSegments.current.get(runId) || []).length)
+    }
+  }, [])
+
+  /** 取挂件锚点。id 可能先是 tool_call_id、之后才绑定成 action_id,两个都查;
+   *  都没有(如 localStorage 恢复的旧卡)→ Infinity,退回消息末尾渲染。 */
+  const anchorFor = (runId: string, ...ids: (string | undefined)[]) => {
+    for (const id of ids) {
+      if (!id) continue
+      const v = itemAnchor.current.get(`${runId}|${id}`)
+      if (v != null) return v
+    }
+    return Number.POSITIVE_INFINITY
+  }
 
   /** 同步变更 cards:基于 cardsRef.current 立即计算并先更新 ref,再提交 state。
    *  不能把赋值写进 setCards 的 updater 再在外层同步读——流式期间 fiber 有 pending
@@ -638,6 +784,16 @@ export function AiPanel(props: PanelProps) {
   const updateCard = useCallback((id: string, patch: Partial<DiffCard>) => {
     applyCards((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
   }, [applyCards])
+
+  /** pod_bash 弹卡:允许 / 总是允许(本次会话) / 总是允许该前缀 / 拒绝,结果走 rendezvous。 */
+  const resolveBashAsk = useCallback(
+    (ask: BashAsk, allowed: boolean, always: boolean, alwaysPrefix = false) => {
+      setBashAsks((prev) => prev.map((a) =>
+        a.actionId === ask.actionId ? { ...a, resolved: allowed ? 'allowed' : 'denied' } : a))
+      aiApi.submitPageActionResult(
+        ask.runId, [{ allowed, always, always_prefix: alwaysPrefix }], ask.actionId,
+      ).catch(() => {})
+    }, [])
 
   /** 卡片就位后异步补齐 diffLines(拉旧文件算 LCS,或解析现成 diff)。 */
   const materializeCard = useCallback(async (id: string) => {
@@ -888,6 +1044,7 @@ export function AiPanel(props: PanelProps) {
 
   const attachRun = useCallback(async (runId: string, question: string, resume: boolean) => {
     runSegments.current.set(runId, [])
+    runStarts.current.set(runId, Date.now())
     setActiveRunIds((prev) => new Set(prev).add(runId))
     stickRef.current = true
     setMessages((prev) => [
@@ -916,7 +1073,7 @@ export function AiPanel(props: PanelProps) {
     let offset = 0
     let terminal = false
     try {
-      for (let attempt = 0; attempt < 3 && !terminal; attempt++) {
+      for (let attempt = 0; attempt < 8 && !terminal; attempt++) {
         const resp = await fetch(
           `/api/ai/page/stream?run_id=${encodeURIComponent(runId)}&offset=${offset}`,
           { credentials: 'same-origin', signal: ctrl.signal })
@@ -951,14 +1108,16 @@ export function AiPanel(props: PanelProps) {
                   const payload = extractEditPayload(tc.arguments)
                   if (payload.path) upsertDiffCard(runId, tc.id, payload)
                 }
+                // 该工具的卡片/控制台应插在这条工具行之后
+                markAnchor(runId, tc.id)
                 commit()
               } else if (ev.type === 'tool_result') {
                 const tr = ev.data as ToolResult
                 runSegments.current.set(runId, settleTool(runSegments.current.get(runId) || [], tr.tool_call_id, {
                   result: tr.result, status: 'done',
                 }))
-                if (tr.name === 'pod_edit_file') {
-                  // rendezvous 落定:成功=JSON{path,diff_summary,backup_path},
+                if (tr.name === 'pod_edit_file' || tr.name === 'edit') {
+                  // rendezvous 落定:成功=JSON{path,diff_summary,backup},
                   // 拒绝/超时/权限不足=纯文本
                   settleEditCard(runId, tr.tool_call_id, tr.result)
                 }
@@ -977,11 +1136,78 @@ export function AiPanel(props: PanelProps) {
                     diffSummary: str(fe.diff_summary),
                     reason: str(fe.reason),
                   })
+                  markAnchor(runId, actionId)
+                }
+              }
+              // ── ide_agent harness 事件 ──
+              // edit_confirm: 每次 edit 即时弹 diff 卡(opencode Permission.ask 风格),
+              // 接受=后端当场写入,拒绝=丢弃并回告模型
+              else if (ev.type === 'edit_confirm') {
+                const es = (ev.data ?? {}) as Record<string, unknown>
+                const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+                const rel = str(es.path)
+                const aid = str(es.action_id)
+                if (rel && aid) {
+                  const abs = rel.startsWith('/home/cloud/') ? rel : `/home/cloud/${rel.replace(/^\//, '')}`
+                  upsertFileEditCard(runId, aid, {
+                    path: abs,
+                    diff: str(es.diff),
+                    diffSummary: str(es.summary),
+                    reason: str(es.reason),
+                  })
+                  markAnchor(runId, aid)
+                }
+              }
+              // bash_confirm: 高危 pod_bash 命令弹卡(允许/总是允许/拒绝)
+              else if (ev.type === 'bash_confirm') {
+                const bc = (ev.data ?? {}) as { action_id?: string; command?: string }
+                const aid = bc?.action_id
+                if (aid) {
+                  setBashAsks((prev) => prev.some((a) => a.actionId === aid)
+                    ? prev
+                    : [...prev, { runId, actionId: aid, command: String(bc.command || ''), resolved: '' }])
+                  markAnchor(runId, aid)
+                  activateRef.current()
+                }
+              }
+              // bash_confirm_result: 后端确认等待超时(180s)→ 卡片标记已超时
+              else if (ev.type === 'bash_confirm_result') {
+                const bcr = (ev.data ?? {}) as { action_id?: string; outcome?: string }
+                if (bcr?.action_id && bcr.outcome === 'timeout') {
+                  setBashAsks((prev) => prev.map((a) =>
+                    a.actionId === bcr.action_id && !a.resolved ? { ...a, resolved: 'timeout' } : a))
+                }
+              }
+              // bash_output: pod_bash 实时输出流(增量 delta 追加,done=true 收尾带全文)
+              else if (ev.type === 'bash_output') {
+                const bo = (ev.data ?? {}) as { action_id?: string; command?: string; output?: string; delta?: string; done?: boolean; exit?: number | null }
+                const aid = bo?.action_id
+                if (aid) {
+                  setBashStreams((prev) => ({
+                    ...prev,
+                    [aid]: {
+                      runId,
+                      command: String(bo.command || prev[aid]?.command || ''),
+                      output: bo.delta != null
+                        ? (prev[aid]?.output || '') + String(bo.delta)
+                        : String(bo.output ?? (prev[aid]?.output || '')),
+                      done: !!bo.done,
+                      exit: bo.exit ?? null,
+                    },
+                  }))
+                  markAnchor(runId, aid)
                 }
               }
               // page_action(browser_control)在 IDE 面板不执行,忽略(服务端自行超时)
               else if (ev.type === 'done') {
                 if (ev.cancelled) push('text', '\n\n[已停止]')
+                // run 结束:清掉未决的 bash 弹卡(后端等待已超时/已收到结果,
+                // 再点也不会送达);未决的 edit 卡冻结为拒绝态
+                setBashAsks((prev) => prev.filter((a) => a.runId !== runId || a.resolved !== ''))
+                applyCards((prev) => prev.map((c) =>
+                  c.runId === runId && c.status === 'pending'
+                    ? { ...c, status: 'rejected' as const, outcome: '会话已结束,未写入' }
+                    : c))
                 terminal = true
               } else if (ev.type === 'error') {
                 push('text', `\n\n${typeof ev.data === 'string' ? ev.data : '任务失败'}`)
@@ -994,8 +1220,10 @@ export function AiPanel(props: PanelProps) {
         } finally {
           await reader.cancel().catch(() => {})
         }
-        if (!terminal && attempt < 2 && !ctrl.signal.aborted) {
-          await new Promise((r) => setTimeout(r, 500))
+        // 断线重试: 退避拉长(500ms → 4s),覆盖平台重启窗口(~15s);
+        // run 已结束/被重启杀掉时, stream 端点支持 jsonl 静态回放, 同样能续上
+        if (!terminal && attempt < 7 && !ctrl.signal.aborted) {
+          await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 4000)))
         }
       }
       if (!terminal && !ctrl.signal.aborted) throw new Error('Connection interrupted')
@@ -1009,11 +1237,22 @@ export function AiPanel(props: PanelProps) {
       }
     } catch (e) {
       if (!ctrl.signal.aborted) {
-        push('text', `\n\n连接中断: ${e instanceof Error ? e.message : '未知'}。任务仍在后台执行，切回本面板会自动续上。`)
+        // 查一下 run 真实状态: 平台重启会把进行中的 run 杀掉,
+        // 这种情况不能再声称"仍在后台执行"
+        let stillRunning = true
+        try {
+          const all = (await aiApi.pageRuns()).runs || []
+          const meta = all.find((r) => r.run_id === runId)
+          stillRunning = !meta || meta.status === 'running'
+        } catch { /* 查询也失败则维持乐观提示 */ }
+        push('text', stillRunning
+          ? `\n\n连接中断: ${e instanceof Error ? e.message : '未知'}。任务仍在后台执行，切回本面板会自动续上。`
+          : `\n\n连接中断: ${e instanceof Error ? e.message : '未知'}。任务已结束(可能被平台重启中断),以上为已完成的记录;可继续发消息接上。`)
       }
     } finally {
       runCtrls.current.delete(runId)
       runSegments.current.delete(runId)
+      runStarts.current.delete(runId)
       setActiveRunIds((prev) => {
         const n = new Set(prev)
         n.delete(runId)
@@ -1024,7 +1263,7 @@ export function AiPanel(props: PanelProps) {
         saveLS(lsKeys.runs(user, podName), stored.filter((s) => s.run_id !== runId))
       }
     }
-  }, [podName, user, updateRunMsg, upsertDiffCard, upsertFileEditCard, settleEditCard])
+  }, [podName, user, updateRunMsg, upsertDiffCard, upsertFileEditCard, settleEditCard, applyCards, markAnchor])
   attachRef.current = attachRun
 
   // ── 上下文自动注入(发送时组装, 用户零操作)──
@@ -1052,23 +1291,62 @@ export function AiPanel(props: PanelProps) {
     if (edits.length) {
       parts.push(`[最近编辑] ${edits.map((e) => `${e.path}(${e.kind})`).join('; ')}`)
     }
+    // 最近终端输出(多终端取最新一条):「修复最近的报错」类问题靠它看到真实报错
+    const tail = bus.terminalTail
+    if (tail?.text) {
+      parts.push(`[最近终端输出(面板 ${tail.panelKey},尾部截取)]\n${tail.text.slice(-4000)}`)
+    }
     const prof = formatProfile(profileRef.current)
     if (prof) parts.push(`[项目画像(podcode/podwatch 维护)]\n${prof}`)
     parts.push(
-      '[工具] 可用 pod_file / pod_code_* 工具读取、检索该 Pod 的文件;如需修改代码,'
-      + '调用 pod_edit_file 工具提交修改建议(path 相对 /home/cloud;new_content 全量新内容,'
-      + '或 search+replace 唯一匹配替换,二者选一),'
-      + '用户确认后才会真正写入;若该工具不可用,在回答中给出修改说明与完整代码块。',
+      '[工具] 你有 read/grep/glob/list_dir/pod_bash 工具直接查看与运行该 Pod 的项目;'
+      + '修改代码用 edit 工具(old_string 唯一匹配替换,留空 old_string 创建新文件),'
+      + '修改会先暂存,任务结束时用户批量确认后才写入。',
     )
     return parts.join('\n\n')
   }, [podName, fetchFileContent])
 
+  // ── /goal 目标 chip ──
+  // 服务端按会话存最新一个目标, 平台重启后会自动拉起复核; 目标一旦被
+  // 判定完成就会被删除, 所以这里定期回读, chip 也就自动消失了。
+  const refreshGoal = useCallback(async (sidArg?: string) => {
+    const sid = sidArg ?? sessionId
+    try {
+      const res = await apiFetch<{ goal: string | null; resumes?: number }>(
+        `/ai/page/goal?pod=${encodeURIComponent(podName)}`
+        + (sid ? `&session_id=${encodeURIComponent(sid)}` : ''))
+      setGoal(res.goal ? { text: res.goal, resumes: res.resumes || 0 } : null)
+    } catch { /* 读不到就当没有目标 */ }
+  }, [podName, sessionId])
+
+  const clearGoal = useCallback(async () => {
+    try {
+      await apiFetch('/ai/page/goal/clear', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId, pod: podName }),
+      })
+      setGoal(null)
+      toast({ type: 'info', message: '已取消目标' })
+    } catch {
+      toast({ type: 'error', message: '取消目标失败' })
+    }
+  }, [sessionId, podName, toast])
+
+  // 切会话 / 一个 run 结束(loading 落回)时回读一次目标
+  useEffect(() => { void refreshGoal() }, [refreshGoal, loading])
+
   // ── 发送 ──
+  const [submitting, setSubmitting] = useState(false)
   const handleSend = useCallback(async (text?: string) => {
     const msg = (text ?? input).trim()
-    if (!msg || loading) return
+    if (!msg || loading || submitting) return
     stickRef.current = true
     setInput('')
+    // 立刻可见的反馈:提交 → run 建立之间原本是一片安静, 前 5-10s
+    // 用户不知道点没点上
+    setMessages((prev) => [...prev, { role: 'user', content: msg }])
+    setSubmitting(true)
+    const done = () => setSubmitting(false)
 
     // 确保有一个持久会话(服务端按会话加载历史, 客户端不发历史)
     let sid = sessionId
@@ -1089,8 +1367,12 @@ export function AiPanel(props: PanelProps) {
         context,
         session_id: sid || undefined,
         route: `/pods/${podName}/ide`,
+        pod: podName,
+        auto: autoMode,
       })
       runId = res.run_id
+      // /goal 目标在服务端是随请求就落盘的, 这里立刻回读让 chip 上屏
+      if (msg.startsWith('/goal')) void refreshGoal(sid)
       if (user) {
         const stored: StoredRun[] = readLS(lsKeys.runs(user, podName)) || []
         stored.push({ run_id: runId, question: msg, started: Date.now() })
@@ -1099,14 +1381,22 @@ export function AiPanel(props: PanelProps) {
     } catch (e) {
       setMessages((prev) => [
         ...prev,
-        { role: 'user', content: msg },
         { role: 'assistant', content: `任务启动失败: ${e instanceof Error ? e.message : '未知'}` },
       ])
+      done()
       return
     }
-    await attachRef.current?.(runId, msg, false)
-  }, [input, loading, sessionId, user, podName, buildContext])
-  sendRef.current = () => void handleSend()
+    // 用户消息已在上面即时上屏, 这里传 resume=true 只是不让它再补一条
+    await attachRef.current?.(runId, msg, true)
+    done()
+  }, [input, loading, submitting, sessionId, user, podName, buildContext, autoMode, refreshGoal])
+  // slash 动作命令拦截(菜单外直接输入 /new、/auto 也能生效)
+  sendRef.current = (text) => {
+    const t = (text ?? input).trim()
+    if (t === '/new') { setInput(''); newConversation(); return }
+    if (t === '/auto') { setInput(''); cycleAutoMode(); return }
+    void handleSend(text)
+  }
 
   // ── 恢复 + 重接(挂载时一次)──
   useEffect(() => {
@@ -1121,9 +1411,11 @@ export function AiPanel(props: PanelProps) {
         // 恢复的卡片异步补 diffLines
         for (const c of snap.cards) void materializeCard(c.id)
       }
-      // 2) 会话 id
+      // 2) 会话 id + 确认策略
       const sid = readLS<string>(lsKeys.sid(user, podName))
       if (!cancelled && sid) setSessionId(sid)
+      const savedAuto = readLS<AutoMode>(lsKeys.auto(user, podName))
+      if (!cancelled && savedAuto && AUTO_ORDER.includes(savedAuto)) setAutoMode(savedAuto)
       // 3) 项目画像
       try {
         const prof = await apiFetch<ProfileResponse>(`/pods/${encodeURIComponent(podName)}/profile`)
@@ -1229,6 +1521,19 @@ export function AiPanel(props: PanelProps) {
     if (el) el.scrollTop = el.scrollHeight
   }
 
+  // 确认卡(bash 弹卡 / 即时 edit diff 卡)出现时强制吸底:手机抽屉只有
+  // 25% 高,不滚到底用户根本看不到在等他确认,任务会一直挂着。
+  const pendingAskCount = bashAsks.filter((a) => !a.resolved).length
+    + cards.filter((c) => c.status === 'pending' && activeRunIds.has(c.runId)).length
+  const lastAskRef = useRef(0)
+  useEffect(() => {
+    const grew = pendingAskCount > lastAskRef.current
+    lastAskRef.current = pendingAskCount
+    if (!grew) return
+    const t = setTimeout(scrollToBottom, 80)
+    return () => clearTimeout(t)
+  }, [pendingAskCount])
+
   const handleStop = useCallback(() => {
     for (const [rid, ctrl] of runCtrls.current) {
       ctrl.abort()
@@ -1241,11 +1546,60 @@ export function AiPanel(props: PanelProps) {
     setSessionId('')
     setMessages([])
     applyCards(() => [])
+    itemAnchor.current.clear()
     if (user) {
       removeLS(lsKeys.sid(user, podName))
       removeLS(lsKeys.msgs(user, podName))
     }
   }, [loading, user, podName])
+
+  // ── slash 命令选择框(Claude Code 风格)──
+  const cycleAutoMode = useCallback(() => {
+    const next = AUTO_ORDER[(AUTO_ORDER.indexOf(autoMode) + 1) % AUTO_ORDER.length] as AutoMode
+    setAutoMode(next)
+    if (user) saveLS(lsKeys.auto(user, podName), next)
+    toast({ type: 'info', message: `AI 确认策略: ${AUTO_LABEL[next]}` })
+    haptic('light')
+  }, [autoMode, user, podName, toast])
+
+  const slashMatches = useMemo(() => {
+    if (!input.startsWith('/') || input.includes(' ')) return []
+    const q = input.slice(1).toLowerCase()
+    return SLASH_CMDS.filter((c) => c.name.startsWith(q))
+  }, [input])
+  const slashOpen = slashMatches.length > 0 && !slashOff
+  // 输入变化 → 复位高亮与 Esc 关闭态
+  useEffect(() => { setSlashIdx(0); setSlashOff(false) }, [input])
+  useEffect(() => { if (slashIdx >= slashMatches.length) setSlashIdx(0) }, [slashMatches.length, slashIdx])
+
+  const selectSlash = useCallback((cmd: SlashCmd) => {
+    haptic('light')
+    if (cmd.behavior === 'complete') {
+      setInput(`/${cmd.name} `)
+      return
+    }
+    // 动作命令: 选中即执行
+    setInput('')
+    if (cmd.name === 'new') newConversation()
+    else if (cmd.name === 'auto') cycleAutoMode()
+    else if (ACTION_TEMPLATES[cmd.name]) sendRef.current(ACTION_TEMPLATES[cmd.name])
+  }, [newConversation, cycleAutoMode])
+
+  // ── 顶栏计时器: 任务进行中每秒刷新, 显示最早一个活跃 run 的已耗时 ──
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (!loading) return
+    const t = setInterval(() => setTick((v) => v + 1), 1000)
+    return () => clearInterval(t)
+  }, [loading])
+  const elapsedText = useMemo(() => {
+    let earliest = Infinity
+    for (const [, ts] of runStarts.current) earliest = Math.min(earliest, ts)
+    if (!Number.isFinite(earliest)) return ''
+    const s = Math.max(0, Math.floor((Date.now() - earliest) / 1000))
+    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, tick, activeRunIds])
 
   // ── 语音输入 ──
   const toggleMic = useCallback(() => {
@@ -1296,6 +1650,118 @@ export function AiPanel(props: PanelProps) {
   // ── 渲染 ──
   const editorContext = useIdeBusStore((s) => s.editorContext)
 
+  // ── pod_bash 确认卡 / 输出控制台:内嵌渲染在对应 run 的 assistant 消息后 ──
+  // (以前吊在整个消息流末尾, 和产生它的对话脱节; run 消息已不在流里的
+  //  孤儿卡片/控制台仍兜底渲染在流末尾, 不会凭空消失)
+  const renderAskCard = (a: BashAsk) => (
+            <div key={a.actionId} className="ide-ai-block">
+              <div className="ide-diff-card">
+                <div className="ide-diff-head">
+                  <ShieldAlert size={12} className="flex-none" style={{ color: 'var(--bad, #e5484d)' }} />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={a.command}>
+                    AI 请求执行命令
+                  </span>
+                </div>
+                <pre
+                  className="ide-diff-code whitespace-pre-wrap break-all px-2 py-2 font-mono text-[11px]"
+                  style={mobile ? { maxHeight: 120 } : undefined}
+                >
+                  {a.command}
+                </pre>
+                <div className={cn('gap-1.5 px-2 py-1.5', mobile ? 'flex flex-col' : 'flex items-center')}>
+                  {a.resolved === 'timeout' ? (
+                    <span className="text-[11px]" style={{ color: 'var(--ide-ink-3, #8b949e)' }}>
+                      等待确认超时(180 秒),该命令未执行。
+                    </span>
+                  ) : mobile ? (
+                    <>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => resolveBashAsk(a, false, false)}
+                          className="ide-btn ide-btn-ghost flex-1"
+                          style={{ height: 42 }}
+                        >
+                          拒绝
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => resolveBashAsk(a, true, false)}
+                          className="ide-btn ide-btn-accent flex-1"
+                          style={{ height: 42 }}
+                        >
+                          允许一次
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => resolveBashAsk(a, true, true)}
+                        className="ide-btn ide-btn-ghost w-full"
+                        style={{ height: 42 }}
+                      >
+                        本次会话总是允许
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => resolveBashAsk(a, true, false, true)}
+                        className="ide-btn ide-btn-ghost w-full"
+                        style={{ height: 42 }}
+                      >
+                        总是允许该命令前缀
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => resolveBashAsk(a, false, false)} className="ide-btn ide-btn-ghost">
+                        拒绝
+                      </button>
+                      <button type="button" onClick={() => resolveBashAsk(a, true, false)} className="ide-btn ide-btn-accent">
+                        允许一次
+                      </button>
+                      <button type="button" onClick={() => resolveBashAsk(a, true, true)} className="ide-btn ide-btn-ghost">
+                        本次会话总是允许
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => resolveBashAsk(a, true, false, true)}
+                        className="ide-btn ide-btn-ghost"
+                        title="本会话内同前缀(前 2 个词)的命令不再弹卡"
+                      >
+                        总是允许该前缀
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+  )
+  const renderStreamConsole = (aid: string, s: BashStream) => (
+            <div key={aid} className="ide-ai-block">
+              <div className="ide-diff-card">
+                <div className="ide-diff-head">
+                  <span
+                    className="flex-none font-mono text-[10px]"
+                    style={{ color: s.done ? 'var(--ide-mut)' : 'var(--ide-diff-add)' }}
+                  >
+                    {s.done ? (s.exit === 0 || s.exit == null ? '✓' : `exit ${s.exit}`) : '▶ 运行中'}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={s.command}>
+                    {s.command}
+                  </span>
+                </div>
+                {(s.output || !s.done) && (
+                  <pre
+                    className="ide-diff-code whitespace-pre-wrap break-all px-2 py-1.5 font-mono text-[11px]"
+                    style={{ maxHeight: mobile ? 160 : 220, overflowY: 'auto' }}
+                  >
+                    {s.output || '…'}
+                  </pre>
+                )}
+              </div>
+            </div>
+  )
+
+
   if (!aiAllowed) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-4 text-center">
@@ -1307,29 +1773,65 @@ export function AiPanel(props: PanelProps) {
 
   return (
     <div className="flex h-full w-full min-h-0 flex-col" style={{ background: 'var(--ide-panel)' }}>
-      {/* 顶栏: 状态 + 新对话(紧凑工具条;标题由布局层标签承载) */}
+      {/* 顶栏: 状态 + 新对话(紧凑工具条;标题由布局层 Tab 条承载)。
+          手机并入其它面板共用的 44px 面板头(见 ide-theme.css),输入区上方还有
+          Tab 条,不垫安全区 */}
       <div
-        className="flex h-8 shrink-0 items-center gap-2 px-2 border-b"
-        style={{ background: 'var(--ide-panel)', borderColor: 'var(--ide-line)' }}
+        className={cn(
+          'flex shrink-0 items-center gap-2 px-2',
+          // 手机:并入 44px 面板头(透明无边框,见 ide-theme.css);
+          // 桌面:仍是 32px 紧凑条,保留发丝下边框与面板区分
+          mobile ? 'ide-m-panelhead' : 'h-8 border-b',
+        )}
+        style={mobile ? undefined : { borderColor: 'var(--ide-line)' }}
       >
         <span
           className={cn('h-2 w-2 shrink-0 rounded-full', loading && 'animate-pulse')}
-          style={{ background: loading ? 'var(--ide-diff-add)' : 'var(--ide-line-strong)' }}
+          style={{ background: pendingAskCount > 0 ? 'var(--ide-accent)' : (loading || submitting) ? 'var(--ide-diff-add)' : 'var(--ide-line-strong)' }}
         />
         <span
           className="min-w-0 flex-1 truncate font-mono text-[11px]"
-          style={{ color: 'var(--ide-mut)' }}
+          style={{ color: pendingAskCount > 0 ? 'var(--ide-accent)' : 'var(--ide-mut)' }}
         >
-          {loading ? `任务进行中 · ${activeRunIds.size}` : `Pod ${podName}`}
+          {pendingAskCount > 0
+            ? `⚠ 等待你确认 · ${pendingAskCount}`
+            : submitting ? '已收到,正在准备任务…'
+            : loading ? `⏱ ${elapsedText} · 任务进行中 · ${activeRunIds.size}` : `Pod ${podName}`}
         </span>
+        <button
+          type="button"
+          onClick={() => {
+            const next = AUTO_ORDER[(AUTO_ORDER.indexOf(autoMode) + 1) % AUTO_ORDER.length] as AutoMode
+            setAutoMode(next)
+            if (user) saveLS(lsKeys.auto(user, podName), next)
+            haptic('light')
+          }}
+          title={`AI 确认策略: ${AUTO_LABEL[autoMode]} — ${AUTO_DESC[autoMode]}(点击切换)`}
+          aria-label={`AI 确认策略: ${AUTO_LABEL[autoMode]}`}
+          className="ide-ghost-btn flex-none font-mono text-[10px] gap-1"
+          style={{
+            // 手机只显图标(文字标签 sm 起才出现)→ 让出 44×44 方靶,
+            // 与 .ide-m-actbtn 同尺寸;桌面按文字自适应宽。
+            // 高度要显式给:.ide-ghost-btn 只有 28,竖屏靠 globals 兜到 44,
+            // 横屏兜底失效会塌回 28
+            width: mobile ? 44 : 'auto',
+            ...(mobile ? { height: 44 } : {}),
+            padding: mobile ? 0 : '0 8px',
+            color: autoMode === 'all' ? 'var(--ide-mut)' : 'var(--ide-accent)',
+          }}
+        >
+          <ShieldCheck size={mobile ? 15 : 13} className="flex-none" />
+          <span className="hidden sm:inline">{AUTO_LABEL[autoMode]}</span>
+        </button>
         <button
           type="button"
           onClick={newConversation}
           title="新对话"
           aria-label="新对话"
           className="ide-ghost-btn"
+          style={mobile ? { width: 44, height: 44 } : undefined}
         >
-          <Plus size={15} />
+          <Plus size={mobile ? 16 : 15} />
         </button>
       </div>
 
@@ -1364,23 +1866,45 @@ export function AiPanel(props: PanelProps) {
                 </div>
               )
             }
-            const runCards = cards.filter((c) => c.runId === msg.runId)
-            return (
-              <div key={i} className="ide-ai-block">
-                <div className="ide-ai-assistant">
-                  <AssistantBody msg={msg} streaming={streaming} />
-                </div>
-                {runCards.map((c) => (
+            const runId = msg.runId
+            /** 属于该 run、锚点正好是 n 的挂件(编辑卡/命令确认卡/实时输出控制台)。
+             *  按到达位置插回时间线,而不是统统堆在消息末尾。 */
+            const overlaysAt = (n: number) => (
+              <>
+                {cards.filter((c) => c.runId === runId && anchorFor(c.runId, c.id, c.actionId) === n).map((c) => (
                   <DiffCardView
                     key={c.id}
                     card={c}
+                    mobile={mobile}
                     onAccept={(card) => void resolveCard(card, true)}
                     onReject={(card) => void resolveCard(card, false)}
                   />
                 ))}
+                {bashAsks
+                  .filter((a) => a.runId === runId && (a.resolved === '' || a.resolved === 'timeout')
+                    && anchorFor(a.runId, a.actionId) === n)
+                  .map(renderAskCard)}
+                {Object.entries(bashStreams)
+                  .filter(([aid, s]) => s.runId === runId && anchorFor(runId, aid) === n)
+                  .map(([aid, s]) => renderStreamConsole(aid, s))}
+              </>
+            )
+            return (
+              <div key={i} className="ide-ai-block">
+                <div className="ide-ai-assistant">
+                  <AssistantBody
+                    msg={msg}
+                    streaming={streaming}
+                    overlay={runId ? overlaysAt : undefined}
+                  />
+                </div>
               </div>
             )
           })}
+
+          {/* 兜底:run 消息已不在流里(新对话清空等)的确认卡/控制台,仍渲染在末尾 */}
+          {bashAsks.filter((a) => (a.resolved === '' || a.resolved === 'timeout') && !messages.some((m) => m.runId === a.runId)).map(renderAskCard)}
+          {Object.entries(bashStreams).filter(([, s]) => !messages.some((m) => m.runId === s.runId)).map(([aid, s]) => renderStreamConsole(aid, s))}
         </div>
 
         {/* 暂停跟随时提供「回到底部」 */}
@@ -1399,6 +1923,30 @@ export function AiPanel(props: PanelProps) {
 
       {/* 输入区:顶部 1px line 分隔,panel 底;context chips 聚焦才淡入 + 无边框 textarea */}
       <div className="ide-ai-inputwrap">
+        {/* /goal 目标: 常显(不受聚焦淡入影响)——平台重启会自动拉起复核, 想撤掉点 × */}
+        {goal && (
+          <div className="ide-ai-goalrow">
+            <span
+              className="ide-chip"
+              style={{ color: 'var(--ide-accent)' }}
+              title={`当前目标: ${goal.text}${goal.resumes ? `（已自动复核拉起 ${goal.resumes} 次）` : ''}`}
+            >
+              🎯 {goal.text.length > 20 ? goal.text.slice(0, 20) + '…' : goal.text}
+              {goal.resumes > 0 && (
+                <span style={{ color: 'var(--ide-mut)' }}>↻{goal.resumes}</span>
+              )}
+              <button
+                type="button"
+                className="ide-goal-x"
+                title="取消该目标"
+                aria-label="取消目标"
+                onClick={() => void clearGoal()}
+              >
+                ×
+              </button>
+            </span>
+          </div>
+        )}
         <div className={cn('ide-ai-context', inputFocused && 'ide-ai-context-on')} aria-hidden={!inputFocused}>
           {editorContext?.path && (
             <span className="ide-chip" title={editorContext.path}>
@@ -1407,26 +1955,83 @@ export function AiPanel(props: PanelProps) {
             </span>
           )}
           {profileReady && <span className="ide-chip">📋 项目画像</span>}
+          <span className="ide-chip" title={AUTO_DESC[autoMode]}>
+            🛡 AI 确认: {AUTO_LABEL[autoMode]}
+          </span>
         </div>
         <form
           onSubmit={(e) => { e.preventDefault(); sendRef.current() }}
-          className="flex items-end gap-1.5"
+          className="relative flex items-end gap-1.5"
         >
+          {/* slash 命令选择框: 输入 / 开头且未空格时弹出,↑↓ 选择,Tab/Enter 补全或执行 */}
+          {slashOpen && (
+            <div
+              className="absolute bottom-full left-0 z-20 mb-1 w-[min(340px,90%)] overflow-hidden rounded-md border shadow-2"
+              style={{ background: 'var(--ide-elev)', borderColor: 'var(--ide-line-strong)' }}
+            >
+              {slashMatches.map((c, i) => (
+                <button
+                  key={c.name}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); selectSlash(c) }}
+                  onMouseEnter={() => setSlashIdx(i)}
+                  className={cn(
+                    'flex w-full flex-col gap-0.5 px-2.5 py-1.5 text-left',
+                    i === slashIdx && 'ide-ai-slash-active',
+                  )}
+                >
+                  <span className="font-mono text-[12px]" style={{ color: 'var(--ide-ink)' }}>
+                    /{c.name}
+                    {c.argsHint && (
+                      <span className="ml-1 font-mono text-[11px]" style={{ color: 'var(--ide-mut)' }}>
+                        {c.argsHint}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[11px] leading-snug" style={{ color: 'var(--ide-mut)' }}>
+                    {c.desc}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onFocus={() => setInputFocused(true)}
             onBlur={() => setInputFocused(false)}
             onKeyDown={(e) => {
+              if (slashOpen) {
+                if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
+                  e.preventDefault()
+                  setSlashIdx((i) => (i + 1) % slashMatches.length)
+                  return
+                }
+                if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
+                  e.preventDefault()
+                  setSlashIdx((i) => (i - 1 + slashMatches.length) % slashMatches.length)
+                  return
+                }
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  selectSlash(slashMatches[slashIdx] as SlashCmd)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setSlashOff(true)
+                  return
+                }
+              }
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
                 sendRef.current()
               }
             }}
-            placeholder="问点关于这个项目的问题…"
+            placeholder="问点关于这个项目的问题…(输入 / 查看命令)"
             rows={1}
             className="ide-ai-textarea min-w-0 flex-1"
-            style={{ maxHeight: 120 }}
+            style={mobile ? { maxHeight: 120, fontSize: 16 } : { maxHeight: 120 }}
           />
           {speechSupported && (
             <button
@@ -1435,9 +2040,12 @@ export function AiPanel(props: PanelProps) {
               title={listening ? '停止语音输入' : '语音输入'}
               aria-label={listening ? '停止语音输入' : '语音输入'}
               className="ide-ghost-btn"
-              style={listening ? { color: 'var(--ide-diff-del)' } : undefined}
+              style={{
+                ...(mobile ? { width: 44, height: 44 } : {}),
+                ...(listening ? { color: 'var(--ide-diff-del)' } : {}),
+              }}
             >
-              {listening ? <MicOff size={15} /> : <Mic size={15} />}
+              {listening ? <MicOff size={mobile ? 18 : 15} /> : <Mic size={mobile ? 18 : 15} />}
             </button>
           )}
           {loading ? (
@@ -1446,18 +2054,23 @@ export function AiPanel(props: PanelProps) {
               onClick={handleStop}
               aria-label="停止生成"
               className="ide-send-btn"
-              style={{ background: 'transparent', border: '1px solid var(--ide-line-strong)', color: 'var(--ide-diff-del)' }}
+              style={{
+                background: 'transparent', border: '1px solid var(--ide-line-strong)',
+                color: 'var(--ide-diff-del)',
+                ...(mobile ? { width: 44, height: 44 } : {}),
+              }}
             >
-              <StopCircle size={15} />
+              <StopCircle size={mobile ? 18 : 15} />
             </button>
           ) : (
             <button
               type="submit"
-              disabled={!input.trim() || loading}
+              disabled={!input.trim() || loading || submitting}
               aria-label="发送"
               className="ide-send-btn"
+              style={mobile ? { width: 44, height: 44 } : undefined}
             >
-              <Send size={15} />
+              <Send size={mobile ? 18 : 15} />
             </button>
           )}
         </form>

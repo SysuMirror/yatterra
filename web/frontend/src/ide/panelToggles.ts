@@ -21,12 +21,20 @@ function emit() {
   for (const l of listeners) l()
 }
 
-/** 内核上报当前在布局里的面板 id 集合(无变化时不触发渲染)。 */
+/** 内核上报当前在布局里的面板 key 集合(无变化时不触发渲染)。 */
 export function setVisiblePanels(ids: Iterable<string>): void {
   const next = new Set(ids)
   if (next.size === visible.size && [...next].every((id) => visible.has(id))) return
   visible = next
   emit()
+}
+
+/** 可见集合里是否存在该类型的实例(key 可带 ':N' 实例后缀)。 */
+export function hasPanelType(ids: ReadonlySet<string>, panelId: string): boolean {
+  for (const id of ids) {
+    if (id === panelId || id.startsWith(panelId + ':')) return true
+  }
+  return false
 }
 
 /** 内核挂载/卸载时注册/注销开关处理器。 */
@@ -36,7 +44,7 @@ export function setPanelToggleHandler(h: ToggleHandler | null): void {
 
 /** 顶栏开关点击:open = 目标状态(当前不可见 → 打开)。 */
 export function togglePanel(panelId: string): void {
-  handler?.(panelId, !visible.has(panelId))
+  handler?.(panelId, !hasPanelType(visible, panelId))
 }
 
 function subscribe(l: () => void): () => void {

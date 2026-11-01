@@ -52,6 +52,10 @@ export interface AiPageRequest {
   stream?: boolean
   /** Persisted conversation id; server loads history for it (per-user). */
   session_id?: string
+  /** Web IDE 专用 harness 的目标 Pod(仅 page='pod_ide' 时使用) */
+  pod?: string
+  /** Web IDE 确认策略: all=全部确认 / smart=仅危险确认 / none=全自动 */
+  auto?: 'all' | 'smart' | 'none'
 }
 
 /** One persisted page-assistant conversation (per user, global list). */

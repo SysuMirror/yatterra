@@ -27,15 +27,18 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Eye,
   FileCode2,
   FileWarning,
   Loader2,
+  Pencil,
   Save,
   TestTube2,
   Wrench,
   X,
   Zap,
 } from 'lucide-react'
+import { MarkdownContent } from '@/components/ai'
 import { EditorView, keymap } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
 import { EditorSelection, Prec } from '@codemirror/state'
@@ -71,6 +74,18 @@ const TEXT_EXT =
   /\.(txt|md|json|ya?ml|toml|ini|conf|cfg|env|sh|bash|py|js|ts|jsx|tsx|css|html|htm|xml|sql|c|h|cpp|go|rs|java|log|gitignore|dockerfile)$/i
 
 const baseName = (path: string) => path.split('/').pop() || path
+
+/** 二进制/浏览器原生渲染的扩展名:不走文本编辑,直接预览(files/raw) */
+const BINARY_PREVIEW_EXT = /\.(pdf|png|jpe?g|gif|webp|svg|bmp|ico|mp4|webm|mp3|wav)$/i
+/** 文本类可预览:md 渲染成富文本,html 交给 iframe */
+const MD_PREVIEW_EXT = /\.(md|markdown)$/i
+const HTML_PREVIEW_EXT = /\.html?$/i
+const isBinaryPreview = (path: string | null | undefined) =>
+  !!path && BINARY_PREVIEW_EXT.test(path)
+
+/** 预览地址:同源直连 files/raw,iframe/img/video 均可,带会话 cookie */
+const rawUrl = (podName: string, path: string) =>
+  `/api/pods/${podName}/files/raw?path=${encodeURIComponent(path)}`
 
 /** 扩展名 → 状态条语言名(纯展示)。 */
 const LANG_BY_EXT: Record<string, string> = {
@@ -481,6 +496,52 @@ function CodeMirrorHost({ doc, isMobile, viewRef, onChange, onSave, onFocusChang
   )
 }
 
+/** 预览视图:pdf/html 走同源 iframe(files/raw),图片/音视频原生标签,md 富文本 */
+function PreviewHost({ podName, path, content }: { podName: string; path: string; content: string }) {
+  if (BINARY_PREVIEW_EXT.test(path)) {
+    if (/\.pdf$/i.test(path)) {
+      return <iframe src={rawUrl(podName, path)} title={path} className="absolute inset-0 w-full h-full bg-white" />
+    }
+    if (/\.(mp4|webm)$/i.test(path)) {
+      return (
+        <div className="absolute inset-0 grid place-items-center bg-black/80 p-2">
+          <video controls src={rawUrl(podName, path)} className="max-w-full max-h-full" />
+        </div>
+      )
+    }
+    if (/\.(mp3|wav)$/i.test(path)) {
+      return (
+        <div className="absolute inset-0 grid place-items-center p-6">
+          <audio controls src={rawUrl(podName, path)} className="w-full max-w-md" />
+        </div>
+      )
+    }
+    return (
+      <div className="absolute inset-0 grid place-items-center p-2">
+        <img src={rawUrl(podName, path)} alt={path} className="max-w-full max-h-full object-contain" />
+      </div>
+    )
+  }
+  if (HTML_PREVIEW_EXT.test(path)) {
+    // sandbox 不给 allow-same-origin:预览的 HTML 是 Pod 内任意代码,若与平台
+    // 同源其 JS 可拿会话 cookie 冒充用户;opaque origin + SameSite cookie 挡住
+    return (
+      <iframe
+        src={rawUrl(podName, path)}
+        title={path}
+        className="absolute inset-0 w-full h-full bg-white"
+        sandbox="allow-scripts allow-forms allow-popups"
+      />
+    )
+  }
+  // markdown:复用 AI 面板同款渲染器,可滚动
+  return (
+    <div className="absolute inset-0 overflow-y-auto px-5 py-4 text-sm">
+      <MarkdownContent content={content} />
+    </div>
+  )
+}
+
 // ── 面板本体 ────────────────────────────────────────────────────────────────
 
 export function EditorPanel({ podName, surface, activate }: PanelProps) {
@@ -497,6 +558,12 @@ export function EditorPanel({ podName, surface, activate }: PanelProps) {
   const viewRef = useRef<EditorView | null>(null)
 
   const activePath = podState.active
+  // 预览模式:md/html 可在 编辑↔预览 间切换;pdf/图片等二进制恒为预览
+  const [previewMode, setPreviewMode] = useState(false)
+  useEffect(() => { setPreviewMode(false) }, [activePath])
+  const canTogglePreview =
+    !!activePath && (MD_PREVIEW_EXT.test(activePath) || HTML_PREVIEW_EXT.test(activePath))
+  const showPreview = isBinaryPreview(activePath) || (previewMode && canTogglePreview)
   const activeDoc = activePath ? podState.docs[activePath] : undefined
   const dirty = (path: string) => {
     const d = podState.docs[path]
@@ -575,12 +642,19 @@ export function EditorPanel({ podName, surface, activate }: PanelProps) {
     setFocused(false)
   }, [activePath])
 
-  // 激活标签未加载 → 拉内容(>256KB 或被后端截断 → 只读,二进制拒绝)
+  // 激活标签未加载 → 拉内容(>256KB 或被后端截断 → 只读,二进制拒绝;
+  // 浏览器原生渲染的 pdf/图片/视频不拉文本,直接进预览视图)
   useEffect(() => {
     const path = activePath
     if (!path) return
     const doc = useEditorBusStore.getState().pods[podName]?.docs[path]
     if (doc?.loaded) return
+    if (isBinaryPreview(path)) {
+      useEditorBusStore.getState().patchDoc(podName, path, {
+        loaded: true, readOnly: true, content: '', saved: '', error: '',
+      })
+      return
+    }
     let cancelled = false
     ;(async () => {
       try {
@@ -795,38 +869,53 @@ export function EditorPanel({ podName, surface, activate }: PanelProps) {
     <div className="h-full w-full flex flex-col min-h-0 bg-surface-1 overflow-hidden">
       {/* 文件栏:桌面=多标签,手机=单文件 + 返回/保存 */}
       {isMobile ? (
-        <div className="flex items-center gap-1 h-10 shrink-0 px-1 border-b" style={{ background: 'var(--ide-bg)', borderColor: 'var(--ide-line)' }}>
-          {podState.history.length > 0 && (
+        // 没打开文件时不画面板头:标题会与底部 Tab 条重复,且返回/预览/保存都不可用。
+        // 空状态文案由下方 editor 内容区自己说明。
+        activePath && (
+          <div className="ide-m-panelhead">
+            {podState.history.length > 0 && (
+              <button
+                type="button"
+                aria-label="返回上一个文件"
+                onClick={() => useEditorBusStore.getState().goBack(podName)}
+                className="ide-m-actbtn"
+              >
+                <ChevronLeft size={20} />
+              </button>
+            )}
+            <FileCode2 size={15} className="shrink-0 text-muted" />
+            <span className="ide-m-panelhead-title flex-1 font-mono font-normal" title={activePath}>
+              {baseName(activePath)}
+            </span>
+            {dirty(activePath) && (
+              <span className="w-2 h-2 rounded-full bg-accent shrink-0" aria-label="未保存" />
+            )}
+            {canTogglePreview && (
+              <button
+                type="button"
+                aria-label={showPreview ? '编辑' : '预览'}
+                onClick={() => setPreviewMode((v) => !v)}
+                className="ide-m-actbtn"
+              >
+                {showPreview ? <Pencil size={16} /> : <Eye size={16} />}
+              </button>
+            )}
             <button
               type="button"
-              aria-label="返回上一个文件"
-              onClick={() => useEditorBusStore.getState().goBack(podName)}
-              className="w-10 h-10 flex items-center justify-center rounded-lg text-muted active:bg-ink/10"
+              aria-label="保存"
+              disabled={!dirty(activePath)}
+              onClick={saveActive}
+              className="ide-m-actbtn"
+              style={{ color: 'var(--ide-accent)' }}
             >
-              <ChevronLeft size={18} />
+              {savingPath === activePath ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Save size={16} />
+              )}
             </button>
-          )}
-          <FileCode2 size={14} className="shrink-0 text-muted" />
-          <span className="flex-1 min-w-0 truncate text-xs font-mono text-ink-2" title={activePath ?? undefined}>
-            {activePath ? baseName(activePath) : '编辑器'}
-          </span>
-          {activePath && dirty(activePath) && (
-            <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" aria-label="未保存" />
-          )}
-          <button
-            type="button"
-            aria-label="保存"
-            disabled={!activePath || !dirty(activePath)}
-            onClick={saveActive}
-            className="w-10 h-10 flex items-center justify-center rounded-lg text-accent active:bg-accent/10 disabled:opacity-30"
-          >
-            {savingPath === activePath ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Save size={16} />
-            )}
-          </button>
-        </div>
+          </div>
+        )
       ) : (
         <div className="ide-ed-tabbar">
           <div className="flex items-stretch overflow-x-auto no-scrollbar flex-1 min-w-0">
@@ -875,12 +964,24 @@ export function EditorPanel({ podName, surface, activate }: PanelProps) {
               <Save size={14} />
             )}
           </button>
+          {canTogglePreview && (
+            <button
+              type="button"
+              aria-label={showPreview ? '编辑' : '预览'}
+              title={showPreview ? '编辑' : '预览'}
+              onClick={() => setPreviewMode((v) => !v)}
+              className="ide-ghost-btn shrink-0"
+              style={{ width: 34, height: 34, borderRadius: 0 }}
+            >
+              {showPreview ? <Pencil size={14} /> : <Eye size={14} />}
+            </button>
+          )}
         </div>
       )}
 
       {/* 编辑区 */}
       <div className="flex-1 min-h-0 flex flex-col">
-        {activeDoc?.loaded && activeDoc.readOnly && (
+        {activeDoc?.loaded && activeDoc.readOnly && !isBinaryPreview(activeDoc.path) && (
           <div className="flex items-center gap-1.5 px-3 h-8 shrink-0 text-[11px] text-warn bg-warn/10 border-b border-warn/20">
             <FileWarning size={12} className="shrink-0" />
             {activeDoc.truncated
@@ -890,6 +991,9 @@ export function EditorPanel({ podName, surface, activate }: PanelProps) {
         )}
         <div className="flex-1 min-h-0 relative" {...(isMobile ? swipe : {})}>
           {activeDoc && activeDoc.loaded && !activeDoc.error ? (
+            showPreview ? (
+            <PreviewHost podName={podName} path={activeDoc.path} content={activeDoc.content} />
+            ) : (
             <CodeMirrorHost
               key={activeDoc.path}
               doc={activeDoc}
@@ -903,6 +1007,7 @@ export function EditorPanel({ podName, surface, activate }: PanelProps) {
               onAsk={handleAsk}
               onCursor={handleCursor}
             />
+            )
           ) : activeDoc?.error ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
               <FileWarning size={24} className="text-bad/60" />
@@ -921,8 +1026,20 @@ export function EditorPanel({ podName, surface, activate }: PanelProps) {
             </div>
           ) : (
             <div className="absolute inset-0 ide-empty flex flex-col items-center justify-center gap-3 select-none px-6 text-center">
+              {isMobile && (
+                <div
+                  className="grid place-items-center w-14 h-14 rounded-2xl mb-1"
+                  style={{ background: 'var(--ide-elev)', color: 'var(--ide-mut)' }}
+                >
+                  <FileCode2 size={26} />
+                </div>
+              )}
               <p className="ide-cmt text-[13px]">// 尚未打开文件</p>
-              <p className="ide-cmt ide-cmt-dim text-[12px]">// 从左侧文件树选择,或点击最近打开:</p>
+              <p className="ide-cmt ide-cmt-dim text-[12px]">
+                {isMobile
+                  ? (podState.history.length > 0 ? '// 点击下方「文件」标签,或从最近打开:' : '// 点击下方「文件」标签选择一个文件')
+                  : '// 从左侧文件树选择,或点击最近打开:'}
+              </p>
               {podState.history.length > 0 && (
                 <div className="flex max-w-full flex-wrap items-center justify-center gap-1.5">
                   {podState.history.slice(-4).reverse().map((p) => (

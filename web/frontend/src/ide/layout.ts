@@ -7,11 +7,11 @@
  */
 import type {
   LayoutNode,
-  MobileLayoutOverride,
   SplitLayoutNode,
   StoredIdeLayout,
   TabsLayoutNode,
 } from './types'
+import { panelType } from './types'
 import { getPanel } from './registry'
 
 export const LAYOUT_KEY = (podName: string) => `yatterra.ide.layout.${podName}`
@@ -20,7 +20,8 @@ export const PRESETS_KEY = 'yatterra.ide.presets'
 // ── 构造 helper ────────────────────────────────────────────────────────────
 
 export function tabs(panels: string[], active?: string): TabsLayoutNode {
-  const list = panels.filter((p) => getPanel(p))
+  // panels 存的是布局 key(可带 :N 实例后缀),合法性按其类型 id 校验
+  const list = panels.filter((p) => getPanel(panelType(p)))
   if (list.length === 0) throw new Error('tabs(): no registered panels')
   return { type: 'tabs', panels: list, active: active && list.includes(active) ? active : list[0]! }
 }
@@ -59,7 +60,9 @@ export function sanitizeTree(node: unknown): LayoutNode {
   if (!node || typeof node !== 'object') return fallback()
   const n = node as Partial<SplitLayoutNode> & Partial<TabsLayoutNode>
   if (n.type === 'tabs') {
-    const panels = (n.panels ?? []).filter((p): p is string => typeof p === 'string' && !!getPanel(p))
+    // panels 是布局 key(可带 :N 后缀),按类型 id 校验 —— 裸 id 本身就是合法
+    // key,旧记录无需迁移
+    const panels = (n.panels ?? []).filter((p): p is string => typeof p === 'string' && !!getPanel(panelType(p)))
     if (panels.length === 0) return fallback()
     const active = typeof n.active === 'string' && panels.includes(n.active) ? n.active : panels[0]!
     return { type: 'tabs', panels, active }
@@ -168,50 +171,21 @@ export interface FlatPanelSlot {
 }
 
 /**
- * 把布局树压平成手机垂直堆叠的槽位序列:
- * split 按顺序展开,tabs 取 active 面板(其余面板通过面板头标签切换)。
- * mobileDrawer 面板(如 ai)不进堆叠,由渲染器单独处理。
+ * 把布局树压平成手机的槽位序列:
+ * split 按顺序展开,tabs 取 active 面板(其余面板作为同组 siblings)。
+ * 手机渲染器按类型去重后作为底部 Tab 条的面板集合。
  */
 export function flattenForMobile(node: LayoutNode): FlatPanelSlot[] {
   const out: FlatPanelSlot[] = []
   const walk = (n: LayoutNode) => {
     if (n.type === 'tabs') {
-      const drawerOnly = n.panels.every((p) => getPanel(p)?.mobileDrawer)
-      if (drawerOnly) return
-      const stacked = n.panels.filter((p) => !getPanel(p)?.mobileDrawer)
-      if (stacked.length === 0) return
-      const active = n.active && stacked.includes(n.active) ? n.active : stacked[0]!
-      out.push({ panelId: active, siblings: stacked, tabsKey: n.panels.join('/') })
+      if (n.panels.length === 0) return
+      const active = n.active && n.panels.includes(n.active) ? n.active : n.panels[0]!
+      out.push({ panelId: active, siblings: n.panels, tabsKey: n.panels.join('/') })
       return
     }
     n.children.forEach(walk)
   }
   walk(node)
   return out
-}
-
-/** 从手机覆盖(order/weights)恢复,槽位集合与当前树一致才可用。 */
-export function mobileOverrideFor(tree: LayoutNode, saved?: MobileLayoutOverride): MobileLayoutOverride | undefined {
-  if (!saved || !Array.isArray(saved.order) || !Array.isArray(saved.weights)) return undefined
-  const current = flattenForMobile(tree).map((s) => s.tabsKey)
-  const savedSet = new Set(saved.order)
-  // 覆盖必须与当前槽位集合完全一致,否则视为过期(面板增删/换预设后)
-  if (current.length !== savedSet.size || current.some((k) => !savedSet.has(k))) return undefined
-  if (saved.order.length !== saved.weights.length) return undefined
-  const total = saved.weights.reduce((a, b) => a + (b > 0 ? b : 0), 0)
-  if (!(total > 0)) return undefined
-  const weights = saved.weights.map((w) => (w > 0 ? w : 0) / total)
-  return {
-    order: [...saved.order],
-    weights,
-    drawerSnap: saved.drawerSnap === 0.25 || saved.drawerSnap === 0.5 || saved.drawerSnap === 0.9 ? saved.drawerSnap : 0.5,
-    drawerOpen: saved.drawerOpen !== false,
-  }
-}
-
-/** 默认手机覆盖:按压平顺序均分,抽屉半开。 */
-export function defaultMobileOverride(tree: LayoutNode): MobileLayoutOverride {
-  const order = flattenForMobile(tree).map((s) => s.tabsKey)
-  const weights = order.map(() => 1 / Math.max(1, order.length))
-  return { order, weights, drawerSnap: 0.5, drawerOpen: true }
 }

@@ -162,14 +162,18 @@ export function LogsPanel({ podName, surface }: PanelProps) {
   const mobile = surface === 'mobile'
   const toolBtn = cn(
     'inline-flex items-center gap-1 rounded-lg text-xs font-medium transition-colors',
-    mobile ? 'h-9 px-2.5' : 'h-7 px-2',
+    // 手机 44 高 + 44 宽下限(文字短时 px-3 只有 37 宽,低于触控线)
+    mobile ? 'h-11 px-3 min-w-11' : 'h-7 px-2',
     'text-muted hover:text-ink hover:bg-ink/5 active:bg-ink/[0.07]',
   )
 
   return (
     <div className="relative h-full w-full flex flex-col min-h-0">
       {/* 工具栏(紧凑;标题由布局层标签承载,这里只留功能项) */}
-      <div className={cn('flex items-center gap-1.5 shrink-0 mb-1 px-0.5', mobile ? 'h-10' : 'h-8')}>
+      <div className={cn(
+        'flex items-center gap-1.5 shrink-0',
+        mobile ? 'ide-m-panelhead' : 'h-8 mb-1 px-0.5',
+      )}>
         <span className="text-[11px] text-muted/60 shrink-0 tabular-nums">{lines.length} 行</span>
         {initState === 'loading' && <span className="text-[11px] text-muted/60 shrink-0">加载中…</span>}
         {initState === 'error' && <span className="text-[11px] text-warn shrink-0">初始拉取失败，仅跟随新日志</span>}
