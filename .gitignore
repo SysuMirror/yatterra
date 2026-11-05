@@ -55,7 +55,7 @@ users.db
 
 # ── 日志 ────────────────────────────────────────────────────────────────────
 *.log
-audit.log
+audit.log*
 *_loop.log
 pressure_writer.log
 priority_kill.log
@@ -137,4 +137,5 @@ backups/**
 .page_ai_runs/**
 podwatch/
 podwatch/**
+.ide_agent_goals/
 *.tsbuildinfo
