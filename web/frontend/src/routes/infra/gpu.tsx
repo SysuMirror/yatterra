@@ -15,6 +15,7 @@ import { SkeletonCard } from '@/components/ui/Skeleton'
 import { Button } from '@/components/ui/Button'
 import { api } from '@/api/client'
 import { useThemeStore } from '@/stores/theme'
+import { seriesColor, chartTooltip, axisTick } from '@/lib/chartColors'
 import { formatBytes } from '@/lib/format'
 
 function toRows(series: number[] = []) {
@@ -24,18 +25,12 @@ function toRows(series: number[] = []) {
 export default function InfraGpu() {
   const dark = useThemeStore((s) => s.resolved) === 'dark'
 
-  // 跟随主题的 recharts tooltip / 坐标轴样式
-  const tooltipStyle = {
-    contentStyle: {
-      borderRadius: 10,
-      border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.1)',
-      fontSize: 12,
-      background: dark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
-      color: dark ? '#f5f5f7' : undefined,
-    },
-    labelStyle: { color: dark ? '#98989d' : '#86868b', fontSize: 11 },
-  }
-  const tickFill = dark ? '#98989d' : '#86868b'
+  // 跟随主题的 recharts tooltip / 坐标轴样式（与全站图表同一来源）
+  const tooltipStyle = chartTooltip(dark)
+  const tickFill = axisTick(dark)
+  // util 恒为序列 0、mem 恒为序列 1 —— 与其它页同一颜色语义
+  const utilColor = seriesColor(dark, 0)
+  const memColor = seriesColor(dark, 1)
 
   const { data: gpuData, isLoading: gpuLoading, error: gpuError, refetch: refetchGpu } = useQuery<any>({
     queryKey: ['infra-gpu'],
@@ -171,13 +166,13 @@ export default function InfraGpu() {
                           <AreaChart data={toRows(series.util)} margin={{ top: 2, right: 4, bottom: 0, left: -14 }}>
                             <defs>
                               <linearGradient id={`gpu-util-${gpu.index}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stopColor="#0a84ff" stopOpacity={0.12} />
-                                <stop offset="100%" stopColor="#0a84ff" stopOpacity={0} />
+                                <stop offset="0%" stopColor={utilColor} stopOpacity={0.12} />
+                                <stop offset="100%" stopColor={utilColor} stopOpacity={0} />
                               </linearGradient>
                             </defs>
                             <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: tickFill }} tickLine={false} axisLine={false} width={28} />
                             <Tooltip {...tooltipStyle} formatter={(v: any) => [`${Number(v).toFixed(1)}%`, '利用率']} />
-                            <Area type="monotone" dataKey="v" stroke="#0a84ff" strokeWidth={1.2} fill={`url(#gpu-util-${gpu.index})`} dot={false} isAnimationActive={false} />
+                            <Area type="monotone" dataKey="v" stroke={utilColor} strokeWidth={1.2} fill={`url(#gpu-util-${gpu.index})`} dot={false} isAnimationActive={false} />
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
@@ -191,13 +186,13 @@ export default function InfraGpu() {
                           <AreaChart data={toRows(series.mem)} margin={{ top: 2, right: 4, bottom: 0, left: -14 }}>
                             <defs>
                               <linearGradient id={`gpu-mem-${gpu.index}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stopColor="#ff9f0a" stopOpacity={0.12} />
-                                <stop offset="100%" stopColor="#ff9f0a" stopOpacity={0} />
+                                <stop offset="0%" stopColor={memColor} stopOpacity={0.12} />
+                                <stop offset="100%" stopColor={memColor} stopOpacity={0} />
                               </linearGradient>
                             </defs>
                             <YAxis domain={[0, Math.max(...series.mem) * 1.15]} tick={{ fontSize: 9, fill: tickFill }} tickLine={false} axisLine={false} width={28} />
                             <Tooltip {...tooltipStyle} formatter={(v: any) => [`${Number(v).toFixed(0)} MB`, '显存']} />
-                            <Area type="monotone" dataKey="v" stroke="#ff9f0a" strokeWidth={1.2} fill={`url(#gpu-mem-${gpu.index})`} dot={false} isAnimationActive={false} />
+                            <Area type="monotone" dataKey="v" stroke={memColor} strokeWidth={1.2} fill={`url(#gpu-mem-${gpu.index})`} dot={false} isAnimationActive={false} />
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>

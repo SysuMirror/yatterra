@@ -140,6 +140,7 @@ export function TerminalPane({ podName, running, className }: TerminalPaneProps)
     let fit: any = null
     let socket: any = null
     let resizeObs: ResizeObserver | null = null
+    let winResize: (() => void) | null = null
 
     setStatus('connecting')
     setError('')
@@ -202,10 +203,40 @@ export function TerminalPane({ podName, running, className }: TerminalPaneProps)
         sendResizeRef.current = sendResize
         resizeObs = new ResizeObserver(sendResize)
         resizeObs.observe(containerRef.current)
+        // 窗口缩放不一定改变容器自身尺寸(RO 不触发),补一个窗口级监听
+        winResize = () => sendResizeRef.current?.()
+        window.addEventListener('resize', winResize)
+        // 等容器拿到真实尺寸再建连(0×0 时 fit 被吞 → PTY 按默认 80×24 启动,
+        // claude code 等全屏 TUI 首帧按错误宽度排版)
+        for (let i = 0; i < 40; i++) {
+          const el = containerRef.current
+          if (disposed) return
+          if (el && el.clientWidth > 0 && el.clientHeight > 0) break
+          await new Promise((r) => requestAnimationFrame(r))
+        }
+        try { fit.fit() } catch { /* still 0×0: connect at default, sendResize corrects */ }
         sendResize()
 
-        socket = io('/', { query: { name: podName } })
-        socket.on('connect', () => { if (!disposed) setStatus('open') })
+        // 断点续传:resume token 命中时后端重绑 PTY 并回放缓冲;socket.io
+        // 自动重连复用同一 query,同一会话无缝续上。
+        let resumeToken = ''
+        try { resumeToken = localStorage.getItem(`yatterra.term.token.${podName}`) || '' } catch { /* private mode */ }
+        socket = io('/', {
+          query: { name: podName, cols: term.cols, rows: term.rows, resume: resumeToken },
+        })
+        socket.on('connect', () => {
+          if (disposed) return
+          setStatus('open')
+          sendResizeRef.current?.()
+        })
+        socket.on('term_ready', (msg: any) => {
+          try { if (msg?.token) localStorage.setItem(`yatterra.term.token.${podName}`, msg.token) } catch { /* ignore */ }
+        })
+        socket.on('term_replay', (msg: any) => {
+          try { term.clear() } catch { /* ignore */ }
+          const data = typeof msg === 'string' ? msg : msg?.data
+          if (data) term.write(data)
+        })
         socket.on('connect_error', (e: any) => {
           if (disposed) return
           setStatus('error')
@@ -217,10 +248,18 @@ export function TerminalPane({ podName, running, className }: TerminalPaneProps)
         })
         socket.on('term_exit', (msg: any) => {
           if (disposed) return
+          // shell 进程已退出:token 作废,下次连接开新会话
+          try { localStorage.removeItem(`yatterra.term.token.${podName}`) } catch { /* ignore */ }
           setStatus('closed')
           term.write(`\r\n\x1b[90m— ${(typeof msg === 'string' ? msg : msg?.data) || '会话已结束'} —\x1b[0m\r\n`)
         })
-        socket.on('disconnect', () => { if (!disposed) setStatus('closed') })
+        socket.on('disconnect', () => {
+          if (disposed) return
+          // 有 token 时 socket.io 会自动重连续传,显示重连中而非已断开
+          let tok = ''
+          try { tok = localStorage.getItem(`yatterra.term.token.${podName}`) || '' } catch { /* ignore */ }
+          setStatus(tok ? 'connecting' : 'closed')
+        })
         term.onData((data: string) => {
           if (socket?.connected) socket.emit('term_input', { data })
         })
@@ -256,6 +295,7 @@ export function TerminalPane({ podName, running, className }: TerminalPaneProps)
     return () => {
       disposed = true
       resizeObs?.disconnect()
+      if (winResize) window.removeEventListener('resize', winResize)
       try { socket?.close() } catch { /* ignore */ }
       try { term?.dispose() } catch { /* ignore */ }
       termRef.current = null

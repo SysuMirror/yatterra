@@ -5,7 +5,6 @@ import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
 import { MetricCard } from '@/components/domain/MetricCard'
-import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { SkeletonCard } from '@/components/ui/Skeleton'
@@ -47,6 +46,10 @@ export default function InfraOverview() {
 
   const rootDisk = host?.disk?.find((d: any) => d.mount === '/') ?? host?.disk?.[0]
   const proxyMappings = proxy?.mappings ?? proxy?.items ?? []
+  // GPU detail lives on /infra/gpu — here we only summarise + link out.
+  const gpus: any[] = host?.nvidia?.gpus ?? []
+  const gpuAvgUtil = gpus.length ? Math.round(gpus.reduce((s: number, g: any) => s + (g.util ?? 0), 0) / gpus.length) : 0
+  const gpuMaxTemp = gpus.length ? Math.max(...gpus.map((g: any) => g.temp ?? 0)) : 0
 
   // live cgroup usage (actual, not reserved) — top groups by memory
   const liveTop = (usage?.groups ?? [])
@@ -171,35 +174,27 @@ export default function InfraOverview() {
         </ServiceCard>
       </div>
 
-      {/* GPU summary */}
-      {host?.nvidia?.gpus?.length > 0 && (
-        <Card data-onboarding-target="infra-gpu" padding="lg" className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <Monitor size={16} className="text-warn" />
-            <h2 className="text-sm font-semibold">GPU 摘要</h2>
-            <Badge variant="warn" className="ml-auto">驱动 {host.nvidia.driver_version}</Badge>
+      {/* GPU — detail lives on /infra/gpu; here just a summary that links out */}
+      {gpus.length > 0 && (
+        <Link
+          data-onboarding-target="infra-gpu"
+          to="/infra/gpu"
+          className="glass-card rounded-2xl p-4 mb-6 flex items-center gap-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group"
+        >
+          <div className="w-10 h-10 rounded-xl bg-warn/10 flex items-center justify-center text-warn flex-shrink-0">
+            <Monitor size={18} />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {host.nvidia.gpus.map((g: any, i: number) => (
-              <div key={i} className="p-3 rounded-xl bg-black/[0.02]">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">#{g.index} {g.name}</span>
-                  <Badge variant={g.temp > 80 ? 'bad' : g.temp > 65 ? 'warn' : 'ok'} className="text-[10px]">{g.temp}°C</Badge>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-[11px] text-muted mb-1">利用率</p>
-                    <Progress value={g.util ?? 0} size="sm" color={g.util > 90 ? 'bad' : g.util > 70 ? 'warn' : 'ok'} />
-                  </div>
-                  <div>
-                    <p className="text-[11px] text-muted mb-1">显存</p>
-                    <Progress value={g.mem_total ? (parseFloat(g.mem_used) / parseFloat(g.mem_total)) * 100 : 0} size="sm" color="accent" />
-                  </div>
-                </div>
-              </div>
-            ))}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold group-hover:text-accent transition-colors">GPU</span>
+              <Badge variant="muted" className="text-[10px]">驱动 {host?.nvidia?.driver_version ?? '—'}</Badge>
+            </div>
+            <p className="text-xs text-muted mt-0.5">
+              {gpus.length} 块 · 平均利用率 {gpuAvgUtil}% · 最高温度 {gpuMaxTemp}°C
+            </p>
           </div>
-        </Card>
+          <ChevronRight size={16} className="text-muted/40 group-hover:text-muted transition-colors flex-shrink-0" />
+        </Link>
       )}
 
       {/* Quick actions */}

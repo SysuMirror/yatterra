@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useId } from 'react'
+import { useState, useRef, useEffect, useId, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { haptic } from '@/lib/haptic'
+import { Portal } from '@/components/ui/Portal'
 
 interface SelectOption {
   value: string
@@ -18,21 +19,52 @@ interface SelectProps {
   onboardingTarget?: string
 }
 
+/**
+ * 下拉浮层通过 Portal 渲染到 <body> 并用 fixed 定位。
+ * 不能用 absolute:表格单元格外层是 `truncate`(overflow:hidden)+
+ * `overflow-x-auto` 的滚动容器,absolute 浮层会被裁掉(底部行的菜单
+ * 整个不可见),且 white-space:nowrap 会继承进来把选项挤成一行。
+ */
 export function Select({ value, onChange, options, placeholder = '选择...', label, className, onboardingTarget }: SelectProps) {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; width: number } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const listboxRef = useRef<HTMLDivElement>(null)
   const listboxId = useId()
+
+  const place = useCallback(() => {
+    const r = triggerRef.current?.getBoundingClientRect()
+    if (!r) return
+    const estH = options.length * 44 + 12
+    const flipUp = r.bottom + estH > window.innerHeight && r.top - estH > 8
+    setPos(flipUp
+      ? { left: r.left, bottom: window.innerHeight - r.top + 4, width: r.width }
+      : { left: r.left, top: r.bottom + 4, width: r.width })
+  }, [options.length])
 
   useEffect(() => {
     if (!open) return
+    place()
     const close = () => { setOpen(false); triggerRef.current?.focus() }
-    const onClick = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) close() }
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!ref.current?.contains(t) && !listboxRef.current?.contains(t)) close()
+    }
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); close() } }
+    // 浮层是 fixed,不跟随滚动 —— 滚动/resize 时直接收起,避免错位
+    const onScroll = () => setOpen(false)
     document.addEventListener('mousedown', onClick)
     document.addEventListener('keydown', onKeyDown)
-    return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKeyDown) }
-  }, [open])
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onScroll)
+    return () => {
+      document.removeEventListener('mousedown', onClick)
+      document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [open, place])
 
   const selected = options.find((o) => o.value === value)
 
@@ -58,29 +90,32 @@ export function Select({ value, onChange, options, placeholder = '选择...', la
         <ChevronDown size={16} className="text-muted" />
       </button>
 
-      {open && (
-        <div
-          id={listboxId}
-          role="listbox"
-          className="absolute top-full left-0 right-0 mt-1 py-1 rounded-xl border-[0.5px] border-black/[0.06] bg-white/95 backdrop-blur-xl shadow-2 z-[var(--z-popover)]"
-          style={{ paddingBottom: 'calc(0.25rem + var(--sab, 0px))' }}
-        >
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              role="option"
-              aria-selected={opt.value === value}
-              onClick={() => { haptic('light'); onChange(opt.value); setOpen(false) }}
-              className={cn(
-                'w-full text-left px-3.5 py-2 text-sm transition-all active:scale-[0.98]',
-                opt.value === value ? 'text-accent font-medium bg-accent-light' : 'text-ink hover:bg-black/[0.03]',
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+      {open && pos && (
+        <Portal>
+          <div
+            ref={listboxRef}
+            id={listboxId}
+            role="listbox"
+            className="fixed py-1 rounded-xl border-[0.5px] border-black/[0.06] bg-white/95 backdrop-blur-xl shadow-2 z-[var(--z-popover)] whitespace-normal"
+            style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, maxHeight: 'min(60vh, 320px)', overflowY: 'auto', overscrollBehavior: 'contain' } as React.CSSProperties}
+          >
+            {options.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                role="option"
+                aria-selected={opt.value === value}
+                onClick={() => { haptic('light'); onChange(opt.value); setOpen(false) }}
+                className={cn(
+                  'block w-full text-left px-3.5 py-2 text-sm transition-all active:scale-[0.98]',
+                  opt.value === value ? 'text-accent font-medium bg-accent-light' : 'text-ink hover:bg-black/[0.03]',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </Portal>
       )}
     </div>
   )

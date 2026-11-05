@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
+import { Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Server, Cpu, HardDrive, Monitor, Wifi, WifiOff, Info, HardDriveDownload, Container, Zap, Thermometer, Clock, Activity, AlertTriangle } from 'lucide-react'
+import { Server, Cpu, HardDrive, Monitor, Info, HardDriveDownload, Container, ChevronRight, Clock, Activity, AlertTriangle } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -48,12 +49,6 @@ export default function InfraHost() {
     refetchInterval: 30_000,
   })
 
-  const { data: cpuStats } = useQuery<any>({
-    queryKey: ['infra-cpu-stats'],
-    queryFn: () => api.get('/infra/cpu-stats'),
-    refetchInterval: 10_000,
-  })
-
   const rootDisk = host?.disk?.find((d: any) => d.mount === '/') ?? host?.disk?.[0]
   const uptimeH = typeof host?.uptime === 'string' ? host.uptime : host?.uptime?.human
   const aiContext = host
@@ -97,16 +92,16 @@ export default function InfraHost() {
           variants={{ animate: { transition: { staggerChildren: 0.06 } } }}
         >
           <motion.div variants={{ initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } }}>
-            <MetricCard icon={<Cpu size={18} className="text-accent" />} label="负载" value={(host?.load?.load1 ?? 0).toFixed(2)} color="accent" />
+            <MetricCard icon={<Cpu size={18} />} label="负载 (1m)" value={(host?.load?.load1 ?? 0).toFixed(2)} />
           </motion.div>
           <motion.div variants={{ initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } }}>
-            <MetricCard icon={<HardDrive size={18} className="text-ok" />} label="内存" value={Math.round(host?.mem?.used_pct ?? 0)} suffix="%" color="ok" />
+            <MetricCard icon={<HardDrive size={18} />} label="内存" value={Math.round(host?.mem?.used_pct ?? 0)} suffix="%" percent={host?.mem?.used_pct} />
           </motion.div>
           <motion.div variants={{ initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } }}>
-            <MetricCard icon={<Monitor size={18} className="text-warn" />} label="GPU" value={host?.nvidia?.count ?? 0} color="warn" />
+            <MetricCard icon={<HardDriveDownload size={18} />} label="磁盘 /" value={Math.round(rootDisk?.used_pct ?? 0)} suffix="%" percent={rootDisk?.used_pct} />
           </motion.div>
           <motion.div variants={{ initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } }}>
-            <MetricCard icon={<Server size={18} className="text-bad" />} label="节点" value={host?.k3s?.count ?? 0} color="bad" />
+            <MetricCard icon={<Clock size={18} />} label="运行时间" value={uptimeH ?? '—'} />
           </motion.div>
         </motion.div>
       )}
@@ -176,37 +171,6 @@ export default function InfraHost() {
         )}
       </Card>
 
-      {/* Per-group Resource Usage */}
-      {cpuStats?.per_group?.length > 0 && (
-        <Card padding="lg" className="mb-4">
-          <div className="flex items-center gap-2 mb-4">
-            <Cpu size={16} className="text-accent" />
-            <h2 className="text-sm font-semibold">分组资源</h2>
-            <Badge variant="accent" className="ml-auto">{cpuStats.per_group.length} 组</Badge>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-black/[0.06]">
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-muted">组名</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-muted">CPU</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-muted">内存</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cpuStats.per_group.map((g: any, i: number) => (
-                  <tr key={i} className="border-b border-black/[0.04] last:border-0">
-                    <td className="py-2 px-3 font-medium">{g.name}</td>
-                    <td className="py-2 px-3 font-mono text-xs text-ink-2">{g.cpu}</td>
-                    <td className="py-2 px-3 font-mono text-xs text-ink-2">{g.mem}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
-
       {/* Infra Metrics — proper charts instead of raw JSON */}
       {metrics && Object.keys(metrics).length > 0 && (
         <div className="mb-6">
@@ -245,7 +209,7 @@ export default function InfraHost() {
 
       {/* K3s Nodes */}
       {host?.k3s?.nodes?.length > 0 && (
-        <Card data-onboarding-target="host-groups" padding="lg" className="mb-4">
+        <Card data-onboarding-target="host-k3s" padding="lg" className="mb-4">
           <div className="flex items-center gap-2 mb-4">
             <Container size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">K3s 节点</h2>
@@ -274,47 +238,25 @@ export default function InfraHost() {
         </Card>
       )}
 
-      {/* GPU Details */}
+      {/* GPU — detail lives on /infra/gpu; here a link only */}
       {host?.nvidia?.gpus?.length > 0 && (
-        <Card data-onboarding-target="host-gpu" padding="lg" className="mb-4">
-          <div className="flex items-center gap-2 mb-4">
-            <Monitor size={16} className="text-warn" />
-            <h2 className="text-sm font-semibold">GPU 详情</h2>
-            <Badge variant="warn" className="ml-auto">驱动 {host.nvidia.driver_version}</Badge>
+        <Link
+          data-onboarding-target="host-gpu"
+          to="/infra/gpu"
+          className="glass-card rounded-2xl p-4 mb-4 flex items-center gap-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group"
+        >
+          <div className="w-10 h-10 rounded-xl bg-warn/10 flex items-center justify-center text-warn flex-shrink-0">
+            <Monitor size={18} />
           </div>
-          <div className="space-y-3">
-            {host.nvidia.gpus.map((g: any, i: number) => (
-              <div key={i} className="p-3 rounded-xl bg-black/[0.02]">
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-sm font-semibold">#{g.index}</span>
-                  <span className="text-sm">{g.name}</span>
-                  <Badge variant={g.temp > 80 ? 'bad' : g.temp > 65 ? 'warn' : 'ok'}>
-                    <Thermometer size={10} className="inline mr-1" />{g.temp}°C
-                  </Badge>
-                  <Badge variant="default">
-                    <Zap size={10} className="inline mr-1" />{g.power}
-                  </Badge>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-xs text-muted mb-1">利用率</p>
-                    <div className="flex items-center gap-2">
-                      <Progress value={g.util ?? 0} size="sm" color={g.util > 90 ? 'bad' : g.util > 70 ? 'warn' : 'ok'} className="flex-1" />
-                      <span className="text-xs font-medium">{g.util}%</span>
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted mb-1">显存</p>
-                    <div className="flex items-center gap-2">
-                      <Progress value={g.mem_total ? (parseFloat(g.mem_used) / parseFloat(g.mem_total)) * 100 : 0} size="sm" color="accent" className="flex-1" />
-                      <span className="text-xs font-medium">{g.mem_used} / {g.mem_total}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold group-hover:text-accent transition-colors">GPU</span>
+              <Badge variant="muted" className="text-[10px]">驱动 {host.nvidia.driver_version}</Badge>
+            </div>
+            <p className="text-xs text-muted mt-0.5">{host.nvidia.gpus.length} 块 · 查看每卡利用率、显存与按 Pod 归属</p>
           </div>
-        </Card>
+          <ChevronRight size={16} className="text-muted/40 group-hover:text-muted transition-colors flex-shrink-0" />
+        </Link>
       )}
 
       {/* FRP Connections */}

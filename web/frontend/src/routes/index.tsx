@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router'
-import { Activity, Cpu, HardDrive, Server, Box, Users, Plus, Bot, Swords, AlertTriangle, Shield, Settings, Plug, Workflow, FolderOpen, ChevronRight, Thermometer, Zap } from 'lucide-react'
+import { Activity, Cpu, HardDrive, Server, Box, Users, Plus, Bot, Swords, AlertTriangle, Shield, Settings, Plug, Workflow, FolderOpen, ChevronRight } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { MetricCard } from '@/components/domain/MetricCard'
 import { Badge } from '@/components/ui/Badge'
@@ -285,7 +285,7 @@ export default function Dashboard() {
         </div>
       </section>
 
-      {/* GPU overview */}
+      {/* GPU overview — one compact row per card; detail lives on /infra/gpu */}
       {(d?.gpuList?.length ?? 0) > 0 && (
         <section data-onboarding-target="dashboard-gpu" className="glass-card rounded-2xl p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
@@ -297,44 +297,26 @@ export default function Dashboard() {
               const memPct = g.mem_total > 0 ? (g.mem_used / g.mem_total) * 100 : 0
               const utilColor = g.util > 85 ? 'bad' : g.util >= 50 ? 'warn' : 'ok'
               const memColor = memPct > 90 ? 'bad' : memPct > 70 ? 'warn' : 'accent'
-              const tempColor = g.temp > 85 ? 'bad' : g.temp > 70 ? 'warn' : 'ok'
               return (
-                <div key={g.index} className="p-3 rounded-xl border-[0.5px] border-black/[0.06] bg-[var(--surface-1)] space-y-2.5">
+                <div key={g.index} className="p-3 rounded-xl border-[0.5px] border-black/[0.06] bg-[var(--surface-1)] space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-semibold">GPU {g.index}</span>
                     <Badge variant={utilColor} dot>{g.util}%</Badge>
                   </div>
-                  <div className="text-xs text-muted truncate" title={g.name}>{g.name}</div>
-
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted">显存</span>
                       <span className="font-medium tnum">{formatBytes(g.mem_used * 1024 * 1024)} / {formatBytes(g.mem_total * 1024 * 1024)}</span>
                     </div>
                     <Progress value={memPct} size="sm" color={memColor} />
                   </div>
-
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-muted flex items-center gap-1"><Thermometer size={11} />温度</span>
-                    <span className={`font-medium tnum ${tempColor === 'bad' ? 'text-bad' : tempColor === 'warn' ? 'text-warn' : 'text-ok'}`}>{g.temp} °C</span>
-                  </div>
-
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-muted flex items-center gap-1"><Zap size={11} />功耗</span>
-                    <span className="font-medium tnum">{g.power.toFixed(0)} / {g.power_limit.toFixed(0)} W</span>
-                  </div>
-
-                  <div className="flex flex-wrap gap-1.5 pt-0.5">
-                    {g.groups.length > 0 ? g.groups.map(gn => (
-                      <Badge key={gn} variant="warn" dot>{gn}</Badge>
-                    )) : (
-                      <Badge variant="ok" dot>空闲</Badge>
-                    )}
-                  </div>
                 </div>
               )
             })}
           </div>
+          <Link to="/infra/gpu" className="mt-4 flex items-center justify-center gap-1 text-xs font-medium text-accent hover:underline">
+            查看每卡利用率、显存、温度与按 Pod 归属 <ChevronRight size={13} />
+          </Link>
         </section>
       )}
 
