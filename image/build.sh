@@ -30,6 +30,15 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   openssh-server sudo build-essential python3 python3-pip python3-venv \
   nodejs npm git curl wget vim tmux htop man-db locales tini iproute2 less
+# --- YatTerra: Lmod + system libs that CANNOT be delivered as /shared modules ---
+# (loader/ldconfig/dlopen-resolved libs and apt-only tools; heavy single-group
+#  tools like libreoffice/firefox/xvfb/novnc/dcpomatic stay out of the universal image)
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  lmod \
+  libsndfile1 portaudio19-dev default-libmysqlclient-dev pkg-config \
+  libgl1 libglib2.0-0t64 libfuse2t64 libfuse3-3 \
+  socat ripgrep jq nmap dnsutils netcat-openbsd whois sqlite3 redis-server \
+  tesseract-ocr tesseract-ocr-chi-sim fonts-noto-cjk python3.12-dev bc
 locale-gen en_US.UTF-8
 rm -rf /var/lib/apt/lists/*
 INSTALL
@@ -122,6 +131,22 @@ sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 sed -i 's/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?X11Forwarding.*/X11Forwarding yes/' /etc/ssh/sshd_config
 SETUP
+
+echo "==> lmod module path (/shared, read-only)"
+# Expose the host-provisioned runtimes under /shared via Lmod. /shared is the RO
+# bind mount every pod gets; modulefiles live in /shared/modules/Core.
+# NOTE: /etc/profile.d is login-shell only — also hook /etc/bash.bashrc for
+# interactive non-login shells, and document `bash -l` for supervisord services.
+sudo tee "$ROOTFS/etc/profile.d/00-yatterra-modules.sh" >/dev/null <<'MOD'
+# YatTerra: read-only runtimes from /shared via Lmod
+export MODULEPATH=/shared/modules/Core:/shared/modules${MODULEPATH:+:$MODULEPATH}
+[ -r /etc/profile.d/lmod.sh ] && . /etc/profile.d/lmod.sh
+# NB: lmod.sh sorts alphabetically after this file, so source it here explicitly;
+#     if /shared is absent module stays defined and `module avail` is just empty.
+MOD
+sudo chmod 0644 "$ROOTFS/etc/profile.d/00-yatterra-modules.sh"
+echo '[ -r /etc/profile.d/00-yatterra-modules.sh ] && . /etc/profile.d/00-yatterra-modules.sh' \
+  | sudo tee -a "$ROOTFS/etc/bash.bashrc" >/dev/null
 
 echo "==> entrypoint"
 sudo tee "$ROOTFS/entrypoint.sh" >/dev/null <<'ENT'

@@ -4,6 +4,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openssh-server sudo tini build-essential python3 python3-pip python3-venv \
       nodejs npm git curl wget vim tmux htop man-db ca-certificates locales \
       && rm -rf /var/lib/apt/lists/*
+# System libs the /shared-module approach cannot deliver (ldconfig/dlopen by name,
+# or apt-only tooling). Heavy single-group tools (libreoffice/xvfb/firefox/
+# dcpomatic) stay OUT of the universal base.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      lmod \
+      libsndfile1 portaudio19-dev default-libmysqlclient-dev pkg-config \
+      libgl1 libglib2.0-0t64 libfuse2t64 libfuse3-3 \
+      socat ripgrep jq nmap dnsutils netcat-openbsd whois sqlite3 redis-server \
+      tesseract-ocr tesseract-ocr-chi-sim fonts-noto-cjk python3.12-dev bc \
+      && rm -rf /var/lib/apt/lists/*
 RUN locale-gen en_US.UTF-8
 RUN useradd -m -u 1000 -s /bin/bash -G sudo cloud \
     && echo 'cloud ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/cloud \
@@ -13,6 +23,14 @@ RUN sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh
     && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && sed -i 's/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/' /etc/ssh/sshd_config \
     && sed -i 's/^#\?X11Forwarding.*/X11Forwarding yes/' /etc/ssh/sshd_config
+# Lmod: expose /shared runtimes read-only. /etc/profile.d = login shells only;
+# also hook /etc/bash.bashrc (interactive) and document `bash -l` for supervisord.
+RUN printf '%s\n' \
+      'export MODULEPATH=/shared/modules/Core:/shared/modules${MODULEPATH:+:$MODULEPATH}' \
+      '[ -r /etc/profile.d/lmod.sh ] && . /etc/profile.d/lmod.sh' \
+      > /etc/profile.d/00-yatterra-modules.sh \
+    && chmod 0644 /etc/profile.d/00-yatterra-modules.sh \
+    && printf '%s\n' '[ -r /etc/profile.d/00-yatterra-modules.sh ] && . /etc/profile.d/00-yatterra-modules.sh' >> /etc/bash.bashrc
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENV LANG=en_US.UTF-8
