@@ -17,6 +17,38 @@ import { clientsClaim } from 'workbox-core'
 precacheAndRoute(self.__WB_MANIFEST)
 cleanupOutdatedCaches()
 
+// ── App Badging ──────────────────────────────────────────────
+// WorkerNavigator 在 TS 的 lib 里还没声明 Badging API，这里自行窄化。
+const badgeNavigator = self.navigator as WorkerNavigator & {
+  setAppBadge?: (contents?: number) => Promise<void>
+  clearAppBadge?: () => Promise<void>
+}
+
+async function applyBadge(count: number): Promise<void> {
+  if (typeof badgeNavigator.setAppBadge !== 'function') return
+  try {
+    if (count > 0) await badgeNavigator.setAppBadge(count)
+    else await badgeNavigator.clearAppBadge?.()
+  } catch {
+    // 未安装 / 平台不支持，静默忽略
+  }
+}
+
+/** 拉一次未读数并刷新图标角标（后台同步、推送到达时用）。 */
+async function refreshBadgeFromServer(): Promise<void> {
+  try {
+    const res = await fetch('/api/push/events?unread_only=1&limit=1', {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    })
+    if (!res.ok) return
+    const data = (await res.json()) as { unread?: number }
+    await applyBadge(Number(data?.unread) || 0)
+  } catch {
+    // 离线或接口不可达时保留上一次的角标
+  }
+}
+
 // registerType: 'prompt' — 新版本停在 waiting,等用户点「刷新获取新版本」
 // (main.tsx 发 SKIP_WAITING)后才接管。install 时不能无条件 skipWaiting,
 // 否则永远没有 waiting worker,按钮取 reg.waiting 恒为 null 变成 no-op。
@@ -31,7 +63,19 @@ self.addEventListener('activate', (event) => {
 })
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting()
+  // 页面侧未读数变化时把角标同步给 SW —— 页面关闭后角标仍会保留。
+  if (event.data?.type === 'SET_APP_BADGE') {
+    event.waitUntil(applyBadge(Number(event.data?.count) || 0))
+  }
 })
+
+// ── 周期性后台同步 ───────────────────────────────────────────
+// 已安装的 PWA 上由浏览器定期唤醒，刷新未读角标；页面没开也能更新。
+self.addEventListener('periodicsync' as 'push', ((event: ExtendableEvent & { tag?: string }) => {
+  if (event.tag === 'yatterra-badge-refresh') {
+    event.waitUntil(refreshBadgeFromServer())
+  }
+}) as EventListener)
 
 const offlineHandler = createHandlerBoundToURL('/offline.html')
 
@@ -92,21 +136,51 @@ self.addEventListener('push', (event) => {
   const body = data.body || '新版本已部署，点击刷新获取最新功能'
 
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: '/icons/icon-192.png',
-      badge: '/icons/icon-96.png',
-      data: { url: data.url || '/' },
-      ...({
-        vibrate: [100, 50, 100],
-        actions: [
-          { action: 'refresh', title: '刷新' },
-          { action: 'dismiss', title: '稍后' },
-        ],
-      } as NotificationOptions),
-    }),
+    (async () => {
+      await self.registration.showNotification(title, {
+        body,
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-96.png',
+        data: { url: data.url || '/' },
+        ...({
+          vibrate: [100, 50, 100],
+          actions: [
+            { action: 'refresh', title: '刷新' },
+            { action: 'dismiss', title: '稍后' },
+          ],
+        } as NotificationOptions),
+      })
+      // 推送到达大概率意味着有新的未读，顺手把图标角标刷新一下。
+      await refreshBadgeFromServer()
+    })(),
   )
 })
+
+// 订阅可能被浏览器/推送服务轮换，重订阅后回传服务端，避免静默失效。
+self.addEventListener('pushsubscriptionchange', ((event: ExtendableEvent & {
+  oldSubscription?: PushSubscription
+  newSubscription?: PushSubscription | null
+}) => {
+  event.waitUntil((async () => {
+    let sub = event.newSubscription ?? null
+    if (!sub) {
+      const reg = self.registration
+      const key = event.oldSubscription?.options?.applicationServerKey
+      if (!reg || !key) return
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key })
+    }
+    try {
+      await fetch('/api/push/subscribe', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sub.toJSON()),
+      })
+    } catch {
+      // 离线时交给下次前台订阅兜底
+    }
+  })())
+}) as EventListener)
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()

@@ -20,11 +20,14 @@ import { SWUpdateNotifier } from '@/components/ui/SWUpdateNotifier'
 import { initTheme } from '@/stores/theme'
 import { initEditorPrefs } from '@/stores/editorPrefs'
 import '@/lib/pwa-install'
+import { initPwaEnhancements } from '@/lib/pwa-storage'
 import './styles/globals.css'
 import './styles/animations.css'
 
 initTheme()
 initEditorPrefs()
+// 安装后立刻申请持久化存储，并在已授权推送时注册后台角标同步。
+void initPwaEnhancements()
 
 onlineManager.setEventListener((setOnline) => {
   const onOnline = () => setOnline(true)

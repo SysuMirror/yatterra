@@ -18,6 +18,7 @@ export default defineConfig({
       filename: 'sw.ts',
       includeAssets: ['offline.html', 'fonts/*.ttf', 'icons/*.png'],
       manifest: {
+        id: '/',
         name: 'YatTerra',
         short_name: 'YatTerra',
         description: '普适性的技术基础设施',
@@ -26,10 +27,16 @@ export default defineConfig({
         theme_color: '#0a84ff',
         background_color: '#070b17',
         display: 'standalone',
+        // 桌面安装时优先独立窗口，退到 minimal-ui 而不是回到浏览器标签页
+        display_override: ['standalone', 'minimal-ui'],
         orientation: 'any',
         start_url: '/console',
         scope: '/',
         categories: ['education', 'productivity', 'utilities'],
+        // 从快捷方式/外部链接启动时复用已有窗口，而不是越开越多
+        launch_handler: { client_mode: 'navigate-existing' },
+        prefer_related_applications: false,
+        handle_links: 'preferred',
         icons: [
           { src: '/icons/icon-48.png', sizes: '48x48', type: 'image/png', purpose: 'any' },
           { src: '/icons/icon-72.png', sizes: '72x72', type: 'image/png', purpose: 'any' },
