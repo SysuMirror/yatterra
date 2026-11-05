@@ -14,6 +14,8 @@ export interface ApprovalRecord {
   reason: string
   /** Set when the record came from an automated proposer (e.g. "podwatch"). */
   origin?: string
+  /** True when the record was registered and executed by the auto tier (no human approval). */
+  auto?: boolean
   status: 'pending' | 'executed' | 'failed' | 'rejected'
   decided_ts?: string | null
   decided_by?: string | null

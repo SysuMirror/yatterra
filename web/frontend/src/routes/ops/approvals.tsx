@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ShieldQuestion, Check, X, RefreshCw, Terminal, FileEdit, Globe, Bot } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
@@ -21,11 +21,56 @@ const STATUS_BADGE: Record<string, { variant: 'warn' | 'ok' | 'bad' | 'muted'; l
   rejected: { variant: 'muted', label: '已拒绝' },
 }
 
+function cmdOf(rec: ApprovalRecord): string {
+  const args = rec.args || {}
+  // 兼容旧记录:podwatch 曾用 args.cmd,现统一为 args.command
+  return String(args.command ?? args.cmd ?? '')
+}
+
 function actionOf(rec: ApprovalRecord): string {
   const args = rec.args || {}
-  if (rec.tool === 'run' || rec.tool === 'run_remote') return String(args.command || '')
+  if (rec.tool === 'run' || rec.tool === 'run_remote') return cmdOf(rec)
   if (rec.tool === 'write_file' || rec.tool === 'edit_file') return `${rec.tool} ${args.path || ''}`
   return JSON.stringify(args).slice(0, 160)
+}
+
+// ── 意图分类 ──────────────────────────────────────────────────
+// 每条审批记录按「这次动作想达到什么目的」归一类,用于筛选聚合。判定取自
+// 记录的 reason(兜底看命令),纯前端计算,故对所有条目生效、无需后端改动。
+type IntentKey = 'safety' | 'recover' | 'apply' | 'verify' | 'other'
+
+const INTENTS: { key: IntentKey; label: string; variant: 'bad' | 'warn' | 'accent' | 'ok' | 'muted' }[] = [
+  { key: 'safety', label: '止损清理', variant: 'bad' },
+  { key: 'recover', label: '故障恢复', variant: 'warn' },
+  { key: 'apply', label: '变更生效', variant: 'accent' },
+  { key: 'verify', label: '回归验证', variant: 'ok' },
+  { key: 'other', label: '其他', variant: 'muted' },
+]
+const INTENT_BY_KEY = Object.fromEntries(INTENTS.map((i) => [i.key, i])) as Record<
+  IntentKey,
+  (typeof INTENTS)[number]
+>
+
+const INTENT_DOT: Record<string, string> = {
+  bad: 'bg-bad',
+  warn: 'bg-warn',
+  ok: 'bg-ok',
+  accent: 'bg-accent',
+  muted: 'bg-muted',
+}
+
+// 优先级:止损 > 恢复 > 生效 > 验证 > 其他(先命中先归类)
+const INTENT_RULES: [IntentKey, RegExp][] = [
+  ['safety', /(止损|探针|探测|越权|SSRF|泄露|阻断|清除|终止|移除|扫描|残留|回滚|敏感信息|重置.*环境|防止|防范|封禁|外联|探活)/i],
+  ['recover', /(恢复|拉起|失联|异常|崩溃|连接拒绝|健康检查|看门狗|不可控)/i],
+  ['apply', /(生效|加载|重新加载|应用变更|重新部署|热更新|最新.*(配置|代码|资源|版本|任务))/i],
+  ['verify', /(验证|确认|检查|观察|核验|是否|确保|测试|稳定)/i],
+]
+
+function intentOf(rec: ApprovalRecord): IntentKey {
+  const text = `${rec.reason || ''} ${cmdOf(rec)}`
+  for (const [key, re] of INTENT_RULES) if (re.test(text)) return key
+  return 'other'
 }
 
 function targetOf(rec: ApprovalRecord): string {
@@ -43,6 +88,7 @@ function toolIcon(rec: ApprovalRecord) {
 
 export default function ApprovalsPage() {
   const [filter, setFilter] = useState<StatusFilter>('pending')
+  const [intent, setIntent] = useState<IntentKey | 'all'>('all')
   const [confirm, setConfirm] = useState<{ action: 'approve' | 'reject'; rec: ApprovalRecord } | null>(null)
   const qc = useQueryClient()
   const toast = useToastStore((s) => s.add)
@@ -89,6 +135,18 @@ export default function ApprovalsPage() {
   const records = data?.approvals ?? []
   const pendingCount = records.filter((r) => r.status === 'pending').length
 
+  // 按意图聚合计数(在当前状态筛选结果内),用于筛选 chip
+  const intentCounts = useMemo(() => {
+    const c: Record<string, number> = {}
+    for (const r of records) {
+      const k = intentOf(r)
+      c[k] = (c[k] || 0) + 1
+    }
+    return c
+  }, [records])
+
+  const shown = intent === 'all' ? records : records.filter((r) => intentOf(r) === intent)
+
   return (
     <>
       <PageHeader title="审批队列" description="AI agent 高危写动作的人工审批与事后核验" doc={{ section: 'ops', item: 0, label: '运维文档' }}>
@@ -121,17 +179,43 @@ export default function ApprovalsPage() {
           {data?.mode && <Badge data-onboarding-target="approvals-mode" variant="muted" className="ml-auto">模式 {data.mode}</Badge>}
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 mb-4 pt-3 border-t border-black/[0.06]">
+          <span className="text-xs text-muted mr-1">意图</span>
+          <button
+            onClick={() => setIntent('all')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              intent === 'all' ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-black/[0.03] hover:text-ink-2'
+            }`}
+          >
+            全部 <span className="tnum opacity-60">{records.length}</span>
+          </button>
+          {INTENTS.filter((i) => (intentCounts[i.key] || 0) > 0).map((i) => (
+            <button
+              key={i.key}
+              onClick={() => setIntent(intent === i.key ? 'all' : i.key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
+                intent === i.key ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-black/[0.03] hover:text-ink-2'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${INTENT_DOT[i.variant]}`} />
+              {i.label} <span className="tnum opacity-60">{intentCounts[i.key]}</span>
+            </button>
+          ))}
+        </div>
+
         {isLoading ? (
           <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} />)}</div>
-        ) : records.length === 0 ? (
+        ) : shown.length === 0 ? (
           <EmptyState
             icon={<ShieldQuestion size={22} />}
-            title={filter === 'pending' ? '暂无待审批动作' : '暂无审批记录'}
-            description={filter === 'pending' ? 'AI agent 的高危写动作会在这里排队等待确认' : '调整筛选条件查看其它状态记录'}
+            title={records.length === 0 ? (filter === 'pending' ? '暂无待审批动作' : '暂无审批记录') : '该意图下暂无记录'}
+            description={records.length === 0
+              ? (filter === 'pending' ? 'AI agent 的高危写动作会在这里排队等待确认' : '调整筛选条件查看其它状态记录')
+              : '换个意图或状态筛选看看'}
           />
         ) : (
           <div className="space-y-3">
-            {records.map((rec) => {
+            {shown.map((rec) => {
               const sb = STATUS_BADGE[rec.status] ?? { variant: 'muted' as const, label: rec.status }
               return (
                 <div key={rec.id} data-onboarding-target="approvals-record" className="rounded-xl border border-black/[0.06] p-4 hover:bg-black/[0.015] transition-colors">
@@ -145,6 +229,9 @@ export default function ApprovalsPage() {
                         {rec.origin === 'podwatch' && (
                           <Badge variant="accent"><Bot size={11} className="mr-0.5" /> AI 建议</Badge>
                         )}
+                        <Badge variant={INTENT_BY_KEY[intentOf(rec)].variant} dot>
+                          {INTENT_BY_KEY[intentOf(rec)].label}
+                        </Badge>
                         <span className="text-xs text-muted tnum" title={formatDatetime(rec.ts)}>
                           {formatRelativeTime(rec.ts)}
                         </span>

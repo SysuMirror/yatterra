@@ -15,7 +15,11 @@ denylist,既没有 dry-run 也没有审批队列。本模块提供一个"需确�
   - 挂起:gate() 命中时**不执行**,登记一条 pending 记录(内存 + 落盘 JSON),
     返回"已挂起,等待确认(approval id=...)"。
   - 审批:HTTP 端点(/api/agents/approve、/reject,见文件末尾蓝图)由
-    admin+/infra.host 权限者批准后执行(agent._resume_approved),拒绝则作废。
+    admin/super 角色批准后执行(agent.resume_approved),拒绝则作废。
+  - 自动档:auto_execute() 供受信内部驱动(如 podwatch 自动处置档)调用——
+    命令先经调用方白名单校验,这里登记**并立即执行**,记录直接落 executed
+    供审批页过目,并同样登记只读事后核验。人工批准与自动执行共用
+    _run_record() 一条执行路径,行为一致,仅 audit action 名不同。
   - 核验:approve 执行成功后会登记一条**只读**核验命令(如"重启 X"→
     "systemctl is-active X"、"kubectl delete/scale"→"kubectl get ..."
     、"write_file"→"ls -l path"),在下次同类操作或 run_agent 启动时执行,
@@ -216,11 +220,13 @@ def gate(tool, args, runner, agent_def=None, pod=None, run_id=None, user=None):
         return None
 
 
-def submit(tool, args, runner, agent_def, pod, run_id, user, reason, origin=None):
-    """登记一条待确认写动作,返回提示串。相同(pending)动作去重。
+def _create(tool, args, runner, agent_def, pod, run_id, user, reason,
+            origin=None, auto=False):
+    """登记一条写动作(不推送),返回 (aid, reused)。相同(pending)动作去重。
 
     ``origin`` 标注记录来源(如 "podwatch"),仅用于前端区分「AI 建议」与
     人工/agent 触发的挂起动作;为空即普通来源,向后兼容旧调用点。
+    ``auto`` 标记该记录由自动档登记(经 auto_execute 立即执行,非人工批准)。
     """
     args = args or {}
     actor = _actor_name(user)
@@ -252,6 +258,7 @@ def submit(tool, args, runner, agent_def, pod, run_id, user, reason, origin=None
                 "run_id": run_id or "",
                 "reason": reason,
                 "origin": origin or "",
+                "auto": bool(auto),
                 "status": "pending",
                 "decided_ts": None,
                 "decided_by": None,
@@ -270,6 +277,14 @@ def submit(tool, args, runner, agent_def, pod, run_id, user, reason, origin=None
                      actor=actor)
     except Exception:
         pass
+    return aid, reused
+
+
+def submit(tool, args, runner, agent_def=None, pod=None, run_id=None, user=None,
+           reason="", origin=None):
+    """登记一条待确认写动作,返回提示串。相同(pending)动作去重。"""
+    aid, reused = _create(tool, args, runner, agent_def, pod, run_id, user,
+                          reason, origin=origin)
     # 新 pending 记录 → 推送 admin 群(kind='approval-pending')。同一 pod 5 分钟
     # 内多条 pending 合并成一条(event_key 带时间桶); 去重记录复用时不重推。
     # 收件人是 admin(has_perm('infra.host')/admin/super), notify_event 按组解析
@@ -280,6 +295,30 @@ def submit(tool, args, runner, agent_def, pod, run_id, user, reason, origin=None
     return (f"【已挂起,等待确认(approval id={aid})】本次未执行。该动作属需确认的写操作,"
             f"已登记审批队列,请勿重复提交;由具备 admin/infra.host 权限者经 "
             f"POST /api/agents/approve 批准后执行,或 /api/agents/reject 作废。可继续其它只读步骤。")
+
+
+def auto_execute(tool, args, runner, agent_def=None, pod=None, run_id=None,
+                 user=None, reason="", origin="auto"):
+    """自动档:登记**并立即执行**一条动作,不经人工审批。返回 (ok, output)。
+
+    仅供受信的内部驱动(podwatch 自动档)调用——命令必须先由调用方白名单校验
+    (_validate_remedy),此处沿用 approve() 的同一条执行路径
+    (agent.resume_approved)与事后核验闭环,记录状态直接落 executed,供审批页过目。
+    """
+    aid, _ = _create(tool, args, runner, agent_def, pod, run_id, user,
+                     reason, origin=origin, auto=True)
+    rec = get(aid)
+    if not rec:
+        return False, f"审批记录登记失败: {aid}"
+    try:
+        import audit
+        audit.record("approval_auto",
+                     detail=f"id={aid} tool={tool} runner={runner} "
+                            f"pod={pod or '-'} reason={str(reason)[:120]}",
+                     actor=_actor_name(user))
+    except Exception:
+        pass
+    return _run_record(rec, actor_user=user, action="approval_auto_exec")
 
 
 def _notify_pending(pod, reason):
@@ -326,12 +365,22 @@ def approve(aid, actor_user=None):
         return False, f"审批记录不存在: {aid}"
     if rec.get("status") != "pending":
         return False, f"该动作已处理(status={rec.get('status')})"
-    by = _actor_name(actor_user)
     # "下次同类操作":批准前顺带核验上一批待核验动作(只读,best-effort)
     try:
         verify_pending(limit=3)
     except Exception:
         pass
+    return _run_record(rec, actor_user=actor_user, action="approval_approve")
+
+
+def _run_record(rec, actor_user=None, action="approval_approve"):
+    """执行一条已登记动作,回写状态并登记事后核验。返回 (ok, output)。
+
+    approve()(人工批准)与 auto_execute()(自动档)共用此路径,确保两条入口的
+    执行、落盘与核验行为完全一致,只有 audit action 名不同。
+    """
+    aid = rec.get("id")
+    by = _actor_name(actor_user)
     try:
         import agent
         ok, out = agent.resume_approved(rec, user=actor_user)
@@ -356,7 +405,7 @@ def approve(aid, actor_user=None):
         _save(data)
     try:
         import audit
-        audit.record("approval_approve",
+        audit.record(action,
                      detail=f"id={aid} ok={ok} by={by} out={str(out)[:300]}",
                      actor=by)
     except Exception:

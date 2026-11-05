@@ -83,6 +83,19 @@ _STATE_DIR = os.path.join(_ROOT, "state")
 _PROFILE_DIR = os.path.join(_ROOT, "profiles")
 _INSIGHT_PREFIX = "insight:pod:"     # → real key yt:insight:pod:<name>
 
+# ── 自动处置档 ─────────────────────────────────────────────────
+# 过白名单(_validate_remedy)的 AI 建议命令可自动执行,不再等人工批准,只在
+# 审批页留痕过目并照样跑事后核验。分级由 _REMEDY_RULES 的第 3 元决定:
+#   off    : 全部只入队等人工批准(旧行为)
+#   tiered : 只自动执行可逆/自愈类(rollout restart deploy / supervisorctl restart)
+#   all    : 白名单命中的全部自动执行(含 delete pod / systemctl restart yatterra-*)
+# 同一 pod 同一条命令在冷却期内只自动执行一次,防「每轮扫描重启一次」的循环。
+_AUTO_ENV = "YATTERRA_PODWATCH_AUTO"
+_AUTO_COOLDOWN_ENV = "YATTERRA_PODWATCH_AUTO_COOLDOWN"
+_AUTO_COOLDOWN_DEFAULT = 7200        # 2h
+_AUTO_FILE = os.path.join(_ROOT, "auto_exec.json")
+_AUTO_LOCK = threading.Lock()
+
 # Directories that are build artifacts / caches / VCS internals — never code.
 # NOTE: do NOT blanket-skip dot-dirs; e.g. .octop/plugins/*/main.py is real code.
 _SKIP_DIRS = {
@@ -586,18 +599,21 @@ def _notify_risk(pod, risk, summary, proposed=0):
 _REMEDY_MAX = 2
 _REMEDY_BAD = re.compile(r"[;&|`$()<>\\\n\r]")
 _REMEDY_RULES = (
-    (r"kubectl -n [a-z0-9-]+ rollout restart deploy/[a-z0-9-]+", "host"),
-    (r"kubectl -n [a-z0-9-]+ delete pod [a-z0-9-]+", "host"),
-    (r"systemctl restart yatterra-[a-z0-9-]+\.service", "host"),
-    (r"supervisorctl restart [A-Za-z0-9_.:-]+", "pod"),
+    # (正则, runner, 最低自动档) —— 第 3 元 = 在哪个模式下才允许自动执行:
+    #   "tiered" 表示 tiered/all 均可自动;"all" 表示只有 all 才自动。
+    (r"kubectl -n [a-z0-9-]+ rollout restart deploy/[a-z0-9-]+", "host", "tiered"),
+    (r"kubectl -n [a-z0-9-]+ delete pod [a-z0-9-]+", "host", "all"),
+    (r"systemctl restart yatterra-[a-z0-9-]+\.service", "host", "all"),
+    (r"supervisorctl restart [A-Za-z0-9_.:-]+", "pod", "tiered"),
 )
 
 
 def _validate_remedy(cmd, pod=""):
-    """校验一条 AI 处置命令,通过返回 runner(host/pod),否则 None。
+    """校验一条 AI 处置命令,通过返回 (runner, min_tier),否则 None。
 
     双重闸:先否决任何含 shell 元字符(串联/注入/替换)的串,再要求整串
     **完整匹配**某条白名单正则(re.fullmatch)。任何不确定 → 丢弃并记日志。
+    min_tier 是该条命令允许自动执行所需的最低档(tiered/all)。
     """
     c = str(cmd or "").strip()
     if not c or len(c) > 200:
@@ -605,11 +621,74 @@ def _validate_remedy(cmd, pod=""):
     if _REMEDY_BAD.search(c):
         log.info("podwatch: remedy rejected (metachars) for %s: %s", pod, c[:120])
         return None
-    for pat, runner in _REMEDY_RULES:
+    for pat, runner, min_tier in _REMEDY_RULES:
         if re.fullmatch(pat, c):
-            return runner
+            return runner, min_tier
     log.info("podwatch: remedy rejected (no whitelist match) for %s: %s", pod, c[:120])
     return None
+
+
+# ── 自动处置:档位 / 冷却 ──────────────────────────────────────
+def _auto_mode():
+    """当前自动处置档:off / tiered(默认) / all。读取时生效,无需重启。"""
+    try:
+        m = (os.environ.get(_AUTO_ENV) or "tiered").strip().lower()
+    except Exception:
+        m = "tiered"
+    return m if m in ("off", "tiered", "all") else "tiered"
+
+
+def _auto_cooldown():
+    try:
+        return max(0, int(os.environ.get(_AUTO_COOLDOWN_ENV) or _AUTO_COOLDOWN_DEFAULT))
+    except Exception:
+        return _AUTO_COOLDOWN_DEFAULT
+
+
+def _auto_tier_allows(mode, min_tier):
+    """mode 下是否允许自动执行一条 min_tier 级别的命令。"""
+    if mode == "all":
+        return True
+    if mode == "tiered":
+        return min_tier == "tiered"
+    return False
+
+
+def _auto_allowed(pod, cmd):
+    """冷却闸:同一 pod 同一条命令在冷却期内只自动执行一次(防重启循环)。"""
+    if _auto_cooldown() <= 0:
+        return True
+    with _AUTO_LOCK:
+        st = _read_json(_AUTO_FILE, {})
+    last = float(st.get(f"{pod}|{cmd}", 0) or 0)
+    return (time.time() - last) >= _auto_cooldown()
+
+
+def _auto_mark(pod, cmd):
+    """记录一次自动执行时间戳(供冷却闸判定)。"""
+    now = time.time()
+    with _AUTO_LOCK:
+        st = _read_json(_AUTO_FILE, {})
+        st[f"{pod}|{cmd}"] = now
+        # 顺带淘汰 30 天前的条目,避免文件无限增长
+        cut = now - 30 * 86400
+        st = {k: v for k, v in st.items() if isinstance(v, (int, float)) and v >= cut}
+        _write_json(_AUTO_FILE, st)
+
+
+def _auto_exec(pod, why, cmd, runner):
+    """自动档:把一条**已过白名单**的处置命令登记并立即执行。返回 (ok, output)。
+
+    走 approvals.auto_execute → agent.resume_approved,与人工批准完全同一路径,
+    记录状态直接落 executed(审批页可见),成功后照样登记只读事后核验。
+    """
+    import approvals
+    return approvals.auto_execute(
+        "run", {"command": cmd}, runner,
+        pod=(pod if runner == "pod" else ""),
+        user={"username": _BOT_USER, "role": "admin"},
+        reason=why or f"podwatch 自动处置:{pod}",
+        origin="podwatch")
 
 
 def _propose(pod, why, cmd, runner):
@@ -620,7 +699,7 @@ def _propose(pod, why, cmd, runner):
     """
     try:
         import approvals
-        approvals.submit("run", {"cmd": cmd}, runner, agent_def=None,
+        approvals.submit("run", {"command": cmd}, runner, agent_def=None,
                          pod=(pod if runner == "pod" else ""), run_id="",
                          user=_BOT_USER, reason=why or f"podwatch 处置建议:{pod}",
                          origin="podwatch")
@@ -916,15 +995,30 @@ def _scan_one_locked(pod, force):
     # Warm the insight cache the Pod detail panel reads.
     _warm_insight(pod, prof)
 
-    # 感知 → 建议 → 审批：LLM 给出处置建议时，逐条过白名单后登记进审批队列
-    # (只入队，绝不由 podwatch 执行)；判定高风险时再经 pwa_alerts 的
-    # at-most-once 通道推给成员。
+    # 感知 → 建议 → (自动执行 | 审批)：LLM 给出处置建议时，逐条过白名单后，
+    # 达到自动档且未在冷却期的直接执行；否则登记进审批队列等人批准。
+    # 判定高风险时再经 pwa_alerts 的 at-most-once 通道推给成员。
     proposed = 0
+    auto_done = 0
     if analysis_ok and actions:
+        mode = _auto_mode()
         for act in actions[:_REMEDY_MAX]:
             cmd = str(act.get("cmd", "")).strip()
-            runner = _validate_remedy(cmd, pod)
-            if runner and _propose(pod, str(act.get("why", "")).strip(), cmd, runner):
+            why = str(act.get("why", "")).strip()
+            v = _validate_remedy(cmd, pod)
+            if not v:
+                continue
+            runner, min_tier = v
+            if _auto_tier_allows(mode, min_tier) and _auto_allowed(pod, cmd):
+                ok, out = _auto_exec(pod, why, cmd, runner)
+                log.info("podwatch: auto-exec %s for %s [%s] ok=%s %s",
+                         cmd, pod, runner, ok, str(out)[:200])
+                if ok:
+                    _auto_mark(pod, cmd)
+                    auto_done += 1
+                    continue
+                # 自动执行失败 → 退回入队,等人工处理
+            if _propose(pod, why, cmd, runner):
                 proposed += 1
 
     risk_alerted = False
@@ -939,6 +1033,7 @@ def _scan_one_locked(pod, force):
                             f"{' deep' if deep_done else ''}"
                             f"{' risk-alert' if risk_alerted else ''}"
                             f"{f' propose={proposed}' if proposed else ''}"
+                            f"{f' auto={auto_done}' if auto_done else ''}"
                             f"{'' if analysis_ok else ' (LLM 不可用,待重试)'}",
                      module="podwatch")
     except Exception:
@@ -948,7 +1043,7 @@ def _scan_one_locked(pod, force):
             "modified": modified, "removed": removed, "summary": summary,
             "deep": deep_done, "pending": not analysis_ok, "risk": risk,
             "risk_level": risk_level, "risk_alert": risk_alerted,
-            "proposed": proposed}
+            "proposed": proposed, "auto": auto_done}
 
 
 def scan_all():
