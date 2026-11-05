@@ -11,11 +11,22 @@ Endpoints:
 import json, os, logging, threading
 from flask import Blueprint, request, jsonify
 from pywebpush import webpush, WebPushException
-from api._auth import require_auth, current_username
+from api._auth import require_auth, current_username, min_role_guard
 
 logger = logging.getLogger(__name__)
 
 push_bp = Blueprint("api_push", __name__, url_prefix="/api/push")
+
+
+@push_bp.before_request
+def _push_require_user():
+    """封禁 guest(匿名)访问通知中心/推送。
+
+    guest 是零凭据且全局共享的同一 principal,通知事件按 principal 过滤 —
+    放任 guest 读取等于把「访客桶」暴露给所有匿名者,且 /events/read 可按
+    principal 写入。匿名调用放行(交由路由 401),guest → 403。
+    """
+    return min_role_guard("user")
 
 # ── VAPID keys ────────────────────────────────────────────────
 import siteconf

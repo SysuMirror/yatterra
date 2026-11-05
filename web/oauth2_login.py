@@ -55,7 +55,10 @@ UNISSO_TOKEN_URL = os.environ.get(
 UNISSO_USERINFO_URL = os.environ.get(
     "UNISSO_OAUTH_USERINFO_URL", "http://127.0.0.1:32004/api/oauth/userinfo"
 )
-UNISSO_SCOPE = os.environ.get("UNISSO_OAUTH_SCOPE", "openid profile email")
+# Explicit sub-scopes (v2 whitelist) rather than the legacy `profile` alias.
+UNISSO_SCOPE = os.environ.get(
+    "UNISSO_OAUTH_SCOPE", "openid profile:username profile:name profile:avatar email"
+)
 
 # Base URL of this yatterra instance (for building redirect_uri)
 YATERRA_BASE_URL = os.environ.get(
@@ -236,6 +239,23 @@ def unisso_authorize_redirect(callback_path: str,
     return f"{UNISSO_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
 
+def _unisso_raise(resp, action: str) -> None:
+    """Raise a readable error carrying UniSSO's error / error_description.
+
+    The login page shows this message, so surface the provider's reason
+    (``invalid_client`` / ``invalid_grant`` / ...) instead of a bare 4xx.
+    """
+    if 200 <= resp.status_code < 300:
+        return
+    detail = ""
+    try:
+        body = resp.json()
+        detail = body.get("error_description") or body.get("error") or ""
+    except Exception:
+        detail = (resp.text or "").strip()[:200]
+    raise RuntimeError(f"UniSSO {action} 失败：HTTP {resp.status_code} {detail}".strip())
+
+
 def unisso_exchange_code(code: str, redirect_uri: str, code_verifier: str) -> dict:
     """Exchange authorization code for access token."""
     resp = requests.post(
@@ -250,7 +270,7 @@ def unisso_exchange_code(code: str, redirect_uri: str, code_verifier: str) -> di
         },
         timeout=15,
     )
-    resp.raise_for_status()
+    _unisso_raise(resp, "token")
     return resp.json()
 
 
@@ -261,5 +281,5 @@ def unisso_fetch_userinfo(access_token: str) -> dict:
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=15,
     )
-    resp.raise_for_status()
+    _unisso_raise(resp, "userinfo")
     return resp.json()

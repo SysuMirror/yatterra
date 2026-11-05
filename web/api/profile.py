@@ -10,9 +10,19 @@ users_mod = import_module("users")
 import oauth2_login
 import audit
 
-from api._auth import require_auth, current_username, current_user_obj
+from api._auth import require_auth, current_username, current_user_obj, min_role_guard
 
 profile_bp = Blueprint("api_profile", __name__, url_prefix="/api/profile")
+
+
+@profile_bp.before_request
+def _profile_require_user():
+    """封禁 guest(匿名)访问个人资料/改密/绑定。
+
+    guest 没有真实用户行,这些写入口(改密、解绑、推送偏好)对匿名者开放
+    没有意义,只会成为未授权写入面。匿名调用放行(交由路由 401),guest → 403。
+    """
+    return min_role_guard("user")
 
 
 @profile_bp.route("", methods=["GET"])

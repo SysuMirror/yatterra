@@ -506,9 +506,12 @@ def infra_proxy_list():
     st = proxy_map.status()
     if _is_proxy_admin(user):
         return jsonify(st)
+    # Non-admins only see mappings bound to their own pods.  Do NOT return the
+    # global status overview (conf_present / container_running / nginx state)
+    # to them — that leaked the FRP reverse-proxy deployment state to any
+    # authenticated caller (incl. guest) who lacked the infra.proxy perm.
     mine = _user_pod_names(user)
-    st["mappings"] = [m for m in st.get("mappings", []) if m.get("pod") in mine]
-    return jsonify(st)
+    return jsonify({"mappings": [m for m in st.get("mappings", []) if m.get("pod") in mine]})
 
 
 @infra_bp.route("/proxy", methods=["POST"])

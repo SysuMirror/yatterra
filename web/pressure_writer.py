@@ -763,23 +763,52 @@ def write_once():
 
 
 # --- 压力降级通知(kind='pressure') -------------------------------------------
-# 层级切换点: 任一 level 维度从非 high 跃迁到 high 即视为触发降级
-# (terra→sdpy→app 三层降级由 app 侧按 level 字段执行, 这里只报切换边沿;
+# 只报"突发"压力, 不报"持续负载":
+#   某一维度需先真正回落到 **低位(low)** 并连续平静停留 ALERT_CALM_S 秒,
+#   才"重新武装"; 武装之后冲进 high 才发一次通知, 报完立即解除武装,
+#   必须再次安静下来才可能复报。
+#   一直在高位/中位来回震荡(持续负载, 例如 pod 正常占着 GPU/CPU)、
+#   以及贴着阈值抖动的情况, 从不真正安静下来 → 始终不武装 → 一律静默。
+# 另加 ALERT_COOLDOWN_S 冷却兜底, 防相邻突发过密。
+# (terra→sdpy→app 三层降级由 app 侧按 level 字段执行, 与通知解耦;
 #  v3 起 level 带 DWELL_UP 滞回, 边沿最多滞后 DWELL_UP*POLL_S ≈ 4s)。
 # 刻意不 import cert_alerts(避免在独立进程里重复拉起检查线程), 本地实现
 # 同款 _claim_alert 去重 + send_to_users(admin) 直发; 全部 lazy + 吞异常,
 # 通知失败绝不影响压力信号写入。
 _prev_levels = {}
+_low_since = {}     # metric -> 当前连续"低位"起点(monotonic); None=当前不在低位
+_armed = {}         # metric -> 是否已从一段平静低位中重新武装(默认未武装=静默基线)
+_last_alert = {}    # metric -> 最近一次告警的 monotonic ts
+
+# "重新武装"所需低位平静时长(秒); 持续负载/抖动攒不满 → 不报
+ALERT_CALM_S = float(os.environ.get("PRESSURE_ALERT_CALM_S", "600"))
+# 同维度两次告警最小间隔(秒)
+ALERT_COOLDOWN_S = float(os.environ.get("PRESSURE_ALERT_COOLDOWN_S", "1800"))
 
 
 def _notify_level_switch(payload):
     try:
         levels = (payload or {}).get("level") or {}
+        now = time.monotonic()
         for metric, lvl in levels.items():
             prev = _prev_levels.get(metric)
             _prev_levels[metric] = lvl
+            # 跟踪连续低位时长: 攒够 ALERT_CALM_S 即"重新武装"(首轮必未武装)
+            if lvl == "low":
+                if _low_since.get(metric) is None:
+                    _low_since[metric] = now
+                if now - _low_since[metric] >= ALERT_CALM_S:
+                    _armed[metric] = True
+            else:
+                _low_since[metric] = None
             if lvl != "high" or prev == "high" or prev is None:
                 continue  # 只报进入 high 的边沿(首轮静默基线)
+            if not _armed.get(metric):
+                continue  # 持续负载/抖动: 未从真正平静的低位重新武装 → 静默
+            if now - _last_alert.get(metric, -1e18) < ALERT_COOLDOWN_S:
+                continue  # 冷却期内, 不重复报
+            _armed[metric] = False  # 报一次即解除武装, 须再次安静方能复报
+            _last_alert[metric] = now
             _push_pressure_alert(metric)
     except Exception:
         pass
