@@ -35,6 +35,23 @@ ANCHOR = "  upstream backend {"
 RESERVED = siteconf.RESERVED_SUBDOMAINS
 SUB_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
+# 集群/基础设施内部端口:绝不允许经 proxy 映射暴露到公网。
+# 这些端口上跑的是 k8s 控制面、etcd、数据库、缓存、对象存储、向量库与 frp
+# 管理面——一旦映射出去就是零鉴权直连集群内部。pod 应用端口(8080/3000/…)
+# 不受影响。
+BLOCKED_PORTS = {
+    2379, 2380,        # etcd
+    6443,              # kube-apiserver
+    10250, 10248,      # kubelet / kubectl proxy
+    6379,              # redis
+    5432,              # postgres
+    3306,              # mysql
+    6333, 6334,        # qdrant
+    9000, 9001,        # minio
+    7500, 7000, 7001,  # frp admin / bind
+    2375, 2376,        # docker daemon
+}
+
 DOMAIN = siteconf.DOMAIN  # 父域
 
 
@@ -360,6 +377,8 @@ def add(subdomain, port, note="", pod=None):
         return False, "端口必须是整数"
     if not (1 <= port <= 65535):
         return False, "端口范围 1-65535"
+    if port in BLOCKED_PORTS:
+        return False, f"端口 {port} 是集群内部服务端口,禁止映射到公网"
     state = _load()
     if any(m["subdomain"] == sub for m in state):
         return False, f"子域 {sub} 已存在"

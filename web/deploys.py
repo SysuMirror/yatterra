@@ -345,6 +345,10 @@ def _env_for_group(group):
         "QDRANT_GRPC": f"{siteconf.QDRANT_SERVICE}:6334",
         "SHARED_DIR": "/shared",
     }
+    # outbound proxy defaults (host mihomo core). Group-level env (merged below)
+    # and explicit per-deploy env both override these.
+    for k, v in siteconf.proxy_env_defaults().items():
+        env.setdefault(k, v)
     try:
         import db_svc
         for c in db_svc.list_creds():

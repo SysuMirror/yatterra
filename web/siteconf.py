@@ -172,3 +172,47 @@ CLOUD_USER = _env("YATTERRA_CLOUD_USER", "cloud")
 CLOUD_UID = _int("YATTERRA_CLOUD_UID", 1000)
 # Env var the container entrypoint reads to set the login password.
 PASSWORD_ENV = _env("YATTERRA_PASSWORD_ENV", "CLOUD_PASSWORD")
+
+# --------------------------------------------------------------------------- #
+# Default outbound proxy for group pods
+# --------------------------------------------------------------------------- #
+# Every pod (container env + supervised programs) points at the host's mihomo
+# core. Routing policy lives on the proxy (mode: rule = CN direct / foreign
+# proxied), so pods need no policy of their own — they only need to point here.
+# A group can override any of these via its custom env vars.
+def _guess_lan_ip():
+    """IP of the interface holding the default route (no packet is sent)."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("223.5.5.5", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return ""
+    finally:
+        s.close()
+
+PROXY_HOST = _env("YATTERRA_PROXY_HOST", _guess_lan_ip())
+PROXY_PORT = _env("YATTERRA_PROXY_PORT", "7890")
+PROXY_URL = _env("YATTERRA_PROXY_URL", f"http://{PROXY_HOST}:{PROXY_PORT}" if PROXY_HOST else "")
+# Never proxied: loopback, RFC1918 + cluster CIDRs, cluster DNS suffixes, own domains.
+NO_PROXY = _env("YATTERRA_NO_PROXY", ",".join([
+    "localhost", "127.0.0.1", "::1", "0.0.0.0",
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+    "10.42.0.0/16", "10.43.0.0/16",
+    ".svc", ".svc.cluster.local", ".cluster.local", ".local",
+    DOMAIN, f".{DOMAIN}", f"cloud.{DOMAIN}", f"api.{DOMAIN}", ".mony.eu.org",
+]))
+
+
+def proxy_env_defaults():
+    """Proxy env for one group. Empty if no proxy host is known, so a missing
+    proxy degrades to the previous (direct) behaviour instead of breaking pods."""
+    if not PROXY_URL:
+        return {}
+    return {
+        "HTTP_PROXY": PROXY_URL, "HTTPS_PROXY": PROXY_URL, "ALL_PROXY": PROXY_URL,
+        "NO_PROXY": NO_PROXY,
+        "http_proxy": PROXY_URL, "https_proxy": PROXY_URL, "all_proxy": PROXY_URL,
+        "no_proxy": NO_PROXY,
+    }

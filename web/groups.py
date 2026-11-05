@@ -33,6 +33,12 @@ NGINX_MARK_END = "# <<< yatterra web-ssl managed <<<"
 NGINX_SSL_CERT = siteconf.NGINX_SSL_CERT
 NGINX_SSL_KEY = siteconf.NGINX_SSL_KEY
 NGINX_REMOTE_HOST = siteconf.RELAY_HOST_NAME  # remote_hosts.json entry
+# htpasswd for basic-auth on "sensitive" web blocks (windows VM groups: the
+# noVNC console = full desktop of the guest). Written on the relay by us.
+NGINX_HTPASSWD = os.environ.get("YATTERRA_NGINX_HTPASSWD",
+                                "/etc/nginx/yatterra-htpasswd")
+# group types whose public web entry gets auth_basic
+AUTH_WEB_TYPES = {"windows"}
 
 DEFAULT_CPU_CPU = "2"
 DEFAULT_CPU_MEM = "4Gi"
@@ -42,6 +48,18 @@ DEFAULT_GPU_MEM = "16Gi"
 # size is a recorded soft cap (local-path/ext4 don't hard-enforce -> advisory).
 GROUP_DATA_ROOT = siteconf.GROUP_DATA_ROOT
 DEFAULT_STORAGE = "10Gi"
+
+# Windows VM group (dockurr/windows = QEMU/KVM Windows in a container, noVNC web
+# UI). Its own image + disk hostPath; needs /dev/kvm (so the container must be
+# privileged) -> kept as a distinct group type.
+WINDOWS_IMAGE = os.environ.get("YATTERRA_WINDOWS_IMAGE",
+                               "docker.io/dockurr/windows:latest")
+WINVM_ROOT = os.environ.get("YATTERRA_WINVM_ROOT", "/mnt/sdb/yatterra-win")
+WINDOWS_DEFAULT_CPU = "4"
+WINDOWS_DEFAULT_MEM = "10Gi"
+# Windows account dockurr creates (must NOT be a built-in name: Administrator,
+# Guest, DefaultAccount, WDAGUtilityAccount -> dockurr errors out with exit 84).
+WINDOWS_DEFAULT_USER = os.environ.get("YATTERRA_WINDOWS_USER", "winadmin")
 
 # Container init: the hostPath at /home/cloud shadows the image's skel-populated
 # home, so on first boot (empty mount) we re-seed from /etc/skel + chown to cloud,
@@ -55,14 +73,15 @@ if [ ! -e /home/cloud/.bashrc ]; then
   cp -a /etc/skel/. /home/cloud/ 2>/dev/null || true
   chown -R cloud:cloud /home/cloud 2>/dev/null || true
 fi
-# Expose the read-only in-pod programming guide (/etc/yatterra/README.md, a
-# ConfigMap mount) into the home dir so humans and AI coding agents that scan the
-# working directory (README.md / AGENTS.md / CLAUDE.md) find it. Never overwrite
-# a real file the user put there — only add the symlink when the path is free.
-if [ -e /etc/yatterra/README.md ]; then
+# Expose the read-only programming guide (/shared/README.md, on the read-only
+# shared disk every pod mounts) into the home dir so humans and AI coding agents
+# that scan the working directory (README.md / AGENTS.md / CLAUDE.md) find it.
+# Never overwrite a real file the user put there — only add the symlink when the
+# path is free.
+if [ -e /shared/README.md ]; then
   for f in README.md AGENTS.md CLAUDE.md; do
     if [ ! -e "/home/cloud/$f" ] && [ ! -L "/home/cloud/$f" ]; then
-      ln -s /etc/yatterra/README.md "/home/cloud/$f" 2>/dev/null || true
+      ln -s /shared/README.md "/home/cloud/$f" 2>/dev/null || true
     fi
   done
 fi
@@ -250,8 +269,131 @@ def _all_gpu_ids():
 _all_gpu_ids._cache = None
 
 
+def _gib(value, default):
+    """Parse a k8s-ish memory string ("10Gi"/"8G"/"512Mi") to whole GiB."""
+    import re as _re
+    m = _re.match(r"^\s*(\d+)\s*(Gi|G|Mi|M)?\s*$", str(value or ""))
+    if not m:
+        return default
+    n = int(m.group(1))
+    if (m.group(2) or "Gi") in ("Mi", "M"):
+        n = max(1, n // 1024)
+    return n
+
+
+def _windows_deployment_yaml(g):
+    """Deployment for a Windows-VM group: a single privileged dockurr/windows
+    container (QEMU/KVM) exposing its noVNC web UI on the group web port (8080),
+    plus a persistent disk on the big hostPath. Distinct from the ubuntu groups:
+    no sshd, no /home/cloud, /dev/kvm required (=> privileged)."""
+    name = g["name"]
+    req_cpu, req_mem, req_storage = req_estimate.request_for(g)
+    cpu_cores = _gib(f'{g["cpu"]}Gi', 4)
+    ram_g = max(2, _gib(g["mem"], 10) - 2)      # leave host/overhead room
+    disk_g = _gib(g["storage"], 64)
+    env_lines = [
+        '        - name: WEB_PORT\n          value: "8080"',
+        '        - name: VERSION\n          value: "10"',
+        '        - name: EDITION\n          value: "Professional"',
+        f'        - name: RAM_SIZE\n          value: "{ram_g}G"',
+        f'        - name: CPU_CORES\n          value: "{cpu_cores}"',
+        f'        - name: DISK_SIZE\n          value: "{disk_g}G"',
+        # NB: built-in names (Administrator/Guest/...) are rejected by dockurr
+        # ("reserved for a built-in Windows account") -> use our own name.
+        f'        - name: USERNAME\n          value: {json.dumps(WINDOWS_DEFAULT_USER)}',
+        f'        - name: PASSWORD\n          value: {json.dumps(g["password"])}',
+    ]
+    # dockurr 的 dnsmasq 启动时拿不到上游解析器：它会把容器的 /etc/resolv.conf
+    # 改写成 nameserver 127.0.0.1，而 dnsmasq 视 127.0.0.0/8 为本地接口直接忽略
+    # （日志 "ignoring nameserver 127.0.0.1 - local interface"），且它只在
+    # /etc/resolv.dnsmasq 已存在时才加 --resolv-file（重启时该文件又会被删）。
+    # 结果客户机所有外部域名都 REFUSED → Windows 显示「以太网无 Internet」。
+    # 这里显式喂上游：集群 DNS(CoreDNS) + 公共 DNS。
+    _win_custom_keys = {str(k).upper() for k in (g.get("env") or {})}
+    if "DNSMASQ_OPTS" not in _win_custom_keys:
+        env_lines.append(
+            '        - name: DNSMASQ_OPTS\n'
+            '          value: "--server=10.43.0.10 --server=223.5.5.5"'
+        )
+    # outbound proxy defaults (host mihomo) so the image can fetch the ISO;
+    # overridable by the group's custom env below.
+    _custom_keys = {str(k).upper() for k in (g.get("env") or {})}
+    for k, v in siteconf.proxy_env_defaults().items():
+        if k.upper() in _custom_keys:
+            continue
+        env_lines.append(f'        - name: {k}\n          value: {json.dumps(v)}')
+    for k, v in sorted((g.get("env") or {}).items()):
+        env_lines.append(f'        - name: {k}\n          value: {json.dumps(str(v))}')
+    env_block = "\n".join(env_lines)
+    return f"""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: group-{name}
+  namespace: {NS}
+  labels:
+    app: group-{name}
+    managed-by: yatterra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: group-{name}
+  template:
+    metadata:
+      labels:
+        app: group-{name}
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+      - name: windows
+        image: {WINDOWS_IMAGE}
+        imagePullPolicy: IfNotPresent
+        env:
+{env_block}
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "{g['cpu']}"
+            memory: "{g['mem']}"
+            ephemeral-storage: "{g['storage']}"
+          requests:
+            cpu: "{req_cpu}"
+            memory: "{req_mem}"
+            ephemeral-storage: "{req_storage}"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
+        volumeMounts:
+        - name: dev-kvm
+          mountPath: /dev/kvm
+        - name: dev-tun
+          mountPath: /dev/net/tun
+        - name: storage
+          mountPath: /storage
+      volumes:
+      - name: dev-kvm
+        hostPath:
+          path: /dev/kvm
+          type: CharDevice
+      - name: dev-tun
+        hostPath:
+          path: /dev/net/tun
+          type: CharDevice
+      - name: storage
+        hostPath:
+          path: {WINVM_ROOT}/{name}
+          type: DirectoryOrCreate
+"""
+
+
 def deployment_yaml(g):
     name = g["name"]
+    if g.get("type") == "windows":
+        return _windows_deployment_yaml(g)
     is_gpu = g["type"] == "gpu"
     cpu = g["cpu"]; mem = g["mem"]
     # limits = user-set cap; requests = EWMA estimate from actual usage
@@ -289,6 +431,13 @@ def deployment_yaml(g):
         # build inside the pod. The driver alone (via nvidia runtime) is not enough.
         env_lines.append('        - name: CUDA_HOME\n          value: "/usr/local/cuda"')
         runtime_class = "      runtimeClassName: nvidia\n"
+    # outbound proxy defaults (host mihomo core, rule mode routing). Skipped when
+    # the group overrides that key in its custom env below.
+    _custom_keys = {str(k).upper() for k in (g.get("env") or {})}
+    for k, v in siteconf.proxy_env_defaults().items():
+        if k.upper() in _custom_keys:
+            continue
+        env_lines.append(f'        - name: {k}\n          value: {json.dumps(v)}')
     # admin-managed custom env vars (g["env"] = {KEY: VALUE})
     for k, v in sorted((g.get("env") or {}).items()):
         env_lines.append(f'        - name: {k}\n          value: {json.dumps(str(v))}')
@@ -317,14 +466,6 @@ def deployment_yaml(g):
         hostPath:
           path: /usr/local/cuda
           type: Directory"""
-    # read-only in-pod programming guide (ConfigMap, see pod_guide.py). Applies
-    # to every group pod regardless of type.
-    guide_mount = """        - name: pod-guide
-          mountPath: /etc/yatterra
-          readOnly: true"""
-    guide_volume = """      - name: pod-guide
-        configMap:
-          name: yatterra-pod-guide"""
     return f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -371,7 +512,6 @@ spec:
         - name: group-home
           mountPath: /home/cloud
 {mps_mounts}
-{guide_mount}
       volumes:
       - name: shared
         hostPath:
@@ -382,7 +522,6 @@ spec:
           path: {GROUP_DATA_ROOT}/{name}/home
           type: DirectoryOrCreate
 {mps_volumes}
-{guide_volume}
 """
 
 
@@ -526,13 +665,6 @@ def write_manifest(g):
 
 
 def apply_group(g):
-    # Ensure the read-only in-pod guide ConfigMap exists before the Deployment
-    # that mounts it (a missing ConfigMap would leave the pod stuck mounting).
-    try:
-        import pod_guide
-        pod_guide.apply_configmap()
-    except Exception as e:
-        audit.record("pod_guide_configmap_error", detail=str(e))
     path = write_manifest(g)
     kubectl("apply", "-f", path)
     # If the internal-port list is now empty the manifest no longer contains the
@@ -598,9 +730,40 @@ def reload_frpc():
 
 
 # --- cloud nginx web-ssl sync ---
-def _web_ssl_block(public_port):
-    """Generate one nginx server block: listen <port> ssl → proxy_pass 127.0.0.1:<port-10000>."""
+def _apr1(password):
+    """Apache-style apr1 hash (openssl) for nginx auth_basic. None on failure."""
+    try:
+        r = subprocess.run(["openssl", "passwd", "-apr1", "-stdin"],
+                           input=str(password or "").encode(),
+                           capture_output=True, timeout=10)
+        if r.returncode == 0:
+            h = r.stdout.decode().strip()
+            return h if h.startswith("$apr1$") else None
+    except Exception:
+        pass
+    return None
+
+
+def _htpasswd_content(state):
+    """htpasswd file body: one entry per web-auth-protected group
+    (username = group name, password = group password)."""
+    lines = []
+    for g in state["groups"].values():
+        if g.get("type") in AUTH_WEB_TYPES:
+            h = _apr1(g.get("password"))
+            if h:
+                lines.append(f"{g['name']}:{h}")
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+def _web_ssl_block(public_port, auth_user=None):
+    """Generate one nginx server block: listen <port> ssl → proxy_pass 127.0.0.1:<port-10000>.
+    auth_user (group name) → protect the block with HTTP basic auth."""
     inner = public_port - 10000
+    auth = ""
+    if auth_user:
+        auth = (f'        auth_basic "yatterra ({auth_user})";\n'
+                f'        auth_basic_user_file {NGINX_HTPASSWD};\n')
     return f"""server {{
     listen {public_port} ssl;
     listen [::]:{public_port} ssl;
@@ -610,7 +773,7 @@ def _web_ssl_block(public_port):
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     location / {{
-        proxy_pass http://127.0.0.1:{inner};
+{auth}        proxy_pass http://127.0.0.1:{inner};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -628,7 +791,8 @@ def build_nginx_web_block(state):
     lines = [NGINX_MARK_BEGIN]
     lines.append(_web_ssl_block(PLATFORM_GUI_PORT))
     for g in state["groups"].values():
-        lines.append(_web_ssl_block(g["web_public"]))
+        auth_user = g["name"] if g.get("type") in AUTH_WEB_TYPES else None
+        lines.append(_web_ssl_block(g["web_public"], auth_user=auth_user))
     lines.append(NGINX_MARK_END)
     return "\n\n".join(lines)
 
@@ -665,6 +829,20 @@ def rewrite_nginx_web(state):
         old = out
     except Exception as e:
         return False, f"读远程 nginx 配置异常: {e}"
+
+    # htpasswd for auth_basic-protected blocks (windows groups). Best-effort;
+    # pushed even when the conf is unchanged, so a missing file self-heals.
+    try:
+        hp = _htpasswd_content(state)
+        if hp:
+            b64hp = base64.b64encode(hp.encode("utf-8")).decode("ascii")
+            remote_hosts.run_remote(
+                NGINX_REMOTE_HOST,
+                f"echo {b64hp} | base64 -d | tee {NGINX_HTPASSWD} > /dev/null"
+                f" && chmod 644 {NGINX_HTPASSWD}",
+                sudo=True, timeout=20)
+    except Exception:
+        pass
 
     new = _strip_web_ssl_blocks(old)
     # insert managed section before the first remaining server { block, else append
@@ -733,7 +911,8 @@ def _norm_storage(storage):
     return s
 
 
-def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None):
+def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None,
+                 type=None):
     # k8s 资源名必须是小写 RFC 1123（[a-z0-9-]，字母数字开头结尾）。
     # 大写/下划线先规范化，否则 kubectl apply 被拒后留下孤儿 manifest 和 home 目录。
     import re as _re
@@ -743,16 +922,23 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
     state = load_state()
     if name in state["groups"]:
         raise ValueError(f"组 {name} 已存在")
-    is_gpu = bool(gpus)
-    if cpu is None: cpu = DEFAULT_GPU_CPU if is_gpu else DEFAULT_CPU_CPU
-    if mem is None: mem = DEFAULT_GPU_MEM if is_gpu else DEFAULT_CPU_MEM
+    is_windows = (type == "windows")
+    is_gpu = bool(gpus) and not is_windows
+    if cpu is None:
+        cpu = (WINDOWS_DEFAULT_CPU if is_windows
+               else DEFAULT_GPU_CPU if is_gpu else DEFAULT_CPU_CPU)
+    if mem is None:
+        mem = (WINDOWS_DEFAULT_MEM if is_windows
+               else DEFAULT_GPU_MEM if is_gpu else DEFAULT_CPU_MEM)
     mem = _norm_mem(mem)
+    if is_windows and storage is None:
+        storage = "64Gi"
     storage = _norm_storage(storage)
     idx = alloc_index(state)
     g = {
         "name": name,
         "index": idx,
-        "type": "gpu" if is_gpu else "cpu",
+        "type": "windows" if is_windows else ("gpu" if is_gpu else "cpu"),
         "gpus": sorted(gpus) if is_gpu else [],
         "ssh_nodeport": SSH_NODEPORT_BASE + idx,
         "web_nodeport": WEB_NODEPORT_BASE + idx,
@@ -766,15 +952,19 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
         "members": [],
         "pending": [],
     }
-    # pre-create the persistent home dir so it exists with sane perms before the
-    # pod mounts it (kubelet DirectoryOrCreate would make it root-only).
+    # pre-create the persistent dir so it exists with sane perms before the pod
+    # mounts it (kubelet DirectoryOrCreate would make it root-only). Windows
+    # groups keep their VM disk on the big disk; the container runs as root.
     try:
-        os.makedirs(f"{GROUP_DATA_ROOT}/{name}/home", exist_ok=True)
-        # chown to the container login user's uid/gid (siteconf.CLOUD_UID), NOT a
-        # hardcoded number: the image builds `cloud` with whatever uid build.sh
-        # assigns, and a mismatch leaves the hostPath unwritable for cloud.
-        os.chown(f"{GROUP_DATA_ROOT}/{name}/home",
-                 siteconf.CLOUD_UID, siteconf.CLOUD_UID)
+        if is_windows:
+            os.makedirs(f"{WINVM_ROOT}/{name}", exist_ok=True)
+        else:
+            os.makedirs(f"{GROUP_DATA_ROOT}/{name}/home", exist_ok=True)
+            # chown to the container login user's uid/gid (siteconf.CLOUD_UID), NOT a
+            # hardcoded number: the image builds `cloud` with whatever uid build.sh
+            # assigns, and a mismatch leaves the hostPath unwritable for cloud.
+            os.chown(f"{GROUP_DATA_ROOT}/{name}/home",
+                     siteconf.CLOUD_UID, siteconf.CLOUD_UID)
     except OSError:
         pass
     apply_group(g)
@@ -809,6 +999,8 @@ def remove_group(name):
         os.remove(mp)
     # drop the persistent home dir (the group's /home/cloud data)
     shutil.rmtree(f"{GROUP_DATA_ROOT}/{name}", ignore_errors=True)
+    # windows groups keep their VM disk elsewhere; drop it too or orphan 64G
+    shutil.rmtree(f"{WINVM_ROOT}/{name}", ignore_errors=True)
     # clean up per-group state in other modules so deleted groups don't linger
     _purge_group_artifacts(name)
     audit.record("delete_group", detail=name)

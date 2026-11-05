@@ -323,7 +323,11 @@ def run_remote(name, command, sudo=False, timeout=30):
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         out = (r.stdout or "") + (r.stderr or "")
         if r.returncode != 0:
+            # 远端命令失败 = 整体失败。附上退出码方便排错,但 ok 必须是 False,
+            # 否则调用方(proxy_map/groups/agent)会把失败当成功,报错只剩一个
+            # "[exit=1]" 尾巴而丢掉真实原因。
             out += f"\n[exit={r.returncode}]"
+            return False, out
         return True, out
     except subprocess.TimeoutExpired:
         return False, f"[远程命令超时 {timeout}s]"

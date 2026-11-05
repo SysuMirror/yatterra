@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Platform management GUI."""
 import os, secrets, time, pty, struct, fcntl, termios, threading, subprocess, json, shlex, re
+import urllib.parse
 shlex_quote = shlex.quote
 from datetime import timedelta
 from flask import (Flask, request, redirect,
@@ -372,7 +373,37 @@ def security_headers(resp):
     return resp
 
 # --- Socket.IO (web 终端) ---
-socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*',
+def _socketio_origins():
+    """Socket.IO CORS 白名单 = 平台自身对外 origin。
+
+    这里曾经是 '*' —— 任意站点(含 `Origin: null`)都能被原样反射并带着
+    受害者凭据建立跨域实时通道。改为按站点枚举;非浏览器请求(不带 Origin)
+    不触发 CORS 检查,不受影响。新增对外入口时把主机名加进
+    YATTERRA_EXTRA_PUBLIC_HOSTS 即可。
+    """
+    hosts = {
+        siteconf.PLATFORM_HOST,          # cloud.ssemarket.cn
+        siteconf.PUBLIC_HOST,            # ssemarket.cn
+        siteconf.DOMAIN,
+        f"www.{siteconf.DOMAIN}",
+        f"admin.{siteconf.DOMAIN}",
+        *siteconf.EXTRA_PUBLIC_HOSTS,    # 备用入口(如 CF Tunnel 域名)
+    }
+    ports = {None, siteconf.PLATFORM_GUI_PORT}   # 443 与 24000 两个入口
+    origins = set()
+    for h in hosts:
+        if not h:
+            continue
+        for scheme in ("https", "http"):
+            for port in ports:
+                origins.add(f"{scheme}://{h}" + (f":{port}" if port else ""))
+    # 本地 vite dev server(仅本机可达)
+    origins.update({"http://localhost:5173", "http://127.0.0.1:5173"})
+    return sorted(origins)
+
+
+socketio = SocketIO(app, async_mode='threading',
+                    cors_allowed_origins=_socketio_origins(),
                     ping_interval=5, ping_timeout=10)
 
 # --- REST API (all API blueprints) ---
@@ -396,21 +427,63 @@ _SPA_DIR = _os.path.join(_os.path.dirname(__file__), 'static', 'spa')
 _SPA_INDEX = _os.path.join(_SPA_DIR, 'index.html')
 _SPA_AVAILABLE = _os.path.isfile(_SPA_INDEX)
 
-# 终端会话表: sid -> {'master': fd, 'proc': Popen, 'thread': Thread}
+# 终端会话表: sid -> 会话记录; _TERM_TOKENS: resume token -> 同一条记录。
+# 记录: {'master','proc','thread','token','sid','buf','cleanup_timer'}
+# 断开后不立即杀 PTY, 保留 TERM_GRACE 秒供 socket.io 自动重连续传
+# (重连带 resume token → 重绑 sid + 回放 buf, shell 状态不丢)。
 SESSIONS = {}
+_TERM_TOKENS = {}
 _SESSIONS_LOCK = threading.Lock()
+TERM_GRACE = int(os.environ.get("YATTERRA_TERM_GRACE", "300"))
+TERM_BUF_MAX = 200_000   # 重连回放缓冲上限(字符)
 
-def _term_cleanup(sid):
-    """清理一个终端会话: 关 master fd、杀进程、join 线程。"""
-    with _SESSIONS_LOCK:
-        s = SESSIONS.pop(sid, None)
-    if not s:
+# PTY winsize ioctl 常量。Linux 上叫 TIOCSWINSZ(0x5414); 旧代码写的
+# termios.TIOCSWINSIZE 在 Linux 上根本不存在, AttributeError 又被三处
+# except Exception: pass 静默吞掉 —— 导致 winsize 从未真正设置过,
+# claude code 等全屏 TUI 一直按默认窄宽度换行, 拖分隔条也无效。
+_TIOCSWINSZ = getattr(termios, "TIOCSWINSZ", None)
+
+def _set_winsize(fd, cols, rows):
+    """设置 PTY winsize; 失败记日志不静默(本 bug 就是静默吞出来的)。"""
+    if _TIOCSWINSZ is None or not cols or not rows:
         return
     try:
-        os.close(s['master'])
+        fcntl.ioctl(fd, _TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+    except Exception:
+        import logging
+        logging.getLogger("term").exception("set pty winsize failed")
+
+def _term_child_setup(slave_fd):
+    """kubectl 子进程的 preexec: 独立会话 + 把 slave 设为控制终端。
+
+    没有 TIOCSCTTY, TIOCSWINSZ 只改 winsize 值而不产生 SIGWINCH,
+    kubectl 的 resize 监听(靠 SIGWINCH)永远不触发, 远端 PTY 尺寸
+    就不会跟着变 —— 实测: 无 ctty 时 ioctl 后子进程 0 次 SIGWINCH,
+    setsid+TIOCSCTTY 后正常收到。函数体只有两个系统调用, 不分配
+    内存, preexec_fn 里调用是安全的。
+    """
+    os.setsid()
+    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+def _term_drop(rec):
+    """真正销毁一个终端会话: 关 master fd、杀进程、从两张表摘除。"""
+    with _SESSIONS_LOCK:
+        if SESSIONS.get(rec.get('sid')) is rec:
+            SESSIONS.pop(rec.get('sid'), None)
+        if _TERM_TOKENS.get(rec.get('token')) is rec:
+            _TERM_TOKENS.pop(rec.get('token'), None)
+        timer = rec.get('cleanup_timer')
+        rec['cleanup_timer'] = None
+    if timer:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+    try:
+        os.close(rec['master'])
     except OSError:
         pass
-    p = s['proc']
+    p = rec['proc']
     try:
         p.kill()
     except Exception:
@@ -419,12 +492,26 @@ def _term_cleanup(sid):
         p.wait(timeout=2)
     except Exception:
         pass
-    t = s['thread']
+    t = rec['thread']
     if t is not None and t.is_alive() and t is not threading.current_thread():
         t.join(timeout=2)
 
-def _term_reader(sid, master):
-    """daemon 线程: 循环读 PTY 输出并 emit 给对应客户端。"""
+def _term_cleanup(sid):
+    """按 sid 清理(输入失败/进程退出路径)。"""
+    with _SESSIONS_LOCK:
+        rec = SESSIONS.get(sid)
+    if rec:
+        _term_drop(rec)
+
+def _term_cleanup_token(token):
+    """延迟清理定时器到点: token 对应会话仍未被重连认领 → 销毁。"""
+    with _SESSIONS_LOCK:
+        rec = _TERM_TOKENS.get(token)
+    if rec:
+        _term_drop(rec)
+
+def _term_reader(rec, master):
+    """daemon 线程: 循环读 PTY 输出, 写入回放缓冲并 emit 给当前绑定的 sid。"""
     with app.app_context():
         try:
             while True:
@@ -434,19 +521,23 @@ def _term_reader(sid, master):
                     break
                 if not data:
                     break
+                text = data.decode(errors='replace')
+                rec['buf'] = (rec['buf'] + text)[-TERM_BUF_MAX:]
                 try:
-                    emit('term_output', {'data': data.decode(errors='replace')},
-                         to=sid, namespace='/')
+                    emit('term_output', {'data': text},
+                         to=rec['sid'], namespace='/')
                 except Exception as e:
                     print(f"[term-reader] emit failed: {e!r}", flush=True)
                     break
         except Exception as e:
             print(f"[term-reader] loop died: {e!r}", flush=True)
         try:
-            emit('term_exit', {'data': '会话已结束'}, to=sid, namespace='/')
+            emit('term_exit', {'data': '会话已结束'},
+                 to=rec['sid'], namespace='/')
         except Exception as e:
             print(f"[term-reader] term_exit emit failed: {e!r}", flush=True)
-    _term_cleanup(sid)
+    # 进程退出: 立即销毁(保留也没有意义), 不走宽限期
+    _term_drop(rec)
 
 # --- OAuth2 external login (ssemarket & unisso) ---
 # 注意:这两个 /oauth/callback/* 是**线上真正接收 IdP 回调**的路由——
@@ -620,7 +711,7 @@ def oauth_callback_unisso():
     except Exception as e:
         log = __import__("logging").getLogger("oauth2")
         log.exception("unisso OAuth2 callback error")
-        return redirect(f"/login?oauth_error=unisso&detail={e}")
+        return redirect(f"/login?oauth_error=unisso&detail={urllib.parse.quote(str(e))}")
 
 # --- webhook: push-to-deploy (branch-filtered) ---
 @app.route("/deploy/webhook", methods=["POST"])
@@ -762,6 +853,38 @@ def _sio_connect():
     if not login_required():
         return False
     name = request.args.get('name', '')
+    resume = request.args.get('resume', '')
+    # 断线重连: token 命中且会话还活着 → 重绑 sid + 回放缓冲,不重建 shell
+    if resume:
+        with _SESSIONS_LOCK:
+            rec = _TERM_TOKENS.get(resume)
+            if rec is not None:
+                old_sid = rec.get('sid')
+                if old_sid and old_sid != request.sid:
+                    SESSIONS.pop(old_sid, None)
+                rec['sid'] = request.sid
+                SESSIONS[request.sid] = rec
+                timer = rec.get('cleanup_timer')
+                rec['cleanup_timer'] = None
+            else:
+                rec = None
+        if rec is not None:
+            if timer:
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+            # 重连后按当前容器尺寸重设 winsize
+            try:
+                _cols = max(2, min(500, int(request.args.get('cols', 0) or 0)))
+                _rows = max(2, min(300, int(request.args.get('rows', 0) or 0)))
+            except (TypeError, ValueError):
+                _cols = _rows = 0
+            _set_winsize(rec['master'], _cols, _rows)
+            emit('term_replay', {'data': rec['buf'], 'token': resume})
+            audit.record('term_resume', detail=f"token={resume} sid={request.sid}")
+            return
+        # token 失效(超宽限期/进程退出): 走正常新建流程,前端拿到新 token
     state = groups.load_state()
     if name not in state["groups"]:
         return False
@@ -784,6 +907,16 @@ def _sio_connect():
     sid = request.sid
     # 建 PTY
     master, slave = pty.openpty()
+    # 初始 winsize 必须在 exec 之前设置:pty.openpty() 默认 0×0,而客户端的
+    # 首次 fit/term_resize 发生在 socket 建立之前(发不出去),ResizeObserver
+    # 又只在容器尺寸变化时触发——不在这里设,claude code 等全屏 TUI 会一直
+    # 按初始窄宽度换行,直到用户手动拖一次面板。
+    try:
+        _cols = max(2, min(500, int(request.args.get('cols', 0) or 0)))
+        _rows = max(2, min(300, int(request.args.get('rows', 0) or 0)))
+    except (TypeError, ValueError):
+        _cols = _rows = 0
+    _set_winsize(master, _cols, _rows)
     try:
         # TERM must be set on the *remote* side: `kubectl exec -t` does not
         # forward the local TERM, it hardcodes TERM=xterm (verified against
@@ -796,13 +929,20 @@ def _sio_connect():
              'env', 'TERM=xterm-256color', 'COLORTERM=truecolor',
              'su', '-l', 'cloud'],
             stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+            preexec_fn=lambda: _term_child_setup(slave),
         )
     finally:
         os.close(slave)  # fork 后父进程关闭 slave
-    t = threading.Thread(target=_term_reader, args=(sid, master), daemon=True)
+    token = secrets.token_hex(16)
+    rec = {'master': master, 'proc': proc, 'thread': None, 'token': token,
+           'sid': sid, 'buf': '', 'cleanup_timer': None}
+    t = threading.Thread(target=_term_reader, args=(rec, master), daemon=True)
+    rec['thread'] = t
     with _SESSIONS_LOCK:
-        SESSIONS[sid] = {'master': master, 'proc': proc, 'thread': t}
+        SESSIONS[sid] = rec
+        _TERM_TOKENS[token] = rec
     t.start()
+    emit('term_ready', {'token': token})
     audit.record('term_open', detail=f"{name} pod={pod} sid={sid}")
 
 @socketio.on('term_input')
@@ -834,16 +974,24 @@ def _sio_term_resize(data):
         return
     cols = int(data.get('cols', 80))
     rows = int(data.get('rows', 24))
-    try:
-        winsize = struct.pack('HHHH', rows, cols, 0, 0)
-        fcntl.ioctl(s['master'], termios.TIOCSWINSIZE, winsize)
-    except Exception:
-        pass
+    _set_winsize(s['master'], cols, rows)
 
 @socketio.on('disconnect')
 def _sio_disconnect():
-    """客户端断开 -> 清理会话。"""
-    _term_cleanup(request.sid)
+    """客户端断开 -> 不立即杀 shell, 留 TERM_GRACE 秒等自动重连认领。"""
+    sid = request.sid
+    with _SESSIONS_LOCK:
+        rec = SESSIONS.get(sid)
+        if rec is None:
+            return
+        SESSIONS.pop(sid, None)
+        if rec.get('cleanup_timer'):
+            return  # 已有定时器在等
+        timer = threading.Timer(TERM_GRACE, _term_cleanup_token,
+                                args=(rec['token'],))
+        rec['cleanup_timer'] = timer
+    timer.daemon = True
+    timer.start()
 
 # --- LLM Config + Usage ---
 import llm_conf
@@ -853,6 +1001,13 @@ import llm_usage
 @app.route('/health')
 def health():
     return jsonify({'health': 'ok'})
+
+# --- /goal 目标: 平台启动后延迟拉起未完成的 IDE 目标(自动复核完成度) ---
+try:
+    import ide_agent as _ide_agent
+    _ide_agent.resume_goals()
+except Exception:
+    pass
 
 if __name__ == "__main__":
     socketio.run(app, host="127.0.0.1", port=8090, allow_unsafe_werkzeug=True)
