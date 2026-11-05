@@ -25,6 +25,12 @@ MAX_DAYS = 30
 # to disable the check entirely.
 DAILY_TOKEN_LIMIT = int(os.environ.get("LLM_DAILY_TOKEN_LIMIT", "5000000") or 0)
 
+# 访客(匿名 guest)每日 token 上限:远小于登录用户,给匿名者一个"够体验、
+# 封得住"的额度,而不是直接把 AI 关掉。guest 是全局共享的单一 principal,
+# 所以这个额度是所有匿名访客**合计**的封顶。可用 env 覆盖;<= 0 表示访客
+# 完全无配额(等价于封禁访客用 AI)。
+GUEST_DAILY_TOKEN_LIMIT = int(os.environ.get("LLM_GUEST_DAILY_TOKEN_LIMIT", "30000") or 0)
+
 _lock = threading.Lock()
 
 
@@ -193,20 +199,22 @@ def _notify_quota_warn(user, percent):
         pass
 
 
-def check_quota(user, limit=None):
+def check_quota(user, limit=None, role=None):
     """Return ``(ok, used, limit)`` for a user's *today* token usage.
 
     ``ok`` is False only when the user has reached the daily ceiling. A
-    ``limit`` of None uses DAILY_TOKEN_LIMIT; ``limit <= 0`` (or an empty
-    user) disables the check. Never raises — any failure is treated as
-    "allow", so a usage-tracking problem can never block real traffic.
+    ``limit`` of None picks the tier by ``role``: ``role == "guest"`` uses the
+    (small) GUEST_DAILY_TOKEN_LIMIT, everyone else the (large)
+    DAILY_TOKEN_LIMIT; ``limit <= 0`` (or an empty user) disables the check.
+    Never raises — any failure is treated as "allow", so a usage-tracking
+    problem can never block real traffic.
 
     附带配额预警: 使用率 >= QUOTA_WARN_PCT% 且当日未预警过时, 异步推送该
     用户一次(kind='quota-warn', 标记落盘在 usage 数据的 _quota_warn 里)。
     """
     try:
         if limit is None:
-            limit = DAILY_TOKEN_LIMIT
+            limit = GUEST_DAILY_TOKEN_LIMIT if (role or "").lower() == "guest" else DAILY_TOKEN_LIMIT
         if not user or not limit or limit <= 0:
             return True, 0, limit
         with _lock:

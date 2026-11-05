@@ -8,25 +8,64 @@ import os
 import re as _re
 import time
 from flask import Blueprint, request, jsonify, Response, stream_with_context, g
-from middleware.error_handler import bad_request, not_found
+from middleware.error_handler import bad_request, not_found, forbidden
 
 import ai_service
 import ai_chat_store
 import insight
 import kb_service
 
-from api._auth import require_auth, current_username
+from api._auth import require_auth, current_username, current_user_obj
 
 ai_bp = Blueprint("api_ai", __name__, url_prefix="/api/ai")
+
+
+@ai_bp.before_request
+def _ai_guest_gate():
+    """访客(匿名 guest)可以用 AI,但受一个很小的每日 token 配额封顶。
+
+    设计取向:不把 AI 对匿名者一关了之,而是"能用但封顶"——
+      · 匿名调用放行(返回 None,交由各路由的 @require_auth 出 401);
+      · 已登录用户放行(走各路由自身的 per-user 配额,额度很大);
+      · guest 角色超过访客日配额 → 429 QUOTA_EXCEEDED。
+    危险工具本就不会发给 guest:ai_service 按 TOOL_PERMS 过滤,guest 只有
+    group.view / infra.host.view,拿到的是只读遥测工具,没有 shell_exec /
+    read_file / 写文件 / 浏览器等动作工具。
+
+    注意:guest 是全局共享的单一 principal(零凭据自助取得),所以这里的
+    配额是所有匿名访客**合计**的封顶,而非每人一份。
+    """
+    u = current_user_obj()
+    if not u or (u.get("role") or "guest") != "guest":
+        return None  # 匿名(→ 401)或登录用户(→ 各自配额)
+    try:
+        import llm_usage
+        ok, used, limit = llm_usage.check_quota(
+            u.get("username") or "guest", role="guest")
+    except Exception:
+        return None  # 用量系统故障绝不阻断
+    if not ok:
+        return jsonify({"error": {
+            "code": "QUOTA_EXCEEDED",
+            "message": (f"访客今日 AI 额度已用完（已用 {used} / 上限 {limit} tokens），"
+                        f"登录后可获得更高配额。")}}), 429
+    return None
 
 
 def _user():
     return current_username() or "anonymous"
 
 
-def _quota_blocked(user):
+def _role():
+    return (current_user_obj() or {}).get("role")
+
+
+def _quota_blocked(user, role=None):
     """Return a Chinese error message when ``user`` is over the daily LLM
     token quota, else None.
+
+    ``role`` selects the quota tier ("guest" → the small
+    llm_usage.GUEST_DAILY_TOKEN_LIMIT, else the large DAILY_TOKEN_LIMIT).
 
     Never raises: a usage-tracking failure must not block chat. The default
     quota is deliberately large (llm_usage.DAILY_TOKEN_LIMIT) so normal use
@@ -34,8 +73,11 @@ def _quota_blocked(user):
     """
     try:
         import llm_usage
-        ok, used, limit = llm_usage.check_quota(user)
+        ok, used, limit = llm_usage.check_quota(user, role=role)
         if not ok:
+            if (role or "").lower() == "guest":
+                return (f"访客今日 AI 额度已用完（已用 {used} / 上限 {limit} tokens），"
+                        f"登录后可获得更高配额。")
             return (f"今日 AI 用量已达上限（已用 {used} / 上限 {limit} tokens），"
                     f"请明日再试或联系管理员调整配额。")
     except Exception:
@@ -138,7 +180,7 @@ def ai_chat():
         raise bad_request("message is required")
 
     # Per-user daily token quota (default large; see llm_usage.check_quota).
-    _q = _quota_blocked(_user())
+    _q = _quota_blocked(_user(), _role())
     if _q:
         return jsonify({"error": {"code": "QUOTA_EXCEEDED", "message": _q}}), 429
 
@@ -411,9 +453,14 @@ def _build_page_agent(page, question, context, images, history):
             system += "\n\n" + _blk
     # RAG enhancement: permission-routed KB hits injected into the system prompt
     system += _rag_context(question)
-    # browser_control 工具使用说明(工具本身按 TOOL_PERMS 过滤, 人人可用)
-    system += (
-        "\n\n[页面操作] 你有 browser_control 工具, 可以在用户当前的前端页面"
+    # browser_control / pod_edit_file 使用说明只在走 ai_service.stream_agent
+    # 的页面注入 —— 这两个工具在那里真实存在(按 TOOL_PERMS 过滤)。
+    # pod_ide 走 ide_agent 专用 harness, 工具集是 pod_bash/read/edit/...,
+    # 这两段说明在那里是谎言(模型会尝试调不存在的工具), 必须跳过;
+    # 工具说明以 ide_agent.HARNESS_SYSTEM 为唯一来源。
+    if page != "pod_ide":
+        system += (
+            "\n\n[页面操作] 你有 browser_control 工具, 可以在用户当前的前端页面"
         "上执行操作: navigate(打开站内路由)、click(点击登记过的"
         "按钮/标签, target_id 传控件 id)、fill(填写文本输入框)、inspect(高亮标记"
         "某元素给用户看)。规则:\n"
@@ -427,14 +474,14 @@ def _build_page_agent(page, question, context, images, history):
         "- 受限模式下用户会逐批确认, 用户取消或超时是正常情况, 换方案即可;\n"
         "- 密码/令牌/删除/提交类目标被安全策略禁止, 工具会直接拒绝。"
     )
-    # pod_edit_file 使用说明(工具本身按 TOOL_PERMS/pod 角色过滤)
-    system += (
-        "\n\n[文件修改] 你有 pod_edit_file 工具, 可以修改用户 Pod 持久目录"
+        # pod_edit_file 使用说明(工具本身按 TOOL_PERMS/pod 角色过滤)
+        system += (
+            "\n\n[文件修改] 你有 pod_edit_file 工具, 可以修改用户 Pod 持久目录"
         "(/home/cloud)里的已有文本文件(≤512KB)。修改会以 diff 卡片呈现给"
         "用户, 须等用户接受后才真正写入; 用户拒绝或超时则不写, 属正常情况,"
         "换方案即可, 不要反复重试同一修改。修改前先用 pod_file/pod_code_* "
         "读文件确认原文, search/replace 须在文件中唯一。"
-    )
+        )
 
     # Build messages array from history + new question
     messages = []
@@ -486,7 +533,7 @@ def ai_page():
     username = current_username()
 
     # Per-user daily token quota (default large; see llm_usage.check_quota).
-    _q = _quota_blocked(_user())
+    _q = _quota_blocked(_user(), _role())
     if _q:
         return jsonify({"error": {"code": "QUOTA_EXCEEDED", "message": _q}}), 429
     # History source of truth: when a session_id is given, load it server-side
@@ -565,11 +612,72 @@ def ai_page_run():
         history = []
 
     messages, system = _build_page_agent(page, question, context, images, history)
+    # Web IDE 的专用 harness 需要知道目标 Pod;必须校验成员身份,
+    # 否则任何 group.view 持有者都能让 AI 操作别人的项目。
+    pod = ""
+    auto = "all"
+    if page == "pod_ide":
+        pod = str(body.get("pod") or "").strip()[:64]
+        if pod and not _check_pod_page_access(f"pod:{pod}", g.api_user):
+            raise forbidden(f"你不是 Pod {pod} 的成员")
+        # auto 权限模式(ide_agent): all=全部确认 / smart=仅破坏性确认 /
+        # none=全自动;非法值一律回退 all
+        import ide_agent
+        if str(body.get("auto") or "") in ide_agent.AUTO_MODES:
+            auto = str(body.get("auto"))
+        # /goal 目标: 在请求落地时就落盘(而不是等 run 线程里再存),这样前端
+        # 能立刻读到并显示 chip;"/goal off" 则顺手清掉本会话的目标。
+        g_txt = question.lstrip()
+        if g_txt.startswith("/goal"):
+            g_body = g_txt[len("/goal"):].strip()
+            if not g_body:
+                pass
+            elif g_body.lower() in ide_agent.GOAL_OFF_WORDS:
+                ide_agent.clear_goal(username, session_id, pod)
+            else:
+                ide_agent.save_goal(username, session_id, pod, g_body, auto=auto)
     run_id = page_ai_runs.start(username, page, question, messages, system,
                                 session_id=session_id,
                                 route=str(body.get("route") or "")[:300],
-                                perms=g.api_user)
+                                perms=g.api_user, pod=pod, auto=auto)
     return jsonify({"run_id": run_id, "session_id": session_id or None}), 202
+
+
+@ai_bp.route("/page/goal", methods=["GET"])
+@require_auth()
+def ai_page_goal():
+    """读当前用户在某个 IDE 会话里挂着的 /goal 目标(每会话只留最新一个)。
+
+    记录本身就按用户名分目录存放, 所以只可能读到自己的目标, 无需再查 Pod 权限。
+    """
+    import ide_agent
+    sid = (request.args.get("session_id") or "").strip()
+    pod = (request.args.get("pod") or "").strip()[:64]
+    if not sid and not pod:
+        raise bad_request("session_id or pod is required")
+    rec = ide_agent.load_goal(current_username(), sid, pod)
+    if not rec:
+        return jsonify({"goal": None})
+    return jsonify({"goal": rec.get("goal"),
+                    "auto": rec.get("auto") or "all",
+                    "created": rec.get("created"),
+                    "updated": rec.get("updated"),
+                    "resumes": rec.get("resumes") or 0,
+                    "last_run": rec.get("last_run") or ""})
+
+
+@ai_bp.route("/page/goal/clear", methods=["POST"])
+@require_auth()
+def ai_page_goal_clear():
+    """取消本会话挂着的 /goal 目标(等同于发 "/goal off")。"""
+    import ide_agent
+    body = request.get_json(silent=True) or {}
+    sid = str(body.get("session_id") or "").strip()
+    pod = str(body.get("pod") or "").strip()[:64]
+    if not sid and not pod:
+        raise bad_request("session_id or pod is required")
+    ide_agent.clear_goal(current_username(), sid, pod)
+    return jsonify({"ok": True})
 
 
 @ai_bp.route("/page/stream", methods=["GET"])

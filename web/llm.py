@@ -520,6 +520,10 @@ def _post_stream_with_tools(messages, system, model, base_url, api_key, max_toke
 
                 # Check finish_reason for tool calls
                 finish_reason = choices[0].get("finish_reason")
+                if finish_reason == "length":
+                    # max_tokens 截断: 以前被无声吞掉, 长回答看起来只是
+                    # "莫名结束"。发一个显式事件让调用方标注「被截断」。
+                    yield ("truncated", {"reason": "length"})
                 if finish_reason == "tool_calls" and tool_call_accum:
                     for idx in sorted(tool_call_accum.keys()):
                         tc = tool_call_accum[idx]

@@ -136,7 +136,7 @@ def _evict() -> None:
 
 def start(username: str, page: str, question: str, messages: list,
           system: str, session_id: str = "", route: str = "",
-          perms: Any = None) -> str:
+          perms: Any = None, pod: str = "", auto: str = "all") -> str:
     """起一个后台 run, 立即返回 run_id。messages/system 由调用方
     (api/ai.py 的页面助手入口)按页面权限校验后构建好传入。"""
     import ai_service
@@ -159,10 +159,19 @@ def start(username: str, page: str, question: str, messages: list,
         error_brief = ""
         gen = None
         try:
-            gen = ai_service.stream_agent(
-                messages, system=system, max_tokens=4096,
-                max_iterations=MAX_ITERATIONS, caller="page_ai_run",
-                user=username, perms=perms, max_wall=MAX_WALL)
+            if page == "pod_ide" and pod:
+                # Web IDE 走专用 harness(ide_agent): pod_bash/暂存 edit/
+                # 批量确认, 循环预算更大。需要 run 对象做 rendezvous。
+                import ide_agent
+                gen = ide_agent.stream_agent(
+                    messages, system=system, run=run, pod=pod,
+                    user=username, max_tokens=4096,
+                    session_id=session_id, auto=auto)
+            else:
+                gen = ai_service.stream_agent(
+                    messages, system=system, max_tokens=4096,
+                    max_iterations=MAX_ITERATIONS, caller="page_ai_run",
+                    user=username, perms=perms, max_wall=MAX_WALL)
             # 登记 run 上下文: browser_control 工具(串行执行, 同一线程)
             # 通过它拿到本 run 发事件/等结果。生成器体在本线程迭代执行。
             ai_service.set_browser_run(run)

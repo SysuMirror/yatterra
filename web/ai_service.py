@@ -2604,6 +2604,11 @@ def stream_agent(messages, system="", max_tokens=4096, max_iterations=6,
                 has_tool_calls = True
                 tool_calls_pending.append(data)
                 yield ("tool_call", data)
+            elif kind == "truncated":
+                # max_tokens 截断(llm.py 显式信号): 标注而非无声结束
+                yield ("content",
+                       "\n\n[⚠ 回答被 max_tokens 截断,内容可能不完整;"
+                       "可以让我继续写完,或让我精简后重答。]")
 
         if _timed_out:
             yield ("content", f"\n\n[已达到最大耗时 {max_wall}s，自动停止。"
