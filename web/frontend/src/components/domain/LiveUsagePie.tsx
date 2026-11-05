@@ -6,7 +6,7 @@ import {
 import { Card } from '@/components/ui/Card'
 import { Cpu, MemoryStick, Loader2 } from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
-import { piePalette, otherColor } from '@/lib/chartColors'
+import { piePalette, otherColor, chartTooltip } from '@/lib/chartColors'
 import { api } from '@/api/client'
 
 interface UsageGroup {
@@ -26,8 +26,9 @@ interface UsageData {
 type Metric = 'cpu' | 'mem'
 
 // Keep the ring readable: top N groups get their own hue, the long tail (this
-// host runs ~36 groups) folds into one neutral "其他" slice.
-const MAX_SLICES = 8
+// host runs ~36 groups) folds into one neutral "其他" slice. N == the palette
+// length (7) so hues are used in fixed order and never cycled.
+const MAX_SLICES = 7
 
 // Per-metric view of the shared /infra/usage payload — the *live* cgroup v2
 // consumption, contrasted with CpuRequestPie's EWMA reservations.
@@ -73,16 +74,7 @@ function LiveUsagePie({ metric }: { metric: Metric }) {
   const colors = piePalette(dark)
   const neutral = otherColor(dark)
 
-  const tooltipStyle = {
-    contentStyle: {
-      borderRadius: 10,
-      border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.1)',
-      fontSize: 12,
-      background: dark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
-      color: dark ? '#f5f5f7' : undefined,
-    },
-    labelStyle: { color: dark ? '#98989d' : '#86868b', fontSize: 11 },
-  }
+  const tooltipStyle = chartTooltip(dark)
 
   const { data, isLoading } = useQuery<UsageData>({
     queryKey: ['infra-usage'],

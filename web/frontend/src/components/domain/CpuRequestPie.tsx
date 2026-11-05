@@ -5,22 +5,13 @@ import {
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Cpu, MemoryStick, Loader2 } from 'lucide-react'
+import { useThemeStore } from '@/stores/theme'
+import { piePalette, otherColor, chartTooltip } from '@/lib/chartColors'
 import { api } from '@/api/client'
 
-const tooltipStyle = {
-  contentStyle: { borderRadius: 10, border: '0.5px solid rgba(0,0,0,0.1)', fontSize: 12, background: 'rgba(255,255,255,0.95)' },
-  labelStyle: { color: '#86868b', fontSize: 11 },
-}
-
-// distinct palette — enough for ~30 pods, cycles if more
-const COLORS = [
-  '#0a84ff', '#ff9f0a', '#30d158', '#ff375f', '#bf5af2',
-  '#64d2ff', '#ffd60a', '#ff6482', '#5e5ce6', '#32ade8',
-  '#c45a4a', '#8e8e93', '#34c759', '#ff9500', '#af52de',
-  '#00c7be', '#d16935', '#728098', '#98c1d9', '#ee6c4d',
-  '#3d5a80', '#98d6ea', '#e0fbfc', '#293241', '#f4a261',
-  '#e76f51', '#2a9d8f', '#e9c46a', '#264653', '#fca311',
-]
+// Ring slots == palette length (7): the long tail of pods folds into one neutral
+// "其他" slice instead of cycling hues across ~30 pods.
+const MAX_SLICES = 7
 
 interface PodReq {
   name: string
@@ -91,6 +82,10 @@ const CFG: Record<Metric, {
 function ResourceRequestPie({ metric }: { metric: Metric }) {
   const c = CFG[metric]
   const Icon = c.icon
+  const dark = useThemeStore((s) => s.resolved) === 'dark'
+  const colors = piePalette(dark)
+  const neutral = otherColor(dark)
+  const tooltipStyle = chartTooltip(dark)
   const { data, isLoading } = useQuery<ReqData>({
     queryKey: ['infra-cpu-requests'],
     queryFn: () => api.get('/infra/cpu-requests'),
@@ -112,9 +107,15 @@ function ResourceRequestPie({ metric }: { metric: Metric }) {
 
   // only Running/Pending pods consume scheduling requests
   const pods = data.pods.filter(p => p.phase === 'Running' || p.phase === 'Pending')
-  const chartData = pods
-    .filter(p => c.value(p) > 0)
-    .map(p => ({ name: p.name, value: c.value(p), limit: c.limit(p), phase: p.phase }))
+  // rank by request so the ring's top-N are the pods that actually hold capacity
+  const ranked = pods.filter(p => c.value(p) > 0).slice().sort((a, b) => c.value(b) - c.value(a))
+  const top = ranked.slice(0, MAX_SLICES)
+  const folded = ranked.slice(MAX_SLICES).reduce((s, p) => s + c.value(p), 0)
+  const colorOf = new Map(top.map((p, i) => [p.name, colors[i]]))
+  const chartData = [
+    ...top.map((p, i) => ({ name: p.name, value: c.value(p), limit: c.limit(p), color: colors[i] })),
+    ...(folded > 0 ? [{ name: `其他 (${ranked.length - MAX_SLICES} 个)`, value: folded, limit: null, color: neutral }] : []),
+  ]
   const totalReq = c.total(data)
   const alloc = c.alloc(data) || 1
   const freePct = Math.max(0, (1 - totalReq / alloc) * 100)
@@ -143,20 +144,21 @@ function ResourceRequestPie({ metric }: { metric: Metric }) {
                 cy="50%"
                 innerRadius="58%"
                 outerRadius="88%"
-                paddingAngle={chartData.length > 12 ? 0.5 : 1.5}
-                stroke="rgba(255,255,255,0.6)"
-                strokeWidth={1}
+                paddingAngle={1.5}
+                stroke={dark ? '#18222f' : '#ffffff'}
+                strokeWidth={2}
                 isAnimationActive={false}
               >
-                {chartData.map((_, i) => (
-                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                {chartData.map((s, i) => (
+                  <Cell key={i} fill={s.color} />
                 ))}
               </Pie>
               <Tooltip
                 {...tooltipStyle}
                 formatter={(v: any, _n: any, entry: any) => {
                   const limit = entry?.payload?.limit
-                  return [`${c.fmtValue(Number(v))} ${c.unit} (limit ${c.fmtLimit(Number(limit))})`, entry?.payload?.name]
+                  const tail = limit == null ? '' : ` (limit ${c.fmtLimit(Number(limit))})`
+                  return [`${c.fmtValue(Number(v))} ${c.unit}${tail}`, entry?.payload?.name]
                 }}
               />
             </PieChart>
@@ -181,13 +183,13 @@ function ResourceRequestPie({ metric }: { metric: Metric }) {
               </tr>
             </thead>
             <tbody>
-              {pods.map((p, i) => (
+              {pods.slice().sort((a, b) => c.value(b) - c.value(a)).map((p) => (
                 <tr key={p.name} className="border-b border-black/[0.03] last:border-0 hover:bg-black/[0.02]">
                   <td className="py-1.5 pr-2">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span
                         className="w-2 h-2 rounded-sm flex-shrink-0"
-                        style={{ background: COLORS[i % COLORS.length] }}
+                        style={{ background: colorOf.get(p.name) ?? neutral }}
                       />
                       <span className="font-mono text-[11px] truncate" title={p.name}>{p.name}</span>
                     </div>
@@ -204,6 +206,19 @@ function ResourceRequestPie({ metric }: { metric: Metric }) {
                   </td>
                 </tr>
               ))}
+              {folded > 0 && (
+                <tr className="border-b border-black/[0.03] last:border-0 bg-black/[0.015]">
+                  <td className="py-1.5 pr-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: neutral }} />
+                      <span className="text-[11px] text-muted truncate">其他 {ranked.length - MAX_SLICES} 个 Pod</span>
+                    </div>
+                  </td>
+                  <td className="text-right py-1.5 px-2 tnum text-muted">{c.fmtValue(folded)}</td>
+                  <td className="text-right py-1.5 px-2 tnum text-muted">—</td>
+                  <td className="py-1.5 pl-2" />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

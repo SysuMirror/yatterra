@@ -5,7 +5,7 @@ import {
 import { Progress } from '@/components/ui/Progress'
 import { useThemeStore } from '@/stores/theme'
 import { formatBytes } from '@/lib/format'
-import { piePalette, otherColor } from '@/lib/chartColors'
+import { piePalette, otherColor, chartTooltip } from '@/lib/chartColors'
 
 export interface GpuPodUsage {
   name: string
@@ -37,16 +37,7 @@ export function GpuPodDonut({ gpu }: { gpu: GpuLike }) {
   const colors = piePalette(dark)
   const neutral = otherColor(dark)
 
-  const tooltipStyle = {
-    contentStyle: {
-      borderRadius: 10,
-      border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.1)',
-      fontSize: 12,
-      background: dark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
-      color: dark ? '#f5f5f7' : undefined,
-    },
-    labelStyle: { color: dark ? '#98989d' : '#86868b', fontSize: 11 },
-  }
+  const tooltipStyle = chartTooltip(dark)
 
   const { slices, rows, used, usedPct } = useMemo(() => {
     const all = (gpu.pods ?? []).filter((p) => p.mem > 0)
@@ -68,11 +59,13 @@ export function GpuPodDonut({ gpu }: { gpu: GpuLike }) {
       slices.push({ name: '其他 / 未归属', value: foldedMem, color: neutral })
     }
 
+    // rows beyond the ring's top-N are part of the folded "其他" slice, so they
+    // share its neutral swatch rather than cycling back to a ring hue.
     const rows = all.map((p, i) => ({
       name: p.name,
       mem: p.mem,
       util: p.util as number | null,
-      color: colors[i % colors.length],
+      color: i < MAX_SLICES ? colors[i] : neutral,
     }))
     if (foldedMem > 0) {
       rows.push({ name: '其他 / 未归属', mem: foldedMem, util: null, color: neutral })

@@ -1,9 +1,10 @@
-// Categorical palette for pie / donut charts.
+// Chart palette + theme helpers — the single source of truth for every chart
+// colour on the dashboard. Nothing else should hard-code hex values.
 //
-// Validated with the dataviz validator against this dashboard's own surfaces
-// (light card #ffffff, dark card #18222f): every check passes, with a
-// light-mode contrast WARN on three slots that the always-present legend
-// table satisfies (the "relief" rule — identity is never carried by color
+// The categorical palette was validated with the dataviz validator against this
+// dashboard's own surfaces (light card #ffffff, dark card #18222f): every check
+// passes, with a light-mode contrast WARN on three slots that the always-present
+// legend table satisfies (the "relief" rule — identity is never carried by color
 // alone; each slice also has a labeled row).
 //
 // Assign in fixed order and never cycle: a series past the last slot folds
@@ -39,4 +40,38 @@ export function piePalette(dark: boolean): string[] {
 
 export function otherColor(dark: boolean): string {
   return dark ? OTHER_COLOR_DARK : OTHER_COLOR_LIGHT
+}
+
+// ── Ordered palette for line / area charts ──
+// Identity is by *role*, not rank: slot 0 is always the "usage" measure
+// (利用率 / 占用), slot 1 the "capacity" measure (显存 / 容量). Using the same
+// ordered hues as the donut palette keeps a metric one colour across every page.
+// `i` is a fixed per-chart role, never a rank — keep it < palette length.
+export function seriesColor(dark: boolean, i = 0): string {
+  const p = piePalette(dark)
+  return p[i] ?? p[0]!
+}
+
+// ── Theme-aware recharts chrome ──
+// One definition, imported everywhere, so tooltips and axes stop being
+// light-only on some charts and dark-aware on others.
+export function chartTooltip(dark: boolean) {
+  return {
+    contentStyle: {
+      borderRadius: 10,
+      border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.1)',
+      fontSize: 12,
+      background: dark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
+      color: dark ? '#f5f5f7' : undefined,
+    },
+    labelStyle: { color: dark ? '#98989d' : '#86868b', fontSize: 11 },
+  }
+}
+
+export function axisTick(dark: boolean): string {
+  return dark ? '#98989d' : '#86868b'
+}
+
+export function gridStroke(dark: boolean): string {
+  return dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'
 }
