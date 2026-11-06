@@ -10,7 +10,12 @@ It also attributes *live* per-process usage back to Pods::
 
     nvidia-smi --query-compute-apps   → per-process VRAM (MiB)
     nvidia-smi pmon                   → per-process SM utilisation (%)
+    nvidia-smi --query-gpu            → card-level utilisation.gpu (%)
     /proc/<pid>/cgroup                → PID → Pod UID → group name
+
+Under *platform-level MPS* ``pmon`` reports SM only against the
+``nvidia-cuda-mps`` server process, so per-process SM is unusable; there the
+card-level ``utilization.gpu`` is split across a card's pods by VRAM share.
 
 Host-side processes (Xorg, mps-server, the local LLM engine, …) live outside
 ``kubepods*`` cgroups and are skipped; the frontend shows them as the
@@ -207,13 +212,56 @@ def _pmon_sm():
     return out
 
 
+def _device_util_by_index():
+    """Return ``{gpu_index: utilization.gpu %}`` (card-level), or ``{}``.
+
+    The card's device-level busy percentage from ``nvidia-smi``. This is the
+    one signal that stays meaningful under *platform-level MPS*: there ``pmon``
+    attributes every card's SM activity to the ``nvidia-cuda-mps`` server
+    process (outside ``kubepods*`` cgroups) and reports ``-`` for each pod
+    process, so per-process SM collapses to zero. Best-effort: any failure
+    yields ``{}``.
+    """
+    try:
+        return {g["index"]: float(g["util"]) for g in _query_gpus()}
+    except Exception:
+        return {}
+
+
+def _share_device_util(out, dev, pmon_idx):
+    """Distribute card-level util across a card's pods by VRAM share, in place.
+
+    ``out`` is ``{group: {gpu_index: {"mem", "util"}}}``. For every card *not*
+    already covered by a usable ``pmon`` reading (``pmon_idx``), spread
+    ``dev[idx]`` across the pods present on that card proportionally to their
+    attributed VRAM — each pod's ``util`` then reads as its share of the card's
+    busy percentage (≤ 100 per card; a multi-card group may still exceed 100).
+    Cards with no attributable VRAM (``tot <= 0``) or missing from ``dev`` are
+    left untouched. Mutates ``out`` and returns it.
+    """
+    for idx, device_pct in dev.items():
+        if idx in pmon_idx:
+            continue
+        cells = [per_gpu[idx] for per_gpu in out.values() if idx in per_gpu]
+        tot = sum(c["mem"] for c in cells)
+        if tot <= 0:
+            continue
+        for c in cells:
+            c["util"] = device_pct * (c["mem"] / tot)
+    return out
+
+
 def per_pod_breakdown():
     """Per-group live GPU attribution: ``{group: {gpu_index: {"mem", "util"}}}``.
 
-    ``mem`` is MiB of VRAM, ``util`` is summed SM utilisation % across the
-    group's processes on that card (it may exceed 100 when several processes
-    are busy — the frontend reads it as a relative share). Cached in kvcache
-    for 10s; returns ``{}`` on any failure.
+    ``mem`` is MiB of VRAM. ``util`` is the group's share of that card's
+    device-level utilisation (%). Where ``nvidia-smi pmon`` gives usable
+    per-process SM% (hosts *without* platform MPS) the summed SM% is kept —
+    the frontend reads it as a relative share and it may exceed 100 when a
+    group has several busy processes on one card. Under platform MPS that
+    reading is unusable, so the card's ``utilization.gpu`` is split by VRAM
+    share instead (see :func:`_share_device_util`). Cached in kvcache for 10s;
+    returns ``{}`` on any failure.
     """
     cached = kvcache.get("host:gpu-perpod-bd")
     if cached is not None:
@@ -223,6 +271,7 @@ def per_pod_breakdown():
         apps = _compute_apps()
         sm = _pmon_sm()
         uids = _uid_to_group()
+        pmon_idx = set()  # cards with a usable per-process SM reading
         for idx, pid, mem in apps:
             group = _pid_group(pid, uids)
             if not group:
@@ -231,7 +280,11 @@ def per_pod_breakdown():
                 idx, {"mem": 0, "util": 0.0}
             )
             cell["mem"] += mem
-            cell["util"] += sm.get((idx, pid), 0.0)
+            v = sm.get((idx, pid))
+            if v is not None:  # distinguish "absent" (None) from a real 0
+                cell["util"] += v
+                pmon_idx.add(idx)
+        _share_device_util(out, _device_util_by_index(), pmon_idx)
     except Exception:
         return {}
     kvcache.set("host:gpu-perpod-bd", out, ttl=10)
