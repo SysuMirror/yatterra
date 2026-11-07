@@ -214,7 +214,15 @@ export default function OpsPricing() {
   }
 
   const acctCols: Column<BillingAccount>[] = [
-    { key: 'group_name', title: '组', width: 'minmax(120px, 2fr)' },
+    { key: 'group_name', title: '组', width: 'minmax(120px, 2fr)', render: (a) => (
+      <span className="flex items-center gap-1.5 min-w-0">
+        <span className="truncate">{a.group_name}</span>
+        {a.synthetic && (
+          <span className="text-[10px] text-muted/70 flex-shrink-0"
+                title="尚未建账：结算 / 充值 / 调整后自动建账，此处显示默认值">未建账</span>
+        )}
+      </span>
+    ) },
     { key: 'internal', title: '归属', width: '80px', render: (a) => (
       <button className={`text-xs hover:underline ${a.internal ? 'text-muted' : 'text-accent'}`}
               onClick={() => setInternal(a, !a.internal)}
@@ -340,7 +348,9 @@ export default function OpsPricing() {
         <div className="px-4 py-3 border-b border-black/[0.06]">
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-semibold text-ink">组账户</span>
-            <span className="text-xs text-muted">默认全部计费；「内部组」免计费（不结算、不提醒）。</span>
+            <span className="text-xs text-muted">
+              列出全部组；默认全部计费，「内部组」免计费（不结算、不提醒）。未建账的组按默认值显示，可直接切换归属。
+            </span>
             <div className="flex flex-wrap items-center gap-2 ml-auto">
               <div className="w-64">
                 <Input value={bulkText} onChange={(e) => setBulkText(e.target.value)}

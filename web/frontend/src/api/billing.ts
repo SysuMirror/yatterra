@@ -90,7 +90,9 @@ export interface BillingAccount {
   warn_ratio: number
   /** 平台内部组（不计费）— 由 /admin/accounts join groups.json 得出 */
   internal?: boolean
-  updated_at?: string
+  /** 尚未建账（无 billing_accounts 行）—— 列表为覆盖全部组而合成的默认行 */
+  synthetic?: boolean
+  updated_at?: string | null
 }
 
 export interface LedgerRow {

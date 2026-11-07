@@ -226,8 +226,14 @@ def ensure_account(group_name, billable=1, credit_limit_cents=0):
 
 
 def set_account(group_name, *, status=None, billable=None, credit_limit_cents=None):
-    """Admin override of account flags.  Returns the updated row."""
+    """Admin override of account flags.  Returns the updated row.
+
+    The row is created on demand (defaults) so an admin can toggle 计费/状态 on a
+    group that has never been billed — the /admin/accounts list synthesizes such
+    groups, and clicking them must stick rather than no-op.
+    """
     ensure_schema()
+    ensure_account(group_name)
     if status is not None and status not in STATUSES:
         raise ValueError(f"未知账户状态: {status}")
     sets, args = [], []

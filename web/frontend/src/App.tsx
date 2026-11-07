@@ -34,6 +34,7 @@ const FleetPage = lazy(() => import('./routes/infra/fleet'))
 const AuditPage = lazy(() => import('./routes/ops/audit'))
 const BillingPage = lazy(() => import('./routes/ops/billing'))
 const BillingUserPage = lazy(() => import('./routes/billing'))
+const BillingOverviewPage = lazy(() => import('./routes/billingOverview'))
 const PricingPage = lazy(() => import('./routes/ops/pricing'))
 const OrdersPage = lazy(() => import('./routes/ops/orders'))
 const ApprovalsPage = lazy(() => import('./routes/ops/approvals'))
@@ -250,6 +251,7 @@ export default function App() {
             <Route path="/ops/pricing" element={<RequirePerm perms={['billing.price']}><PricingPage /></RequirePerm>} />
             <Route path="/ops/orders" element={<RequirePerm perms={['billing.account']}><OrdersPage /></RequirePerm>} />
             <Route path="/billing" element={<RequirePerm perms={['billing.pay']}><BillingUserPage /></RequirePerm>} />
+            <Route path="/billing/overview" element={<RequirePerm perms={['billing.pay', 'billing.price', 'billing.account']}><BillingOverviewPage /></RequirePerm>} />
             <Route path="/ops/approvals" element={<RequirePerm perms={['admin.users']}><ApprovalsPage /></RequirePerm>} />
             <Route path="/ops/shared" element={<RequirePerm perms={['ops.shared.read', 'ops.shared.write']}><SharedPage /></RequirePerm>} />
             <Route path="/users" element={<RequirePerm perms={['admin.users']}><UsersPage /></RequirePerm>} />

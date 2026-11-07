@@ -221,17 +221,44 @@ def set_prices():
 def list_accounts():
     if (bad := _money_ready()):
         return bad
-    return jsonify({"accounts": _with_internal(billing_store.list_accounts())})
+    return jsonify({"accounts": _merge_groups(billing_store.list_accounts())})
 
 
-def _with_internal(accounts):
-    """Annotate each account row with the group's `internal` flag (平台内部组)."""
+def _merge_groups(accounts):
+    """Union of every platform group and every existing account row.
+
+    Account rows are created lazily (first settle/topup/adjust/view), so a plain
+    ``list_accounts`` hides groups that were never billed.  Admins expect the
+    table to list *all* groups and to be able to flag any of them 内部 without
+    having touched it first — so unknown groups get a synthesized default row
+    (外部 / 计费开 / ¥0.00, ``synthetic=True``), and rows are annotated with the
+    ``internal`` flag from groups.json.
+    """
     try:
         import groups
         internal = groups.internal_groups()
+        names = set(groups.load_state().get("groups", {}).keys())
     except Exception:
-        internal = set()
-    return [dict(a, internal=(a.get("group_name") in internal)) for a in accounts]
+        internal, names = set(), set()
+    by_name = {a.get("group_name"): dict(a) for a in accounts}
+    names |= set(by_name.keys())
+    out = []
+    for name in sorted(names):
+        row = by_name.get(name)
+        if row is None:
+            row = {
+                "group_name": name,
+                "balance_cents": 0,
+                "credit_limit_cents": 0,
+                "status": "active",
+                "billable": 1,
+                "warn_ratio": 0.2,
+                "updated_at": None,
+                "synthetic": True,
+            }
+        row["internal"] = name in internal
+        out.append(row)
+    return out
 
 
 @billing_bp.route("/admin/accounts/bulk", methods=["POST"])
