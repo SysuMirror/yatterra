@@ -134,6 +134,7 @@ export default function Profile() {
     { kind: 'approval-pending', label: '审批待审' },
     { kind: 'agent-done', label: 'AI 任务完成' },
     { kind: 'quota-warn', label: '配额预警' },
+    { kind: 'billing-low', label: '余额不足' },
     { kind: 'broadcast', label: '平台广播' },
   ]
 

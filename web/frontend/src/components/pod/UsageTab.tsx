@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts'
-import { Cpu, Gauge, MemoryStick, Zap } from 'lucide-react'
+import { Cpu, Gauge, HardDrive, MemoryStick, Zap } from 'lucide-react'
 import { billingApi, type BillingRange } from '@/api/billing'
 import { MetricCard } from '@/components/domain/MetricCard'
 import { Card } from '@/components/ui/Card'
@@ -76,6 +76,13 @@ export function UsageTab({ podName }: { podName: string }) {
         <MetricCard icon={<MemoryStick size={15} className="text-accent" />} label="GPU 显存" value={t.gpu_mem_gib_hours.toFixed(2)} suffix="GiB·h" />
       </div>
 
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <MetricCard icon={<MemoryStick size={15} className="text-accent" />} label="内存" value={t.mem_gib_hours.toFixed(2)} suffix="GiB·h" />
+        <MetricCard icon={<HardDrive size={15} className="text-accent" />} label="存储 · 组目录" value={t.storage_home_gib_hours.toFixed(2)} suffix="GiB·h" />
+        <MetricCard icon={<HardDrive size={15} className="text-accent" />} label="存储 · 对象桶" value={t.storage_minio_gib_hours.toFixed(2)} suffix="GiB·h" />
+        <MetricCard icon={<Zap size={15} className="text-accent" />} label="算力卡时" value={t.compute_card_hours.toFixed(2)} suffix="卡时" />
+      </div>
+
       <Card padding="lg">
         <div className="flex items-center gap-2 mb-3">
           <Zap size={15} className="text-accent" />
@@ -110,6 +117,9 @@ export function UsageTab({ podName }: { podName: string }) {
               { key: 'request_core_hours', title: '申请核时', sortable: true, render: (r: any) => <span className="font-mono text-xs text-muted">{r.request_core_hours.toFixed(3)}</span> },
               { key: 'gpu_mem_gib_hours', title: 'GPU 显存 GiB·h', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.gpu_mem_gib_hours.toFixed(3)}</span> },
               { key: 'compute_card_hours', title: '算力卡时', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.compute_card_hours.toFixed(3)}</span> },
+              { key: 'mem_gib_hours', title: '内存 GiB·h', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.mem_gib_hours.toFixed(3)}</span> },
+              { key: 'storage_home_gib_hours', title: '存储·目录', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.storage_home_gib_hours.toFixed(3)}</span> },
+              { key: 'storage_minio_gib_hours', title: '存储·桶', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.storage_minio_gib_hours.toFixed(3)}</span> },
             ]}
             data={rows}
             keyFn={(r: any) => String(r.bucket_start)}

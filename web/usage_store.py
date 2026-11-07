@@ -16,6 +16,9 @@ Units (all "seconds" are core-seconds / card-seconds / byte-seconds):
     mem_gib_seconds           working-set memory, GiB × dt
     gpu_mem_gib_seconds       GPU VRAM in use, GiB × dt
     gpu_compute_card_seconds  SM utilisation integral, card × dt
+    storage_home_gib_seconds  group home dir, GiB × dt
+    storage_minio_gib_seconds MinIO bucket, GiB × dt
+    storage_quota_gib_seconds declared quota, GiB × dt
 Core-hours / card-hours are derived at read time (÷3600), never stored.
 """
 import os
@@ -43,6 +46,18 @@ _INT_COLS = (
     "mem_gib_seconds",
     "gpu_mem_gib_seconds",
     "gpu_compute_card_seconds",
+    "storage_home_gib_seconds",
+    "storage_minio_gib_seconds",
+    "storage_quota_gib_seconds",
+)
+
+# New integrated columns added after v1 shipped.  ``CREATE TABLE IF NOT EXISTS``
+# will NOT add them to an existing DB, so ``initialize()`` ALTERs them in
+# idempotently (see _migrate).  Keep this list append-only.
+_MIGRATE_COLS = (
+    ("storage_home_gib_seconds", "REAL NOT NULL DEFAULT 0"),
+    ("storage_minio_gib_seconds", "REAL NOT NULL DEFAULT 0"),
+    ("storage_quota_gib_seconds", "REAL NOT NULL DEFAULT 0"),
 )
 
 _DDL_SAMPLES = """CREATE TABLE IF NOT EXISTS usage_samples (
@@ -57,6 +72,9 @@ _DDL_SAMPLES = """CREATE TABLE IF NOT EXISTS usage_samples (
     gpu_util_sum REAL NOT NULL DEFAULT 0,
     gpu_mem_gib_seconds REAL NOT NULL DEFAULT 0,
     gpu_compute_card_seconds REAL NOT NULL DEFAULT 0,
+    storage_home_gib_seconds REAL NOT NULL DEFAULT 0,
+    storage_minio_gib_seconds REAL NOT NULL DEFAULT 0,
+    storage_quota_gib_seconds REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (group_name, ts))"""
 
 _DDL_HOURLY = """CREATE TABLE IF NOT EXISTS usage_hourly (
@@ -67,6 +85,9 @@ _DDL_HOURLY = """CREATE TABLE IF NOT EXISTS usage_hourly (
     mem_gib_seconds REAL NOT NULL DEFAULT 0,
     gpu_mem_gib_seconds REAL NOT NULL DEFAULT 0,
     gpu_compute_card_seconds REAL NOT NULL DEFAULT 0,
+    storage_home_gib_seconds REAL NOT NULL DEFAULT 0,
+    storage_minio_gib_seconds REAL NOT NULL DEFAULT 0,
+    storage_quota_gib_seconds REAL NOT NULL DEFAULT 0,
     n_samples INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (group_name, hour_start))"""
@@ -79,6 +100,9 @@ _DDL_DAILY = """CREATE TABLE IF NOT EXISTS usage_daily (
     mem_gib_seconds REAL NOT NULL DEFAULT 0,
     gpu_mem_gib_seconds REAL NOT NULL DEFAULT 0,
     gpu_compute_card_seconds REAL NOT NULL DEFAULT 0,
+    storage_home_gib_seconds REAL NOT NULL DEFAULT 0,
+    storage_minio_gib_seconds REAL NOT NULL DEFAULT 0,
+    storage_quota_gib_seconds REAL NOT NULL DEFAULT 0,
     n_samples INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (group_name, day_start))"""
@@ -111,6 +135,21 @@ class UsageStore:
             db.execute(_DDL_HOURLY)
             db.execute("CREATE INDEX IF NOT EXISTS usage_hourly_hour ON usage_hourly(hour_start)")
             db.execute(_DDL_DAILY)
+            self._migrate(db)
+
+    @staticmethod
+    def _migrate(db):
+        """Add post-v1 integrated columns to pre-existing tables.
+
+        ``CREATE TABLE IF NOT EXISTS`` is a no-op on the live DB, so a column
+        added to the DDL after first deploy must be ALTERed in explicitly.
+        Idempotent: checks ``PRAGMA table_info`` first.
+        """
+        for table in ("usage_samples", "usage_hourly", "usage_daily"):
+            have = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in _MIGRATE_COLS:
+                if col not in have:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
     # ── write path (single writer) ───────────────────────────────
     def write_tick(self, rows, now, prev_ts=None):
@@ -130,11 +169,15 @@ class UsageStore:
                 """INSERT OR REPLACE INTO usage_samples
                    (group_name, ts, dt, cpu_core_seconds, cpu_req_core_seconds,
                     mem_gib, mem_gib_seconds, gpu_mem_mib, gpu_util_sum,
-                    gpu_mem_gib_seconds, gpu_compute_card_seconds)
+                    gpu_mem_gib_seconds, gpu_compute_card_seconds,
+                    storage_home_gib_seconds, storage_minio_gib_seconds,
+                    storage_quota_gib_seconds)
                    VALUES (:group_name, :ts, :dt, :cpu_core_seconds,
                            :cpu_req_core_seconds, :mem_gib, :mem_gib_seconds,
                            :gpu_mem_mib, :gpu_util_sum, :gpu_mem_gib_seconds,
-                           :gpu_compute_card_seconds)""",
+                           :gpu_compute_card_seconds,
+                           :storage_home_gib_seconds, :storage_minio_gib_seconds,
+                           :storage_quota_gib_seconds)""",
                 rows,
             )
             buckets = {hour_of(now)} | ({hour_of(prev_ts)} if prev_ts else set())
@@ -150,10 +193,13 @@ class UsageStore:
             """INSERT INTO usage_hourly
                (group_name, hour_start, cpu_core_seconds, cpu_req_core_seconds,
                 mem_gib_seconds, gpu_mem_gib_seconds, gpu_compute_card_seconds,
-                n_samples, updated_at)
+                storage_home_gib_seconds, storage_minio_gib_seconds,
+                storage_quota_gib_seconds, n_samples, updated_at)
                SELECT group_name, ?, SUM(cpu_core_seconds), SUM(cpu_req_core_seconds),
                       SUM(mem_gib_seconds), SUM(gpu_mem_gib_seconds),
-                      SUM(gpu_compute_card_seconds), COUNT(*), ?
+                      SUM(gpu_compute_card_seconds), SUM(storage_home_gib_seconds),
+                      SUM(storage_minio_gib_seconds), SUM(storage_quota_gib_seconds),
+                      COUNT(*), ?
                FROM usage_samples WHERE ts >= ? AND ts < ?
                GROUP BY group_name
                ON CONFLICT(group_name, hour_start) DO UPDATE SET
@@ -162,6 +208,9 @@ class UsageStore:
                  mem_gib_seconds=excluded.mem_gib_seconds,
                  gpu_mem_gib_seconds=excluded.gpu_mem_gib_seconds,
                  gpu_compute_card_seconds=excluded.gpu_compute_card_seconds,
+                 storage_home_gib_seconds=excluded.storage_home_gib_seconds,
+                 storage_minio_gib_seconds=excluded.storage_minio_gib_seconds,
+                 storage_quota_gib_seconds=excluded.storage_quota_gib_seconds,
                  n_samples=excluded.n_samples, updated_at=excluded.updated_at""",
             (hour_start, now, hour_start, hour_start + HOUR),
         )
@@ -171,10 +220,13 @@ class UsageStore:
             """INSERT INTO usage_daily
                (group_name, day_start, cpu_core_seconds, cpu_req_core_seconds,
                 mem_gib_seconds, gpu_mem_gib_seconds, gpu_compute_card_seconds,
-                n_samples, updated_at)
+                storage_home_gib_seconds, storage_minio_gib_seconds,
+                storage_quota_gib_seconds, n_samples, updated_at)
                SELECT group_name, ?, SUM(cpu_core_seconds), SUM(cpu_req_core_seconds),
                       SUM(mem_gib_seconds), SUM(gpu_mem_gib_seconds),
-                      SUM(gpu_compute_card_seconds), SUM(n_samples), ?
+                      SUM(gpu_compute_card_seconds), SUM(storage_home_gib_seconds),
+                      SUM(storage_minio_gib_seconds), SUM(storage_quota_gib_seconds),
+                      SUM(n_samples), ?
                FROM usage_hourly WHERE hour_start >= ? AND hour_start < ?
                GROUP BY group_name
                ON CONFLICT(group_name, day_start) DO UPDATE SET
@@ -183,6 +235,9 @@ class UsageStore:
                  mem_gib_seconds=excluded.mem_gib_seconds,
                  gpu_mem_gib_seconds=excluded.gpu_mem_gib_seconds,
                  gpu_compute_card_seconds=excluded.gpu_compute_card_seconds,
+                 storage_home_gib_seconds=excluded.storage_home_gib_seconds,
+                 storage_minio_gib_seconds=excluded.storage_minio_gib_seconds,
+                 storage_quota_gib_seconds=excluded.storage_quota_gib_seconds,
                  n_samples=excluded.n_samples, updated_at=excluded.updated_at""",
             (day_start, now, day_start, day_start + DAY),
         )
@@ -227,6 +282,9 @@ class UsageStore:
                        SUM(mem_gib_seconds) AS mem_gib_seconds,
                        SUM(gpu_mem_gib_seconds) AS gpu_mem_gib_seconds,
                        SUM(gpu_compute_card_seconds) AS gpu_compute_card_seconds,
+                       SUM(storage_home_gib_seconds) AS storage_home_gib_seconds,
+                       SUM(storage_minio_gib_seconds) AS storage_minio_gib_seconds,
+                       SUM(storage_quota_gib_seconds) AS storage_quota_gib_seconds,
                        SUM(n_samples) AS n_samples
                 FROM {table} WHERE {tcol} >= ? AND {tcol} < ?
                 GROUP BY {tcol} ORDER BY {tcol}""",
@@ -238,6 +296,9 @@ class UsageStore:
                        SUM(mem_gib_seconds) AS mem_gib_seconds,
                        SUM(gpu_mem_gib_seconds) AS gpu_mem_gib_seconds,
                        SUM(gpu_compute_card_seconds) AS gpu_compute_card_seconds,
+                       SUM(storage_home_gib_seconds) AS storage_home_gib_seconds,
+                       SUM(storage_minio_gib_seconds) AS storage_minio_gib_seconds,
+                       SUM(storage_quota_gib_seconds) AS storage_quota_gib_seconds,
                        SUM(n_samples) AS n_samples
                 FROM {table} WHERE {tcol} >= ? AND {tcol} < ?
                 GROUP BY group_name ORDER BY cpu_core_seconds DESC""",
@@ -254,10 +315,17 @@ def _base(d):
         "mem_gib_seconds": round(d.get("mem_gib_seconds") or 0, 3),
         "gpu_mem_gib_seconds": round(d.get("gpu_mem_gib_seconds") or 0, 3),
         "gpu_compute_card_seconds": round(d.get("gpu_compute_card_seconds") or 0, 3),
+        "storage_home_gib_seconds": round(d.get("storage_home_gib_seconds") or 0, 3),
+        "storage_minio_gib_seconds": round(d.get("storage_minio_gib_seconds") or 0, 3),
+        "storage_quota_gib_seconds": round(d.get("storage_quota_gib_seconds") or 0, 3),
         "core_hours": round((d.get("cpu_core_seconds") or 0) / 3600, 4),
         "request_core_hours": round((d.get("cpu_req_core_seconds") or 0) / 3600, 4),
+        "mem_gib_hours": round((d.get("mem_gib_seconds") or 0) / 3600, 4),
         "gpu_mem_gib_hours": round((d.get("gpu_mem_gib_seconds") or 0) / 3600, 4),
         "compute_card_hours": round((d.get("gpu_compute_card_seconds") or 0) / 3600, 4),
+        "storage_home_gib_hours": round((d.get("storage_home_gib_seconds") or 0) / 3600, 4),
+        "storage_minio_gib_hours": round((d.get("storage_minio_gib_seconds") or 0) / 3600, 4),
+        "storage_quota_gib_hours": round((d.get("storage_quota_gib_seconds") or 0) / 3600, 4),
     }
 
 

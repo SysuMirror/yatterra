@@ -499,6 +499,7 @@ from .threat_map import threat_map_bp  # noqa: E402
 from .push import push_bp  # noqa: E402
 from .ai import ai_bp  # noqa: E402
 from .billing import billing_bp  # noqa: E402
+from .pay import pay_bp  # noqa: E402
 
 # 上面 `from .<mod> import ...` 会把同名的子模块挂到本包上,覆盖模块顶部
 # `import_module("users")` / `import audit` 绑定的顶层模块 —— 于是 v1 的
@@ -529,3 +530,4 @@ def register_all_blueprints(app):
     app.register_blueprint(push_bp)
     app.register_blueprint(ai_bp)
     app.register_blueprint(billing_bp)
+    app.register_blueprint(pay_bp)

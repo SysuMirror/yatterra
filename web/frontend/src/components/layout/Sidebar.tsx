@@ -6,6 +6,7 @@ import {
   LayoutDashboard, Box, Server, HardDrive, Database, Globe, Monitor, Network,
   Workflow, Plug, Bot, Code2, ShieldCheck, FolderOpen, Users, User,
   BookOpen, Swords, ChevronLeft, ChevronRight, X, ShieldQuestion, Receipt,
+  Wallet, Coins, CreditCard,
 } from 'lucide-react'
 import { useSidebarStore } from '@/stores/sidebar'
 import { openPodPicker } from '@/ide/PodPicker'
@@ -68,6 +69,14 @@ const navGroups: NavGroup[] = [
       { to: '/ops/approvals', icon: <ShieldQuestion size={18} />, label: 'AI 审批', perm: ['admin.users'] },
       { to: '/ops/shared', icon: <FolderOpen size={18} />, label: '共享', perm: 'ops.shared.read' },
       { to: '/threat-map', icon: <Swords size={18} />, label: '攻防', perm: 'ops.threat' },
+    ],
+  },
+  {
+    label: '计费',
+    items: [
+      { to: '/billing', icon: <Wallet size={18} />, label: '充值/账单', perm: 'billing.pay' },
+      { to: '/ops/pricing', icon: <Coins size={18} />, label: '单价设置', perm: 'billing.price' },
+      { to: '/ops/orders', icon: <CreditCard size={18} />, label: '充值订单', perm: 'billing.account' },
     ],
   },
   {

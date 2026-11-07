@@ -392,6 +392,41 @@ def list_keys():
     return _keys_load()
 
 
+def bucket_size_gib(bucket, root=None):
+    """Best-effort on-disk size of one bucket, in GiB.
+
+    The data root is a hostPath, so ``du`` on the bucket directory gives the
+    real disk footprint (MinIO's ``xl.meta`` overhead included) — much cheaper
+    than walking object metadata for a whole-tree scan.  Falls back to a
+    recursive ``list_objects`` sum (apparent size) when ``du`` is unavailable,
+    and 0 on any failure so a broken MinIO never breaks a metering tick.
+    """
+    bucket = (bucket or "").strip().strip("/")
+    if not bucket or "/" in bucket:
+        return 0.0
+    root = root or DATA_HOSTPATH
+    path = os.path.join(root, bucket)
+    if not os.path.isdir(path):
+        return 0.0
+    try:
+        r = subprocess.run(["du", "-s", "-B1", path],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode == 0 and r.stdout.strip():
+            return int(r.stdout.split()[0]) / (1024 ** 3)
+    except Exception:
+        pass
+    try:
+        c = _client()
+        if not c:
+            return 0.0
+        total = 0
+        for o in c.list_objects(bucket, recursive=True):
+            total += (o.size or 0)
+        return total / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
 def add_key(label, bucket, perm):
     if perm not in ("readwrite", "readonly", "writeonly"):
         raise ValueError("权限非法")

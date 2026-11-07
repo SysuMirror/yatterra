@@ -11,6 +11,10 @@ Integrates *actual* resource usage into 核时 / 卡时 (core-hours / card-hours
 - **GPU** — from ``gpu_stats.per_pod_breakdown()`` (nvidia-smi): VRAM in use
   (GiB × dt) and the SM-utilisation integral (card × dt).  SM is a point
   sample extrapolated over dt, so it is an approximation by nature.
+- **Storage** — three independent columns: group home dir (host ``du``),
+  MinIO bucket size, and the declared quota.  Whole-tree scans are slow, so
+  these refresh only every ``YATTERRA_STORAGE_INTERVAL`` (default 1h) and are
+  carried forward (× dt) on every tick in between.
 
 Writes raw rows + hourly/daily rollups to ``usage_meter.db`` (single writer,
 flock-guarded, WAL).  Mirrors ``fleet_sampler.py``.  Never crashes on a bad
@@ -49,6 +53,12 @@ _LAST_TS = None
 # Fallback request fraction when a pod carries no CPU request at all (mirrors
 # req_estimate.DEFAULT_REQ_FRACTION — we only use it to avoid a zero column).
 _FALLBACK_REQ_FRACTION = 0.5
+
+# Storage is a slow-moving quantity that costs a whole-tree ``du`` per group,
+# so it is refreshed at most every STORAGE_INTERVAL seconds and *carried
+# forward* (× dt) on every 30s tick in between.  See _sample_storage().
+_STORAGE = {}           # group -> {"home": Gi, "minio": Gi, "quota": Gi}
+_STORAGE_TS = 0.0       # wall ts of the last refresh
 
 
 def log(msg):
@@ -114,6 +124,92 @@ def _group_cpu_limits():
         return {}
 
 
+def _sample_storage(now):
+    """Refresh the per-group storage snapshot {group: {"home","minio","quota"}}.
+
+    Three collectors, each independently guarded so a broken host/MinIO only
+    zeroes its own column (never aborts the tick):
+
+    - ``home``  — ``req_loop.sample_storage_usage`` (hostPath ``du`` of
+      ``{GROUP_DATA_ROOT}/<group>/home``);
+    - ``minio`` — the group's MinIO bucket, via ``minio_svc.bucket_size_gib``.
+      Bucket defaults to the group name; an explicit bucket registered in
+      ``minio_svc.list_keys()`` under the group's label wins;
+    - ``quota`` — the declared ``storage`` quantity from ``groups.json``.
+    """
+    snapshot = {}
+    try:
+        import groups
+        st = groups.load_state() or {}
+        gmap = st.get("groups") or {}
+    except Exception as exc:
+        log(f"storage: groups load failed: {type(exc).__name__}: {exc}")
+        gmap = {}
+    if not gmap:
+        return {}
+
+    home = {}
+    try:
+        import req_loop
+        home = req_loop.sample_storage_usage(gmap) or {}
+    except Exception as exc:
+        log(f"storage: home scan failed: {type(exc).__name__}: {exc}")
+
+    bucket_of = {}
+    try:
+        import minio_svc
+        for k in minio_svc.list_keys() or []:
+            label = (k.get("label") or "").strip()
+            bucket = (k.get("bucket") or "").strip()
+            if label and bucket:
+                bucket_of[label] = bucket
+    except Exception as exc:
+        log(f"storage: minio keys failed: {type(exc).__name__}: {exc}")
+
+    try:
+        import req_estimate
+        quota_gi = req_estimate.parse_storage_gi
+    except Exception:
+        quota_gi = lambda s: 0.0  # noqa: E731
+
+    for name, g in gmap.items():
+        try:
+            q = float(quota_gi((g or {}).get("storage") or "0"))
+        except Exception:
+            q = 0.0
+        snapshot[name] = {
+            "home": float(home.get(name) or 0.0),
+            "minio": 0.0,
+            "quota": q,
+        }
+
+    # Buckets: the group's own bucket, or its registered explicit bucket.
+    try:
+        import minio_svc
+        for name, rec in snapshot.items():
+            bucket = bucket_of.get(name) or name
+            try:
+                rec["minio"] = minio_svc.bucket_size_gib(bucket)
+            except Exception:
+                rec["minio"] = 0.0
+    except Exception as exc:
+        log(f"storage: minio scan failed: {type(exc).__name__}: {exc}")
+
+    log(f"storage: refreshed {len(snapshot)} groups")
+    return snapshot
+
+
+def _storage_for(now):
+    """Return the current storage snapshot, refreshing on the slow cadence."""
+    global _STORAGE, _STORAGE_TS
+    if not _STORAGE or (now - _STORAGE_TS) >= STORAGE_INTERVAL:
+        snap = _sample_storage(now)
+        if snap:
+            _STORAGE = snap
+            _STORAGE_TS = now
+    return _STORAGE
+
+
 def take_tick(now):
     """Sample one tick and return (rows, prev_ts).  Pure, no DB writes."""
     global _LAST_TS
@@ -174,11 +270,18 @@ def take_tick(now):
         util = sum((c.get("util") or 0) for c in per_gpu.values())
         gpu[g] = {"mem": mem_mib, "util": util}
 
+    # ── storage (slow refresh + carry-forward) ──
+    storage = _storage_for(now)
+
     # ── assemble rows ──
+    # Include any group holding disk, even with no running pod, so idle-but-
+    # persistent usage still accrues storage-hours.
+    active = {g for g, sv in storage.items() if sv.get("home") or sv.get("minio")}
     rows = []
-    for g in set(acc) | set(gpu):
+    for g in set(acc) | set(gpu) | active:
         c = acc.get(g, {"cpu": 0.0, "req": 0.0, "mem": 0.0})
         gu = gpu.get(g, {"mem": 0.0, "util": 0.0})
+        sv = storage.get(g, {"home": 0.0, "minio": 0.0, "quota": 0.0})
         d = dt or 0.0
         rows.append({
             "group_name": g,
@@ -192,6 +295,9 @@ def take_tick(now):
             "gpu_util_sum": gu["util"],
             "gpu_mem_gib_seconds": gu["mem"] / 1024.0 * d,
             "gpu_compute_card_seconds": gu["util"] / 100.0 * d,
+            "storage_home_gib_seconds": sv.get("home", 0.0) * d,
+            "storage_minio_gib_seconds": sv.get("minio", 0.0) * d,
+            "storage_quota_gib_seconds": sv.get("quota", 0.0) * d,
         })
     _LAST_TS = now
     return rows, prev_ts
@@ -211,8 +317,12 @@ def main():
     args = parser.parse_args()
     if args.interval < 5:
         parser.error("interval must be at least 5 seconds")
-    global INTERVAL
+    global INTERVAL, STORAGE_INTERVAL
     INTERVAL = args.interval
+    try:
+        STORAGE_INTERVAL = max(60, int(os.environ.get("YATTERRA_STORAGE_INTERVAL", STORAGE_INTERVAL)))
+    except ValueError:
+        pass
 
     os.umask(0o027)
     store = UsageStore()
@@ -228,7 +338,7 @@ def main():
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: stop.set())
 
-        log(f"usage_meter start interval={args.interval}s db={store.path}")
+        log(f"usage_meter start interval={args.interval}s storage_interval={STORAGE_INTERVAL}s db={store.path}")
         while not stop.is_set():
             started = time.monotonic()
             try:
@@ -246,6 +356,7 @@ def main():
 
 
 INTERVAL = 30  # default, overwritten in main()
+STORAGE_INTERVAL = 3600  # slow storage refresh (whole-tree du); env-overridable
 
 if __name__ == "__main__":
     main()

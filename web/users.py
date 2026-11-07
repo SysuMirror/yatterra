@@ -246,9 +246,11 @@ ROLE_PERMS = {
               "infra.host", "infra.storage", "infra.db", "infra.scheduler", "infra.proxy",
               "dev.harness", "dev.mcp", "dev.agent", "dev.llm",
               "ops.audit", "ops.threat", "ops.shared.read", "ops.shared.write", "ops.deploy",
+              "billing.pay", "billing.price", "billing.account",
               "admin.users"],
     "user":  ["group.create", "group.view", "group.terminal", "dev.agent", "dev.llm",
               "ops.shared.read", "ops.threat",
+              "billing.pay",
               "infra.host", "infra.storage.read", "infra.db.read"],
     "guest": ["group.view", "infra.host.view"],
 }
@@ -284,6 +286,11 @@ PERM_GROUPS = [
         ("ops.shared.read", "共享只读"),
         ("ops.shared.write", "共享读写"),
         ("ops.deploy", "CI/CD 部署"),
+    ]),
+    ("计费", [
+        ("billing.pay", "充值 / 查看账单"),
+        ("billing.price", "设置单价"),
+        ("billing.account", "账户与台账管理"),
     ]),
     ("管理", [
         ("admin.users", "用户管理"),

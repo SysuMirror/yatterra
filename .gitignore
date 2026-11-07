@@ -16,6 +16,7 @@
 *.pfx
 secret.key
 vapid.json
+pay.json
 db_creds.json
 minio_keys.json
 users.json
@@ -77,6 +78,7 @@ priority_kill.log
 .spa-staging/
 web/.spa-staging/
 .spa.publish.lock
+billing_settle.lock
 .DS_Store
 Thumbs.db
 

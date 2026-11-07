@@ -81,6 +81,7 @@ export type AiPageType =
   | 'llm' | 'users' | 'threat-map' | 'storage' | 'databases'
   | 'proxy' | 'shared' | 'profile' | 'mcp' | 'harness' | 'docs'
   | 'dev' | 'infra' | 'ops' | 'gpu' | 'host' | 'fleet'
+  | 'mybilling' | 'pricing' | 'orders'
   | 'pod_ide'
   | `pod:${string}`
 

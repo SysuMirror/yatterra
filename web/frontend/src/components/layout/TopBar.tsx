@@ -138,6 +138,7 @@ export default function TopBar() {
     { label: '审批', kind: 'approval-pending' },
     { label: 'AI', kind: 'agent-done' },
     { label: '配额', kind: 'quota-warn' },
+    { label: '余额', kind: 'billing-low' },
     { label: '系统', kind: 'broadcast' },
   ]
 

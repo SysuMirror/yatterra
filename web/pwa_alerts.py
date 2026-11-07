@@ -83,6 +83,7 @@ _KIND_LABELS = {
     "approval-pending": "审批待审",
     "agent-done": "AI 任务完成",
     "quota-warn": "配额预警",
+    "billing-low": "余额不足提醒",
     "broadcast": "平台公告",
     "event": "事件通知",
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts'
-import { Cpu, Download, Gauge, MemoryStick, Receipt, Zap } from 'lucide-react'
+import { Cpu, Download, Gauge, HardDrive, MemoryStick, Receipt, Zap } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { MetricCard } from '@/components/domain/MetricCard'
@@ -51,15 +51,17 @@ export default function OpsBilling() {
     ? `计费区间 ${range} · ${bucket === 'day' ? '按天' : '按小时'}\n` +
       `总计: 实测 ${t.core_hours.toFixed(2)} 核时, 申请 ${t.request_core_hours.toFixed(2)} 核时, ` +
       `利用率 ${t.cpu_utilization == null ? '—' : (t.cpu_utilization * 100).toFixed(1) + '%'}, 算力卡时 ${t.compute_card_hours.toFixed(2)}\n` +
+      `内存 ${t.mem_gib_hours.toFixed(2)} GiB·h, 存储(目录) ${t.storage_home_gib_hours.toFixed(2)} GiB·h, ` +
+      `存储(桶) ${t.storage_minio_gib_hours.toFixed(2)} GiB·h\n` +
       `浪费核时 Top:\n` +
       [...perGroup].sort((a, b) => b.gap_core_hours - a.gap_core_hours).slice(0, 5)
         .map((r) => `  ${r.group_name} 实测 ${r.core_hours.toFixed(2)} 申请 ${r.request_core_hours.toFixed(2)} 浪费 ${r.gap_core_hours.toFixed(2)}`).join('\n')
     : ''
 
   const exportCsv = () => {
-    const header = '组,实测核时,申请核时,浪费核时,GPU显存GiB·h,算力卡时'
+    const header = '组,实测核时,申请核时,浪费核时,GPU显存GiB·h,算力卡时,内存GiB·h,存储目录GiB·h,存储桶GiB·h'
     const body = perGroup.map((r) =>
-      [r.group_name, r.core_hours, r.request_core_hours, r.gap_core_hours, r.gpu_mem_gib_hours, r.compute_card_hours].join(','))
+      [r.group_name, r.core_hours, r.request_core_hours, r.gap_core_hours, r.gpu_mem_gib_hours, r.compute_card_hours, r.mem_gib_hours, r.storage_home_gib_hours, r.storage_minio_gib_hours].join(','))
     const csv = [header, ...body].join('\n')
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -119,6 +121,13 @@ export default function OpsBilling() {
             <MetricCard icon={<Zap size={15} className="text-accent" />} label="算力卡时" value={(t?.compute_card_hours ?? 0).toFixed(2)} suffix="卡时" />
           </div>
 
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+            <MetricCard icon={<MemoryStick size={15} className="text-accent" />} label="内存" value={(t?.mem_gib_hours ?? 0).toFixed(2)} suffix="GiB·h" />
+            <MetricCard icon={<HardDrive size={15} className="text-accent" />} label="存储 · 组目录" value={(t?.storage_home_gib_hours ?? 0).toFixed(2)} suffix="GiB·h" />
+            <MetricCard icon={<HardDrive size={15} className="text-accent" />} label="存储 · 对象桶" value={(t?.storage_minio_gib_hours ?? 0).toFixed(2)} suffix="GiB·h" />
+            <MetricCard icon={<HardDrive size={15} className="text-muted" />} label="存储 · 配额" value={(t?.storage_quota_gib_hours ?? 0).toFixed(2)} suffix="GiB·h" />
+          </div>
+
           <Card padding="lg" className="mb-6">
             <div className="flex items-center gap-2 mb-3">
               <Receipt size={15} className="text-accent" />
@@ -153,6 +162,9 @@ export default function OpsBilling() {
                 { key: 'cpu_utilization', title: '利用率', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.cpu_utilization == null ? '—' : `${(r.cpu_utilization * 100).toFixed(0)}%`}</span> },
                 { key: 'gpu_mem_gib_hours', title: 'GPU 显存 GiB·h', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.gpu_mem_gib_hours.toFixed(3)}</span> },
                 { key: 'compute_card_hours', title: '算力卡时', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.compute_card_hours.toFixed(3)}</span> },
+                { key: 'mem_gib_hours', title: '内存 GiB·h', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.mem_gib_hours.toFixed(3)}</span> },
+                { key: 'storage_home_gib_hours', title: '存储·目录', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.storage_home_gib_hours.toFixed(3)}</span> },
+                { key: 'storage_minio_gib_hours', title: '存储·桶', sortable: true, render: (r: any) => <span className="font-mono text-xs">{r.storage_minio_gib_hours.toFixed(3)}</span> },
               ]}
               data={perGroup}
               keyFn={(r: any) => r.group_name}
