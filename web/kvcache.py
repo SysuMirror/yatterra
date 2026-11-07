@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 
 import siteconf
 
@@ -30,23 +31,44 @@ _redis = None
 _redis_lock = threading.Lock()
 _PREFIX = "yt:"
 _SENTINEL = object()  # internal marker for "tried and failed"
+_retry_at = 0.0       # wall time before which a failed attempt is not retried
+RETRY_S = 60          # re-attempt Redis after a failure (self-heal on restart)
+_PROBE_TIMEOUT = 2.0  # fast TCP pre-flight so a dead endpoint can't stall callers
+
+
+def _tcp_reachable(host, port, timeout=_PROBE_TIMEOUT):
+    """Cheap pre-flight: is anything listening on ``host:port`` right now?
+
+    redis-py retries a dead endpoint *internally*, which can stall a caller for
+    tens of seconds. We probe the socket ourselves with a short timeout first
+    and only build the client when the connection actually succeeds.
+    """
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _get_redis():
     """Return connected Redis instance, or None if unavailable.
 
-    Thread-safe; connection is attempted once and cached.
+    Thread-safe. A failure is not cached forever: ``_retry_at`` gates a cheap
+    re-attempt (``RETRY_S``), so Redis coming back after a restart heals
+    without a process restart.
     """
-    global _redis
+    global _redis, _retry_at
     if _redis is not None and _redis is not _SENTINEL:
         return _redis
-    if _redis is _SENTINEL:
+    if _redis is _SENTINEL and time.time() < _retry_at:
         return None
     with _redis_lock:
         if _redis is not None and _redis is not _SENTINEL:
             return _redis
-        if _redis is _SENTINEL:
+        if _redis is _SENTINEL and time.time() < _retry_at:
             return None
+        _redis = None  # clear a stale sentinel so we re-attempt below
         try:
             import redis as _redis_mod
 
@@ -93,7 +115,7 @@ def _get_redis():
                 except Exception:
                     pass
 
-            if host and password:
+            if host and password and _tcp_reachable(host, port):
                 _redis = _redis_mod.Redis(
                     host=host, port=port, password=password,
                     decode_responses=True,
@@ -104,19 +126,24 @@ def _get_redis():
                 log.info("kvcache: Redis connected %s:%d", host, port)
                 return _redis
             else:
-                log.warning("kvcache: no Redis host/password found, running in memory-only mode")
+                log.warning(
+                    "kvcache: Redis %s:%d unreachable (host/password ok=%s), "
+                    "memory-only mode; retry in %ds",
+                    host or "-", port, bool(host and password), RETRY_S)
                 _redis = _SENTINEL
         except Exception as e:
             log.warning("kvcache: Redis unavailable, falling back to no-cache: %s", e)
             _redis = _SENTINEL
+        _retry_at = time.time() + RETRY_S
     return None
 
 
 def reset():
     """Force re-discovery of Redis (useful after connectivity changes)."""
-    global _redis
+    global _redis, _retry_at
     with _redis_lock:
         _redis = None
+        _retry_at = 0.0
 
 
 # ---------------------------------------------------------------------------
