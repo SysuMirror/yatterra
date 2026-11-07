@@ -59,6 +59,7 @@ class WalletApi(unittest.TestCase):
         groups.load_state.return_value = {"groups": _GROUPS}
         groups.internal_groups.return_value = set()
         sys.modules["groups"] = groups
+        self.groups = groups
 
         wallet = MagicMock()
         wallet.get_account.return_value = {"username": "alice", "balance_cents": 10000,
@@ -156,6 +157,19 @@ class WalletApi(unittest.TestCase):
         r = self.client.post("/api/billing/allocate",
                              json={"group": "pod1", "amount_cents": 100})
         self.assertEqual(r.status_code, 403)
+
+    def test_internal_pod_hidden_and_rejected(self):
+        """内部组免计费 → 不列在可分配 Pod 里，直接分配也被拒（钱进去就扣不到）。"""
+        self.groups.internal_groups.return_value = {"pod1"}
+        self.groups.load_state.return_value = {
+            "groups": {k: dict(v, internal=(k == "pod1")) for k, v in _GROUPS.items()}}
+        self._login("alice")
+        body = self.client.get("/api/billing/wallet").get_json()
+        self.assertEqual(body["pods"], [])
+        r = self.client.post("/api/billing/allocate",
+                             json={"group": "pod1", "amount_cents": 1000})
+        self.assertEqual(r.status_code, 400)
+        self.wallet.transfer_to_pod.assert_not_called()
 
     def test_admin_can_allocate_any_pod(self):
         self._login("admin")

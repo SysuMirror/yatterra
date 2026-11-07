@@ -386,7 +386,8 @@ def _gen_transfer_token():
 
 def _visible_pods(user):
     """Pods the caller may allocate to: their own (owner/member); admins see all
-    外部(billable) groups.  Each entry carries the pod quota balance/status."""
+    外部(billable) groups.  Each entry carries the pod quota balance/status.
+    内部组(internal)一概不列 —— 它们免计费，分配进去的钱不会被扣。"""
     import groups
     import users
     try:
@@ -396,9 +397,9 @@ def _visible_pods(user):
         return []
     out = []
     for name, pod in state.items():
+        if name in internal:
+            continue          # 内部组免计费 → 分配进去的钱不会被扣、只能管理员收回
         if _is_admin(user):
-            if name in internal:
-                continue
             role = "owner"
         else:
             role = users.pod_role(user, pod)
@@ -452,6 +453,12 @@ def _check_pod_target(user, group):
         pod = None
     if not pod:
         return None, (jsonify({"error": {"code": "NOT_FOUND", "message": "组不存在"}}), 404)
+    try:
+        if group in groups.internal_groups():
+            return None, (jsonify({"error": {"code": "BAD_REQUEST",
+                                             "message": "内部组免计费，无需分配额度"}}), 400)
+    except Exception:
+        pass
     if not _is_admin(user) and users.pod_role(user, pod) not in ("owner", "member"):
         return None, (jsonify({"error": {"code": "FORBIDDEN",
                                          "message": f"不是 Pod {group} 的成员"}}), 403)
