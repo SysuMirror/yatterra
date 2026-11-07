@@ -450,6 +450,18 @@ def do_evict(cands, st, dry):
             stopped_now.append(c)
             continue
         try:
+            # P1-c: prefer deferring a delayable train (park -> valley-gated
+            # re-admission) over killing it.  Off unless DEFER_OK=true.
+            try:
+                import defer_queue
+                if defer_queue.should_defer(group, dep):
+                    defer_queue.enqueue(group, dep, by="evict")
+                    deploys.park(group, dep)
+                    log(f"defer {group}/{dep['name']} prio={c['priority']} "
+                        f"tier={c['tier']} score={c['score']} (evict -> 可延迟队列)")
+                    continue        # queue owns it now; not a do_recover victim
+            except Exception:
+                pass
             ok, msg = deploys.stop(group, dep)
             log(f"evict {group}/{dep['name']} prio={c['priority']} "
                 f"tier={c['tier']} score={c['score']} hit={c['hit']} ok={ok} "
@@ -558,6 +570,14 @@ def do_recover(p, st, dry):
                     f"(metrics={entry.get('metrics')})")
                 recovered += 1
                 continue
+            # P1-c: hold a delayable train's restart until a valley (off unless
+            # DEFER_OK=true; non-deferrable victims are byte-for-byte unchanged).
+            try:
+                import defer_queue, timeline
+                if defer_queue.should_defer(group, dep) and not timeline.is_valley(now):
+                    continue
+            except Exception:
+                pass
             rc, msg = supervisorctl_start(group, did)
             log(f"recover start {group}/{dep['name']} "
                 f"metrics={entry.get('metrics')} rc={rc} ({msg})")

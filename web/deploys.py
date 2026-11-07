@@ -813,6 +813,19 @@ def _run_impl(group, dep):
         import scheduler
         kind = (dep.get("kind") or "serve").lower()
         gpu = scheduler.gpu_for_deploy(dep, group)
+        if gpu is None and kind == "train":
+            # P1-c (C5): a delayable train with no free card must NOT start on
+            # the default card.  Queue it for a valley instead.  Default-off:
+            # requires DEFER_OK=true, else today's default-card start is kept.
+            try:
+                import defer_queue
+                if defer_queue.should_defer(group, dep):
+                    defer_queue.enqueue(group, dep, by="run")
+                    msg = "无空闲 GPU，已入可延迟队列（等待谷期）"
+                    update(group, dep["id"], last_status="queued", last_msg=msg)
+                    return True, msg
+            except Exception:
+                pass
         if gpu is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu)
             # MPS: dynamic cap when training co-resident with a serve deploy
@@ -1008,6 +1021,14 @@ def park(group, dep):
         pass
     update(group, dep["id"], last_status="queued",
            last_msg="推理压力,已退让排队(已 checkpoint)")
+    # P1-c: a parked delayable train joins the defer queue (valley-gated
+    # re-admission).  Off unless DEFER_OK=true.
+    try:
+        import defer_queue
+        if defer_queue.should_defer(group, dep):
+            defer_queue.enqueue(group, dep, by="park")
+    except Exception:
+        pass
     # GPU 压力驱逐通知(kind='gpu-evicted'): park() 只被 gpu_loop 的驱逐路径
     # 调用。同组 10 分钟桶防风暴。best-effort, 不影响驱逐流程。
     try:
@@ -1037,6 +1058,12 @@ def stop(group, dep):
                 scheduler.release(dep["id"])
         except Exception:
             pass
+        # P1-c: a stopped deploy must not linger in the defer queue (防孤儿)
+        try:
+            import defer_queue
+            defer_queue.remove(dep["id"], reason="stopped")
+        except Exception:
+            pass
 
 
 def delete(group, dep):
@@ -1059,6 +1086,11 @@ def delete(group, dep):
     try:
         _supctl(group, "reread", timeout=15)
         _supctl(group, "update", timeout=15)
+    except Exception:
+        pass
+    try:
+        import defer_queue
+        defer_queue.remove(pid, reason="deleted")
     except Exception:
         pass
     remove_record(group, pid)

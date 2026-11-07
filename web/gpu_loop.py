@@ -24,6 +24,8 @@ import siteconf
 import deploys
 import scheduler
 import logutil
+import contract
+import defer_queue
 
 POLL_S = 5
 LOG = siteconf.path("gpu_loop.log")
@@ -55,6 +57,13 @@ def handle_pressure():
                 ok, msg = deploys.migrate(group, dep, target)
                 log(f"migrate {group}/{dep['name']} gpu{from_gpu}->gpu{target} ok={ok}")
             else:
+                # P1-c: honour the flexibility contract — a train that is not
+                # preemptable (e.g. critical, or explicit PREEMPT_OK=false) is
+                # never parked.  Default preempt_ok for a train is True, so this
+                # is a no-op until a group opts out.
+                if not contract.preemptable(group, dep):
+                    log(f"skip park {group}/{dep['name']}: preempt_ok=false")
+                    continue
                 deploys.park(group, dep)
                 log(f"park {group}/{dep['name']} (no migration target)")
         except Exception as e:
@@ -62,6 +71,14 @@ def handle_pressure():
 
 
 def handle_queued():
+    # P1-c: let the defer queue release the delayable trains whose valley (or
+    # deadline) has arrived, then place exactly those.  Non-deferrable trains
+    # (the default) are handled below exactly as before.
+    try:
+        admitted = {a["deploy_id"] for a in defer_queue.admit()}
+    except Exception as e:
+        log(f"admit error: {e!r}")
+        admitted = set()
     queued = scheduler.queued_trains()
     if not queued:
         return
@@ -72,10 +89,23 @@ def handle_queued():
             if not dep:
                 scheduler.release(tid)
                 continue
+            # A delayable train only runs when admit() released it; otherwise we
+            # keep it queued (tracked) and wait — do NOT place_train it.
+            try:
+                if defer_queue.should_defer(group, dep) and tid not in admitted:
+                    defer_queue.enqueue(group, dep, by="gpu_loop")
+                    continue
+            except Exception:
+                pass
             gpu = scheduler.place_train(tid, group, vram)
             if gpu is None:
                 continue  # still no room
             ok, msg = deploys.migrate(group, dep, gpu)
+            if ok:
+                try:
+                    defer_queue.mark_running(tid, gpu)
+                except Exception:
+                    pass
             log(f"requeue {group}/{dep['name']} -> gpu{gpu} ok={ok}")
         except Exception as e:
             log(f"requeue handle error {group}/{tid}: {e!r}")
@@ -124,6 +154,10 @@ def main():
             handle_pressure()
             handle_mps_rebalance()
             handle_queued()
+            try:
+                defer_queue.reconcile()   # P1-c: close queue items gone from alloc
+            except Exception as e:
+                log(f"reconcile error: {e!r}")
         except Exception as e:
             log(f"loop error: {e!r}\n{traceback.format_exc()}")
         time.sleep(POLL_S)
