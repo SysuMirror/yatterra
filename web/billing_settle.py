@@ -20,10 +20,12 @@ Crash/restart safety comes from the charge being keyed by
 ``(group, period, resource)`` in ``billing_charges``: re-settling an hour that
 partially succeeded only charges the keys that did not land.
 
-By default the daemon **suspends** a Pod that has been at or below zero credit
-for ``BELOW_ZERO_RUNS`` consecutive runs (after warning it: push + notification).
-Set ``YATTERRA_BILLING_AUTO_SUSPEND=0`` to make it warn-only and leave the
-enforcement decision to an operator via the admin API.
+By default the daemon **suspends and stops** a Pod that has been at or below zero
+credit for ``BELOW_ZERO_RUNS`` consecutive runs (after warning it: push +
+notification): the billing account is marked suspended *and* the workload is
+scaled to 0, so 停机 is real and the Pod's public web entry falls back to the
+"资源已冻结" page.  Set ``YATTERRA_BILLING_AUTO_SUSPEND=0`` to make it warn-only and
+leave the enforcement decision to an operator via the admin API.
 
 Charges come out of each Pod's own quota (``billing_accounts``); the owner's
 wallet (``wallet``) is only debited when they *allocate* to the pod.  So a pod
@@ -167,10 +169,30 @@ def enforce(accounts=None):
                 billing_store.set_account(g, status=billing_store.STATUS_SUSPENDED)
                 out["suspended"].append(g)
                 log(f"auto-suspend {g} balance={balance}")
+                _stop_pod(g)
         elif ratio is not None and ratio < float(acct.get("warn_ratio") or 0.2):
             _notify_low(g, balance, ratio, severe=False)
             out["warned"].append(g)
     return out
+
+
+def _stop_pod(group):
+    """Scale a just-suspended Pod down to 0 so 停机 is real, not just a flag.
+
+    A suspended account whose workload keeps running is toothless (it keeps
+    burning quota at a negative balance), and the Pod web entry would stay up —
+    which makes the fallback page's「资源已冻结」branch unreachable.  Best-effort:
+    any failure is logged and never breaks settlement.
+    """
+    try:
+        import lifecycle
+        res = lifecycle.stop_group(group)
+        if res.get("ok"):
+            log(f"auto-stop {group} (suspended, scaled to 0)")
+        else:
+            log(f"auto-stop {group} failed: {res.get('error') or res.get('msg')}")
+    except Exception as exc:
+        log(f"auto-stop {group} failed: {type(exc).__name__}: {exc}")
 
 
 def _notify_low(group, balance, ratio, severe):

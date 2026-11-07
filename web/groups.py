@@ -33,6 +33,8 @@ NGINX_MARK_END = "# <<< yatterra web-ssl managed <<<"
 NGINX_SSL_CERT = siteconf.NGINX_SSL_CERT
 NGINX_SSL_KEY = siteconf.NGINX_SSL_KEY
 NGINX_REMOTE_HOST = siteconf.RELAY_HOST_NAME  # remote_hosts.json entry
+# 平台上开在 relay 上的内部端口(frps 侧), 供 pod 兜底页等回源到 GUI(8090)
+NGINX_OFFLINE_INNER = PLATFORM_GUI_PORT - 10000
 # htpasswd for basic-auth on "sensitive" web blocks (windows VM groups: the
 # noVNC console = full desktop of the guest). Written on the relay by us.
 NGINX_HTPASSWD = os.environ.get("YATTERRA_NGINX_HTPASSWD",
@@ -756,14 +758,37 @@ def _htpasswd_content(state):
     return ("\n".join(lines) + "\n") if lines else ""
 
 
-def _web_ssl_block(public_port, auth_user=None):
+def _web_ssl_block(public_port, auth_user=None, group=None):
     """Generate one nginx server block: listen <port> ssl → proxy_pass 127.0.0.1:<port-10000>.
-    auth_user (group name) → protect the block with HTTP basic auth."""
+    auth_user (group name) → protect the block with HTTP basic auth.
+
+    group (pod name) → when the pod's web entry is down (frp tunnel gone, pod
+    scaled to 0, app not listening), serve YatTerra's fallback page instead of a
+    bare 502.  The page is served by the platform GUI over the same relay
+    (127.0.0.1:<NGINX_OFFLINE_INNER> → frp → 8090) and picks its wording from the
+    pod's billing status — 资源已冻结 when it was stopped for non-payment."""
     inner = public_port - 10000
     auth = ""
     if auth_user:
         auth = (f'        auth_basic "yatterra ({auth_user})";\n'
                 f'        auth_basic_user_file {NGINX_HTPASSWD};\n')
+    off_err = ""
+    off_loc = ""
+    if group:
+        import urllib.parse
+        off_err = ("        proxy_intercept_errors on;\n"
+                   "        error_page 502 503 504 = /__yatterra_off;\n")
+        gq = urllib.parse.quote(str(group), safe="")
+        # NB: a *prefix* location (= /…) may carry a URI+query in proxy_pass; a
+        # named location may not. proxy_method GET keeps POSTs on the page too.
+        off_loc = f"""
+    location = /__yatterra_off {{
+        proxy_method GET;
+        proxy_pass http://127.0.0.1:{NGINX_OFFLINE_INNER}/pod-offline?g={gq};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }}"""
     return f"""server {{
     listen {public_port} ssl;
     listen [::]:{public_port} ssl;
@@ -773,7 +798,7 @@ def _web_ssl_block(public_port, auth_user=None):
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     location / {{
-{auth}        proxy_pass http://127.0.0.1:{inner};
+{auth}{off_err}        proxy_pass http://127.0.0.1:{inner};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -782,7 +807,7 @@ def _web_ssl_block(public_port, auth_user=None):
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
-    }}
+    }}{off_loc}
 }}"""
 
 
@@ -792,7 +817,8 @@ def build_nginx_web_block(state):
     lines.append(_web_ssl_block(PLATFORM_GUI_PORT))
     for g in state["groups"].values():
         auth_user = g["name"] if g.get("type") in AUTH_WEB_TYPES else None
-        lines.append(_web_ssl_block(g["web_public"], auth_user=auth_user))
+        lines.append(_web_ssl_block(g["web_public"], auth_user=auth_user,
+                                    group=g["name"]))
     lines.append(NGINX_MARK_END)
     return "\n\n".join(lines)
 
@@ -951,6 +977,9 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
         "owners": [creator] if creator else [],
         "members": [],
         "pending": [],
+        # 平台内部组(运维/被平台自己消费的服务)默认 False = 外部组, 按用量计费。
+        # 标记为 True 后结算/提醒都会跳过(见 billing_settle)。
+        "internal": False,
     }
     # pre-create the persistent dir so it exists with sane perms before the pod
     # mounts it (kubelet DirectoryOrCreate would make it root-only). Windows
@@ -1152,9 +1181,31 @@ def list_groups():
         g.setdefault("owners", [])
         g.setdefault("members", [])
         g.setdefault("pending", [])
+        g.setdefault("internal", False)
         g["status"] = statuses.get(g["name"], "NotFound")
         groups.append(g)
     return groups, state
+
+
+def internal_groups():
+    """组名集合: 被标记为平台内部(不计费)的组。一次 load_state, 供结算/API 复用。"""
+    try:
+        state = load_state()
+    except Exception:
+        return set()
+    return {name for name, g in state.get("groups", {}).items() if g.get("internal")}
+
+
+def set_internal(name, flag):
+    """标记/取消「平台内部组」(不计费)。不改 pod 资源, 无需 rollout。"""
+    state = load_state()
+    if name not in state["groups"]:
+        raise ValueError(f"组 {name} 不存在")
+    g = state["groups"][name]
+    g["internal"] = bool(flag)
+    save_state(state)
+    audit.record("group_internal_set", detail=f"{name} internal={bool(flag)}")
+    return bool(g["internal"])
 
 
 # --- pod ownership / membership management ---

@@ -94,6 +94,54 @@ class InternalGroups(unittest.TestCase):
         self.assertEqual(self.groups.internal_groups(), set())
 
 
+# ── 1b. nginx 兜底: pod web 上游挂掉 → yatterra 兜底页 ────────────────
+class NginxOfflineFallback(unittest.TestCase):
+    """每个 pod 的 23xxx server block 必须把 502/503/504 转成兜底页; 平台块不要。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = patch.dict(os.environ, {"YATTERRA_ROOT": self.tmp.name,
+                                      "YATTERRA_WEB_DIR": str(ROOT)})
+        env.start()
+        self.addCleanup(env.stop)
+        for mod in ("siteconf", "groups"):
+            sys.modules.pop(mod, None)
+        self.siteconf = load("siteconf_nginx", "siteconf.py")
+        self.mods = patch.dict(sys.modules, {
+            "siteconf": self.siteconf, "users": MagicMock(),
+            "audit": MagicMock(), "req_estimate": MagicMock(),
+        })
+        self.mods.start()
+        self.addCleanup(self.mods.stop)
+        self.groups = load("groups_nginx", "groups.py")
+
+    def test_pod_block_intercepts_upstream_errors(self):
+        blk = self.groups._web_ssl_block(23050, group="pod1")
+        self.assertIn("proxy_intercept_errors on;", blk)
+        self.assertIn("error_page 502 503 504 = /__yatterra_off;", blk)
+        self.assertIn("location = /__yatterra_off", blk)
+        self.assertIn("proxy_method GET;", blk)
+        self.assertIn(
+            f"127.0.0.1:{self.groups.NGINX_OFFLINE_INNER}/pod-offline?g=pod1", blk)
+
+    def test_platform_block_has_no_fallback(self):
+        blk = self.groups._web_ssl_block(24000)          # GUI 块: 不兜底
+        self.assertNotIn("yatterra_off", blk)
+
+    def test_group_name_is_url_encoded(self):
+        blk = self.groups._web_ssl_block(23051, group="a b/c")
+        self.assertIn("/pod-offline?g=a%20b%2Fc", blk)
+
+    def test_strip_removes_the_fallback_block(self):
+        state = {"groups": {"pod1": {"name": "pod1", "web_public": 23050}}}
+        section = self.groups.build_nginx_web_block(state)
+        self.assertIn("yatterra_off", section)
+        stripped = self.groups._strip_web_ssl_blocks("events {}\n" + section + "\n")
+        self.assertNotIn("yatterra_off", stripped)
+        self.assertNotIn("listen 23050 ssl", stripped)
+
+
 # ── 2. billing_settle 跳过内部组 ─────────────────────────────────────
 class SettleSkipsInternal(unittest.TestCase):
     def setUp(self):
@@ -168,10 +216,13 @@ class EnforceAutoSuspend(unittest.TestCase):
         self.billing_store.balance_ratio.side_effect = lambda acct: None
         self.groups = MagicMock()
         self.groups.internal_groups.return_value = set()
+        self.lifecycle = MagicMock()
+        self.lifecycle.stop_group.return_value = {"ok": True, "msg": "", "error": ""}
         self.mods = patch.dict(sys.modules, {
             "logutil": MagicMock(), "siteconf": MagicMock(),
             "billing_store": self.billing_store, "billing_core": MagicMock(),
             "groups": self.groups, "pwa_alerts": MagicMock(),
+            "lifecycle": self.lifecycle,
         })
         self.mods.start()
         self.addCleanup(self.mods.stop)
@@ -188,6 +239,8 @@ class EnforceAutoSuspend(unittest.TestCase):
         self.assertEqual(out["suspended"], ["ext-g"])
         self.billing_store.set_account.assert_called_once_with(
             "ext-g", status=self.billing_store.STATUS_SUSPENDED)
+        # 停机 = 标记 suspended + 真的把工作负载缩到 0(否则 web 入口还在, 兜底页不可达)
+        self.lifecycle.stop_group.assert_called_once_with("ext-g")
         # 欠费会先提醒(severe)，再停机
         self.assertIn("ext-g", out["warned"])
 
@@ -199,6 +252,7 @@ class EnforceAutoSuspend(unittest.TestCase):
             out = self.bs.enforce(self.rows)
         self.assertEqual(out["suspended"], [])
         self.billing_store.set_account.assert_not_called()
+        self.lifecycle.stop_group.assert_not_called()
         self.assertIn("ext-g", out["warned"])
 
     def test_topup_resets_the_counter(self):

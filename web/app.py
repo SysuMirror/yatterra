@@ -252,6 +252,9 @@ def guard():
         # Health check — must reach Flask route handler
         elif path == '/health':
             pass  # fall through to Flask route handler
+        # Pod Web 兜底页 — 公开页面, 不能被 SPA index.html 吞掉
+        elif path == '/pod-offline':
+            pass  # fall through to Flask route handler
         # Harness(编排)管理:SPA dev/harness 页面直接 fetch 无 /api 前缀的
         # 裸路径(/harness/list|def|store|delete)。若不放行会被下面的 SPA
         # 兜底吞成 index.html → 前端解析 JSON 失败。放行后仍走 login+route_perm。
@@ -274,7 +277,8 @@ def guard():
             from flask import send_from_directory
             return send_from_directory(_SPA_DIR, 'index.html')
     if request.endpoint in ("oauth_callback_ssemarket", "oauth_callback_unisso",
-                            "deploy_webhook", "deploy_internal_report", "health", "static"):
+                            "deploy_webhook", "deploy_internal_report", "health",
+                            "pod_offline_page", "static"):
         return
     # REST API — token auth handled inside api.py
     if request.path.startswith("/api/"):
@@ -1001,6 +1005,18 @@ import llm_usage
 @app.route('/health')
 def health():
     return jsonify({'health': 'ok'})
+
+# --- Pod Web 入口兜底页 ---
+# 当某个 Pod 的 Web 服务没起来时, relay nginx 把它的公网 23xxx server block
+# 路由到这里(而不是直接甩 502)。欠费停机时页面会写明「资源已冻结」。
+# 公开只读: 不需要登录, 只读该 Pod 的计费状态来决定文案。
+@app.route('/pod-offline')
+def pod_offline_page():
+    import pod_offline
+    group = (request.args.get('g') or '').strip()
+    resp = Response(pod_offline.render(group), mimetype='text/html')
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp, 404
 
 # --- /goal 目标: 平台启动后延迟拉起未完成的 IDE 目标(自动复核完成度) ---
 try:
