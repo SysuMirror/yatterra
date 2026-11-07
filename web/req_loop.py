@@ -33,6 +33,7 @@ import cpu_stats
 import groups
 import req_estimate
 import logutil
+import forecast
 
 POLL_S = 60
 LOG = siteconf.path("req_loop.log")
@@ -349,6 +350,7 @@ def main():
     while True:
         try:
             now = time.time()
+            forecast.tick(now)   # P1-b: publish timeline.json (throttled; never raises)
             state = groups.load_state()
             gmap = state.get("groups", {}) or {}
             usage = sample_usage()
