@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Rocket, Play, Square, ScrollText, Plus, Trash2, Zap, Sparkles } from 'lucide-react'
+import { Rocket, Play, Square, ScrollText, Plus, Trash2, Zap, Sparkles, SlidersHorizontal, Hourglass } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -45,12 +45,20 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
   const [dHealth, setDHealth] = useState('')
   const [dHealthTimeout, setDHealthTimeout] = useState('60')
   const [dAutoDeploy, setDAutoDeploy] = useState(false)
+  // P1-c flexibility contract (train only)
+  const [dDeferOk, setDDeferOk] = useState(false)
+  const [dPreemptOk, setDPreemptOk] = useState(true)
+  const [dDeadline, setDDeadline] = useState('')
+  const [dDeadlineKind, setDDeadlineKind] = useState<'soft' | 'hard'>('soft')
+  const [dEstDur, setDEstDur] = useState('')
 
   const resetForm = () => {
     setDSource('repo'); setDName(''); setDRepo(''); setDScript('')
     setDBranch(''); setDSubdir(''); setDMode('service'); setDKind('serve')
     setDGpu('0'); setDVram(''); setDToken(''); setDHealth('')
     setDHealthTimeout('60'); setDAutoDeploy(false)
+    setDDeferOk(false); setDPreemptOk(true); setDDeadline('')
+    setDDeadlineKind('soft'); setDEstDur('')
   }
 
   const { data, isLoading } = useQuery<any>({
@@ -88,6 +96,13 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
         health_timeout: dHealthTimeout.trim() || '60',
         auto_deploy: dAutoDeploy,
       }
+      if (dKind === 'train') {
+        body.defer_ok = dDeferOk
+        body.preempt_ok = dPreemptOk
+        body.deadline = dDeadline.trim()
+        body.deadline_kind = dDeadlineKind
+        body.est_duration_s = dEstDur.trim()
+      }
       if (dSource === 'repo') {
         body.repo = dRepo.trim()
         body.branch = dBranch.trim()
@@ -112,6 +127,36 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
     onError: (e: any) => toast({ type: 'error', message: e?.message || '模板部署失败' }),
   })
 
+  // ── Contract edit (train only, P1-c) ──
+  const [contractDep, setContractDep] = useState<any | null>(null)
+  const [cDeferOk, setCDeferOk] = useState(false)
+  const [cPreemptOk, setCPreemptOk] = useState(true)
+  const [cDeadline, setCDeadline] = useState('')
+  const [cDeadlineKind, setCDeadlineKind] = useState<'soft' | 'hard'>('soft')
+  const [cEstDur, setCEstDur] = useState('')
+  const openContract = (d: any) => {
+    const c = d.contract ?? {}
+    setCDeferOk(!!c.defer_ok); setCPreemptOk(!!c.preempt_ok)
+    setCDeadline(''); setCDeadlineKind('soft'); setCEstDur('')
+    setContractDep(d)
+  }
+  const saveContract = useMutation({
+    mutationFn: async () => {
+      const d = contractDep
+      const body = {
+        kind: 'train',
+        defer_ok: cDeferOk,
+        preempt_ok: cPreemptOk,
+        deadline: cDeadline.trim(),
+        deadline_kind: cDeadlineKind,
+        est_duration_s: cEstDur.trim(),
+      }
+      return requireOk(await api.put(`/pods/${podName}/deploys/${d.id ?? d.name}`, body), '保存失败')
+    },
+    onSuccess: () => { toast({ type: 'success', message: '契约已更新' }); setContractDep(null); refresh() },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '保存失败' }),
+  })
+
   // Validation: name required for local, repo required for repo source
   const canSubmit = dSource === 'local'
     ? dName.trim() && dScript.trim()
@@ -132,6 +177,9 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
         </div>
         {canManage && <Button data-onboarding-target="deploy-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建部署</Button>}
       </div>
+
+      {/* ── Defer queue (P1-c, read-only) ── */}
+      <DeferQueuePanel podName={podName} />
 
       {/* ── Quickstart templates ── */}
       {canManage && deploys.length === 0 && (
@@ -210,6 +258,29 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
             )}
           </div>
 
+          {/* Row 4b: Flexibility contract (train only, P1-c) */}
+          {isTrain && (
+            <div className="rounded-xl border-[0.5px] border-black/8 bg-black/[0.02] p-3 space-y-3">
+              <div className="text-xs font-medium text-ink-2">弹性调度（训练专用）</div>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                <label className="flex items-center gap-2 text-sm text-ink-2">
+                  <Switch checked={dDeferOk} onChange={setDDeferOk} />
+                  谷期可延迟
+                </label>
+                <label className="flex items-center gap-2 text-sm text-ink-2">
+                  <Switch checked={dPreemptOk} onChange={setDPreemptOk} />
+                  可被抢占
+                </label>
+                <span className="text-xs text-muted">谷期可延迟：暂无空卡时排队等谷期，而不是被清退。</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Select label="截止类型" value={dDeadlineKind} onChange={(v) => setDDeadlineKind(v as 'soft' | 'hard')} options={[{ value: 'soft', label: '软截止' }, { value: 'hard', label: '硬截止' }]} />
+                <Input label="截止时间（可选）" value={dDeadline} onChange={e => setDDeadline(e.target.value)} placeholder="+2h 或 2026-11-08T09:00" />
+                <Input label="预计时长 秒（可选）" value={dEstDur} onChange={e => setDEstDur(e.target.value)} placeholder="默认 3600" />
+              </div>
+            </div>
+          )}
+
           {/* Row 5: Token (repo only) + Health check */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {isRepo && (
@@ -244,6 +315,33 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
         </div>
       </Dialog>
 
+      {/* ── Contract edit dialog (train only) ── */}
+      <Dialog open={!!contractDep} onClose={() => setContractDep(null)} title={`弹性契约 — ${contractDep?.name ?? ''}`} width="max-w-xl">
+        <div className="space-y-4">
+          <p className="text-xs text-muted">契约决定该训练部署何时可被排到谷期（谷期可延迟），以及有压力时能否被清退（可被抢占）。改动保存后即刻生效，无需重新部署。</p>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <label className="flex items-center gap-2 text-sm text-ink-2">
+              <Switch checked={cDeferOk} onChange={setCDeferOk} />
+              谷期可延迟
+            </label>
+            <label className="flex items-center gap-2 text-sm text-ink-2">
+              <Switch checked={cPreemptOk} onChange={setCPreemptOk} />
+              可被抢占
+            </label>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Select label="截止类型" value={cDeadlineKind} onChange={(v) => setCDeadlineKind(v as 'soft' | 'hard')} options={[{ value: 'soft', label: '软截止' }, { value: 'hard', label: '硬截止' }]} />
+            <Input label="截止时间（可选）" value={cDeadline} onChange={e => setCDeadline(e.target.value)} placeholder="+2h 或 2026-11-08T09:00" />
+            <Input label="预计时长 秒（可选）" value={cEstDur} onChange={e => setCEstDur(e.target.value)} placeholder="默认 3600" />
+          </div>
+          <p className="text-xs text-muted/80">留空的字段会清空对应设置。截止时间支持 +2h/+90m/+1d 或 ISO 时间。</p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setContractDep(null)}>取消</Button>
+            <Button loading={saveContract.isPending} onClick={() => saveContract.mutate()}>保存</Button>
+          </div>
+        </div>
+      </Dialog>
+
       {isLoading && <div className="text-sm text-muted text-center py-8">加载中…</div>}
       {!isLoading && deploys.length === 0 && (
         <div className="flex flex-col items-center gap-2 py-8">
@@ -261,6 +359,9 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
               <span className="text-sm font-medium font-mono truncate min-w-0">{d.name}</span>
               <Badge variant={running ? 'ok' : 'muted'} dot>{d.state || 'stopped'}</Badge>
               {d.kind && d.kind !== 'serve' && <Badge variant="accent">{d.kind === 'train' ? '训练' : d.kind}</Badge>}
+              {d.kind === 'train' && d.contract?.defer_ok && <Badge variant="accent">谷期可延迟</Badge>}
+              {d.kind === 'train' && d.contract && d.contract.preempt_ok === false && <Badge variant="muted">不可抢占</Badge>}
+              {d.kind === 'train' && d.contract?.deadline && <Badge variant="muted">截止 {fmtDeadline(d.contract.deadline)}</Badge>}
               {d.source === 'local' && <Badge variant="muted">本地</Badge>}
               {d.auto_deploy && <Badge variant="accent">自动部署</Badge>}
               {running && <DeployStatusBadge podName={podName} deployId={id} />}
@@ -271,6 +372,11 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
                     <Button variant="secondary" size="sm" onClick={() => stop.mutate(d)}><Square size={13} /> 停止</Button>
                   ) : (
                     <Button variant="secondary" size="sm" onClick={() => run.mutate(d)}><Play size={13} /> 启动</Button>
+                  )}
+                  {d.kind === 'train' && (
+                    <Button variant="ghost" size="sm" aria-label="弹性契约" title="弹性契约" onClick={() => openContract(d)}>
+                      <SlidersHorizontal size={13} />
+                    </Button>
                   )}
                   <Button
                     variant="ghost" size="sm"
@@ -355,6 +461,50 @@ function DeployLogs({ podName, deployId }: { podName: string; deployId: string }
           <span className="text-white/40">暂无日志</span>
         )}
       </div>
+    </div>
+  )
+}
+
+function fmtDeadline(sec: number): string {
+  try { return new Date(sec * 1000).toLocaleString() } catch { return String(sec) }
+}
+
+/** Read-only view of the P1-c defer queue for this pod's group.  Renders
+ * nothing until the queue has been used, so an un-opted-in platform sees no
+ * change. */
+function DeferQueuePanel({ podName }: { podName: string }) {
+  const [open, setOpen] = useState(false)
+  const { data } = useQuery<any>({
+    queryKey: ['defer-queue', podName],
+    queryFn: () => api.get(`/pods/${podName}/defer-queue`),
+    refetchInterval: 10_000,
+  })
+  const items: any[] = data?.items ?? []
+  const counters = data?.counters ?? {}
+  if (!items.length && !Object.keys(counters).length) return null
+  return (
+    <div className="rounded-xl border-[0.5px] border-black/8 bg-white/62 p-3">
+      <button className="flex w-full items-center gap-2 text-left" onClick={() => setOpen((o) => !o)}>
+        <Hourglass size={14} className="text-accent" />
+        <span className="text-sm font-medium">延迟队列</span>
+        <Badge variant="muted">{items.length} 项</Badge>
+        <div className="flex-1" />
+        <span className="text-xs text-muted">{open ? '收起' : '展开'}</span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          <p className="text-xs text-muted">空闲显存：{data?.free_mib == null ? '不可用' : `${data.free_mib} MB`}</p>
+          {items.length === 0 && <p className="text-xs text-muted">暂无排队/运行的训练部署。</p>}
+          {items.map((it: any) => (
+            <div key={it.deploy_id} className="flex items-center gap-2 text-xs">
+              <Badge variant={it.state === 'running' ? 'ok' : 'accent'} dot>{it.state}</Badge>
+              <span className="font-mono truncate">{it.name || it.deploy_id}</span>
+              <div className="flex-1" />
+              <span className="text-muted">{it.last_decision?.reason || ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

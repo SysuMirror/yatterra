@@ -125,6 +125,7 @@ def add(group, spec):
         "auto_deploy": spec.get("auto_deploy", False),  # webhook push 触发
         "health": spec.get("health", ""),       # 健康检查路径,如 /health
         "health_timeout": spec.get("health_timeout", HEALTH_DEFAULT_TIMEOUT),
+        "env": dict(spec.get("env") or {}),      # per-deploy env (incl. P1-c contract keys)
         "report_token": secrets.token_hex(16),  # pod app 上报鉴权
         "last_ref": "",                         # 当前部署的 git ref
         "last_good_ref": "",                    # 最近通过健康检查的 ref

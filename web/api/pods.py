@@ -12,6 +12,7 @@ from flask import Blueprint, request, jsonify, g, Response, current_app
 import siteconf
 users = import_module("users")
 import groups, lifecycle, audit, deploys
+import contract
 import minio_svc as minio_mod
 import db_svc as db_mod
 import cpu_stats, gpu_stats, metrics
@@ -66,6 +67,32 @@ def _parse_health_timeout(value):
         from middleware.error_handler import bad_request
         raise bad_request("health_timeout must be an integer between 1 and 3600 seconds")
     return timeout
+
+# ── P1-c flexibility contract (train only) ────────────────────
+# The dep-level env dict is the single storage the whole stack reads via
+# contract._sources(); these UPPER keys are how the UI opts a train deploy into
+# valley-deferral / preemption.  Absent keys fall back to contract defaults
+# (defer_ok=False for every kind) — so a deploy created without them is unchanged.
+_CONTRACT_KEYS = ("DEFER_OK", "PREEMPT_OK", "DEADLINE", "EST_DURATION_S", "DEADLINE_KIND")
+
+
+def _contract_env(b, kind):
+    """Build the dep-level contract env dict from a request body (train only)."""
+    if str(kind or "").strip().lower() != "train":
+        return {}
+    env = {}
+    for k in _CONTRACT_KEYS:
+        v = b.get(k.lower())
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            env[k] = "true" if v else "false"
+            continue
+        s = str(v).strip()
+        if s:
+            env[k] = s
+    return env
+
 
 pods_bp = Blueprint("pods", __name__, url_prefix="/api/pods")
 
@@ -1473,8 +1500,56 @@ def list_deploys(name):
             "source": d.get("source", "repo"),
             "state": st.get("state"), "auto_deploy": d.get("auto_deploy", False),
             "last_ref": (d.get("last_ref") or "")[:12],
+            "contract": contract.contract_for(name, d),
         })
     return jsonify({"deploys": out})
+
+
+@pods_bp.route("/<name>/deploys/<did>", methods=["PATCH", "PUT"])
+@api_pod("owner")
+def update_deploy(name, did):
+    """Edit a train deploy's flexibility contract (P1-c).  Body keys mirror the
+    create form: kind, vram, defer_ok, preempt_ok, deadline, est_duration_s,
+    deadline_kind.  Only ``train`` carries a contract; serve is rejected."""
+    b = _body()
+    dep = deploys.get(name, did)
+    if not dep:
+        return jsonify({"error": "部署不存在"}), 404
+    kind = str(b.get("kind") or dep.get("kind") or "serve").strip().lower()
+    if kind != "train":
+        return jsonify({"error": "仅训练(池化)部署支持弹性契约"}), 400
+    fields = {}
+    if "vram" in b:
+        fields["vram"] = str(b.get("vram") or "").strip()
+    env = dict(dep.get("env") or {})
+    for k in _CONTRACT_KEYS:
+        env.pop(k, None)
+    env.update(_contract_env(b, kind))
+    fields["env"] = env
+    deploys.update(name, did, **fields)
+    audit.record("api_deploy_update",
+                 detail=f"{name}/{dep.get('name')} id={did}", actor=_actor())
+    return jsonify({"ok": True, "contract": contract.contract_for(name, deploys.get(name, did))})
+
+
+@pods_bp.route("/<name>/defer-queue", methods=["GET"])
+@api_pod("member")
+def defer_queue_view(name):
+    """Read-only view of the P1-c defer queue scoped to this pod's group."""
+    try:
+        import defer_queue
+        snap = defer_queue.snapshot()
+    except Exception:
+        return jsonify({"error": "延迟队列不可用"}), 503
+    items = [it for it in snap.get("pending", []) if it.get("group") == name]
+    free = None
+    try:
+        import forecast
+        free = forecast.free_mib(name)
+    except Exception:
+        pass
+    return jsonify({"counters": snap.get("counters", {}), "items": items,
+                    "free_mib": free, "generated_ts": snap.get("generated_ts")})
 
 
 @pods_bp.route("/<name>/deploys", methods=["POST"])
@@ -1515,6 +1590,7 @@ def add_deploy(name):
         "health": (b.get("health") or "").strip(),
         "health_timeout": _parse_health_timeout(b.get("health_timeout", "60")),
     }
+    spec["env"] = _contract_env(b, spec["kind"])
     d = deploys.add(name, spec)
     audit.record("api_deploy_add",
                  detail=f"{name}/{d['name']} id={d['id']}", actor=_actor())
