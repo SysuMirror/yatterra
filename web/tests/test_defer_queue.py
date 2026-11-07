@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -46,6 +47,14 @@ class DQCase(unittest.TestCase):
             dep["env"] = env
         dep.update(kw)
         return dep
+
+    def _aged(self, did, ts=NOW):
+        """Pin an item's ``enqueued_ts`` (enqueue stores the wall clock)."""
+        with open(dq.QUEUE_FILE) as f:
+            d = json.load(f)
+        d["items"][did]["enqueued_ts"] = ts
+        with open(dq.QUEUE_FILE, "w") as f:
+            json.dump(d, f)
 
     def _fc(self, free=None, age=10, valley=False, conf="med"):
         """Patch forecast/timeline for a test; ``free`` may be int or callable."""
@@ -137,6 +146,80 @@ class Admit(DQCase):
         with ctx[0], ctx[1], ctx[2], ctx[3]:
             self.assertEqual(dq.admit(now=NOW), [])
         self.assertIn("no-room", dq.pending()[0]["last_decision"]["reason"])
+
+    def test_round_does_not_double_commit_same_capacity(self):
+        """Two 12GB trains, 20GB free: the round's ledger admits only the first
+        (need 12000 + 10% margin = 13200; the second sees 20000-13200 = 6800)."""
+        dq.enqueue("g", self._dep("d1", vram=12000))
+        dq.enqueue("g", self._dep("d2", vram=12000))
+        ctx = self._fc(free=20000, valley=True)        # free is constant this frame
+        with ctx[0], ctx[1], ctx[2], ctx[3]:
+            out = dq.admit(now=NOW)
+        self.assertEqual([o["deploy_id"] for o in out], ["d1"])
+        by_id = {it["deploy_id"]: it for it in dq.pending()}
+        self.assertEqual(by_id["d1"]["last_decision"]["reserved_mib"], 0)
+        self.assertEqual(by_id["d2"]["last_decision"]["reserved_mib"], 13200)
+        self.assertEqual(by_id["d2"]["last_decision"]["free_eff_mib"], 6800)
+        self.assertIn("no-room", by_id["d2"]["last_decision"]["reason"])
+
+    def test_max_defer_admits_when_valley_never_comes(self):
+        dq.enqueue("g", self._dep("d1"))               # no deadline
+        self._aged("d1")
+        ctx = self._fc(free=30000, valley=False)
+        with ctx[0], ctx[1], ctx[2], ctx[3]:
+            self.assertEqual(dq.admit(now=NOW + dq.MAX_DEFER_S - 1), [])
+        self.assertEqual(dq.pending()[0]["last_decision"]["reason"], "await-valley")
+        with ctx[0], ctx[1], ctx[2], ctx[3]:
+            out = dq.admit(now=NOW + dq.MAX_DEFER_S)
+        self.assertEqual([o["deploy_id"] for o in out], ["d1"])
+        self.assertEqual(out[0]["reason"], "max-defer")
+        self.assertEqual(dq.snapshot()["counters"].get("max_defer_admit"), 1)
+
+    def test_max_defer_disabled_by_zero(self):
+        dq.enqueue("g", self._dep("d1"))
+        self._aged("d1")
+        ctx = self._fc(free=30000, valley=False)
+        with mock.patch.object(dq, "MAX_DEFER_S", 0), ctx[0], ctx[1], ctx[2], ctx[3]:
+            self.assertEqual(dq.admit(now=NOW + 10 ** 7), [])
+
+    def test_group_override_wins_over_platform_phase(self):
+        dq.enqueue("gPeak", self._dep("d1"))
+        dq.enqueue("gValley", self._dep("d2"))
+        read = {"confidence": "med", "per_group": {"gValley": {"phase": "valley"},
+                                                   "gPeak": {"phase": "peak"}}}
+        with mock.patch.object(forecast, "free_mib", return_value=30000), \
+             mock.patch.object(forecast, "age_s", return_value=10), \
+             mock.patch.object(timeline, "is_valley", return_value=False), \
+             mock.patch.object(timeline, "read", return_value=read):
+            out = dq.admit(now=NOW)
+        self.assertEqual([o["deploy_id"] for o in out], ["d2"])
+        self.assertEqual(out[0]["reason"], "valley")
+        by_id = {it["deploy_id"]: it for it in dq.pending()}
+        self.assertEqual(by_id["d1"]["last_decision"]["reason"], "await-valley")
+
+    def test_blocked_unchanged_round_skips_rewrite(self):
+        """A steady await-valley queue must not rewrite the file every tick."""
+        dq.enqueue("g", self._dep("d1"))
+        ctx = self._fc(free=30000, valley=False)
+        with ctx[0], ctx[1], ctx[2], ctx[3]:
+            dq.admit(now=NOW)                          # first decision: dirty -> write
+        with open(dq.QUEUE_FILE, "rb") as f:
+            first = f.read()
+        with ctx[0], ctx[1], ctx[2], ctx[3]:
+            dq.admit(now=NOW + 5)                      # same verdict: no write
+        with open(dq.QUEUE_FILE, "rb") as f:
+            self.assertEqual(f.read(), first)
+        # age the file past COUNTER_FLUSH_S -> the counters do get flushed
+        with open(dq.QUEUE_FILE) as f:
+            d = json.load(f)
+        d["generated_ts"] = int(time.time()) - dq.COUNTER_FLUSH_S - 1
+        with open(dq.QUEUE_FILE, "w") as f:
+            json.dump(d, f)
+        with ctx[0], ctx[1], ctx[2], ctx[3]:
+            dq.admit(now=NOW + dq.COUNTER_FLUSH_S)
+        with open(dq.QUEUE_FILE) as f:
+            flushed = json.load(f)
+        self.assertGreater(flushed["counters"].get("admit_noop", 0), 1)
 
     def test_deadline_forces_start_outside_valley(self):
         dq.enqueue("g", self._dep("d1", env={"DEADLINE": "1",

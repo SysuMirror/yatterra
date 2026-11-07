@@ -21,10 +21,21 @@ The safety margin is therefore a confidence-scaled headroom over the item's
 VRAM need, not the demand-unit quantile ``forecast.error_quantile`` (which is
 recorded for observability only — its units are cores, not MiB).
 
+Admission runs an EDF pass with a *per-round* occupancy ledger ``R_t``: a
+commit reserves ``need + margin`` for the rest of the round, so two items can
+never claim the same free MiB (``free_mib`` comes from the live GPU frame,
+which does not yet reflect commits made microseconds ago).  A valley gate that
+never opens cannot starve an item forever: after ``MAX_DEFER_S`` (env
+``YATTERRA_DEFER_MAX_S``, wall clock, 0 = off) it is admitted like a
+deadline-forced start.  Per-group ``per_group`` phase overrides in
+``timeline.json`` win over the platform phase.
+
 State lives in ``defer_queue.json`` (``schema=1``): authoritative for the
 deferred lifecycle, double-written against ``gpu_alloc.json`` (authoritative
 for placement) and ``deploys.last_status`` (human mirror).  Cross-process safe
-via an flock on ``defer_queue.json.lock``.  Never raises.
+via an flock on ``defer_queue.json.lock``.  A blocked-but-unchanged round does
+not rewrite the file (only the counters are flushed, at most every
+``COUNTER_FLUSH_S``).  Never raises.
 """
 import contextlib
 import fcntl
@@ -56,6 +67,18 @@ DEADLINE_SLACK_S = 120        # must be able to start this long before the deadl
 
 DEFAULT_EST_DURATION_S = 3600
 DEADLINE_MISS_POLICY = os.environ.get("YATTERRA_DEADLINE_MISS_POLICY", "run_anyway")
+
+# Starvation guard: a delayable train with no (or a soft) deadline would wait
+# for a valley *forever* if the published phase never reads ``valley`` (e.g. a
+# permanently flat forecast).  After this long it is admitted regardless of the
+# valley clock, exactly like a deadline-forced start.  0 disables the guard.
+try:
+    MAX_DEFER_S = int(os.environ.get("YATTERRA_DEFER_MAX_S") or 24 * 3600)
+except (TypeError, ValueError):
+    MAX_DEFER_S = 24 * 3600
+# While the queue is blocked but otherwise unchanged (steady ``await-valley``),
+# skip the per-tick rewrite; flush the decision counters at least this often.
+COUNTER_FLUSH_S = 300
 
 _TERMINAL = ("done", "missed", "cancelled")
 _LIVE = ("queued", "deferred", "running")
@@ -376,26 +399,56 @@ def _margin_mib(need_mib, conf):
     return int(need_mib * frac)
 
 
+def _need_mib(it, forecast=None):
+    """The item's VRAM need, falling back to the platform's train default."""
+    try:
+        need = int(it.get("vram_mb") or 0)
+    except (TypeError, ValueError):
+        need = 0
+    if need > 0:
+        return need
+    return int(getattr(forecast, "DEFAULT_TRAIN_VRAM_MB", 12000))
+
+
+def _group_valley(group, now):
+    """Is this group in a valley now?  A published ``per_group`` override wins,
+    else the platform phase (``timeline.is_valley``)."""
+    try:
+        import timeline
+    except Exception:
+        return False
+    try:
+        pg = (timeline.read() or {}).get("per_group") or {}
+        p = (pg.get(group) or {}).get("phase")
+        if p in ("peak", "shoulder", "valley"):
+            return p == "valley"
+    except Exception:
+        pass
+    try:
+        return bool(timeline.is_valley(now))
+    except Exception:
+        return False
+
+
 def _valley_ok(it, now, favail):
     """May this item start *now* w.r.t. the valley clock?
 
     In fallback (no forecast) the queue is reactive: any time is fine, matching
     today's behaviour.  Otherwise wait for a valley, unless the deadline forces
-    a start (we must be able to finish before it).
+    a start (we must be able to finish before it) or the item has been waiting
+    longer than ``MAX_DEFER_S`` (no starvation).
     """
     if not favail:
         return True, "reactive-fallback"
-    try:
-        import timeline
-        if timeline.is_valley(now):
-            return True, "valley"
-    except Exception:
-        pass
+    if _group_valley(it.get("group"), now):
+        return True, "valley"
     dl = it.get("deadline_ts")
     if dl is not None:
         must_start_by = int(dl) - int(it.get("est_dur_s") or 0) - DEADLINE_SLACK_S
         if now >= must_start_by:
             return True, "deadline-forced"
+    if MAX_DEFER_S > 0 and now - int(it.get("enqueued_ts") or now) >= MAX_DEFER_S:
+        return True, "max-defer"
     return False, "await-valley"
 
 
@@ -428,19 +481,25 @@ def admit(now=None):
         pend.sort(key=lambda it: (it.get("deadline_ts") is None,
                                   it.get("deadline_ts") or 0,
                                   -(it.get("vram_mb") or 0)))
+        # R_t: capacity this round has already committed.  ``free_mib`` is read
+        # from the live GPU frame, which does *not* yet reflect commits made
+        # microseconds ago (their state stays until gpu_loop places them), so a
+        # per-round ledger is what stops two items claiming the same free MiB.
+        reserved = {}
+        dirty = False
         for it in pend:
             did = it.get("deploy_id")
-            need = int(it.get("vram_mb") or 0)
-            if need <= 0:
-                need = int(getattr(forecast, "DEFAULT_TRAIN_VRAM_MB", 12000)
-                           if forecast else 12000)
-            free = forecast.free_mib(it.get("group"), now) if forecast else None
+            group = it.get("group")
+            need = _need_mib(it, forecast)
+            free = forecast.free_mib(group, now) if forecast else None
             margin = _margin_mib(need, conf)
             need_margin = need + margin
-            fits = (free is None) or (free >= need_margin)
+            held = int(reserved.get(group, 0))
+            room = None if free is None else int(free) - held
+            fits = (room is None) or (room >= need_margin)
             decision = {"ts": now, "action": None, "bin_start": now,
-                        "margin": margin, "free_mib": free, "need_mib": need,
-                        "reason": ""}
+                        "margin": margin, "free_mib": free, "reserved_mib": held,
+                        "free_eff_mib": room, "need_mib": need, "reason": ""}
             dl = it.get("deadline_ts")
             missed_hard = (dl is not None and now > int(dl)
                            and it.get("deadline_kind") == "hard"
@@ -452,6 +511,7 @@ def admit(now=None):
                 _push_history(d, it, "missed")
                 del d["items"][did]     # inline; re-entrant _finish would self-deadlock
                 _bump(d, "missed")
+                dirty = True
                 continue
             allowed, why = _valley_ok(it, now, favail)
             if it.get("earliest_start") and now < int(it["earliest_start"]):
@@ -459,7 +519,8 @@ def admit(now=None):
                 decision["reason"] = "not-before-earliest"
             elif not fits:
                 decision["action"] = "defer"
-                decision["reason"] = f"no-room free={free} need={need_margin}"
+                decision["reason"] = (f"no-room free_eff={room} need={need_margin} "
+                                      f"(free={free} reserved={held})")
             elif not allowed:
                 decision["action"] = "defer"
                 decision["reason"] = why
@@ -469,13 +530,30 @@ def admit(now=None):
                 decision["action"] = "commit"
                 decision["reason"] = why
                 it["attempts"] = int(it.get("attempts") or 0) + 1
-                out.append({"deploy_id": did, "group": it.get("group"),
+                reserved[group] = held + need_margin
+                if why == "max-defer":
+                    _bump(d, "max_defer_admit")
+                out.append({"deploy_id": did, "group": group,
                             "start_ts": now, "reason": why})
+            prev = it.get("last_decision") or {}
+            prev_state = it.get("state")
             it["last_decision"] = decision
             if decision["action"] == "defer":
                 it["state"] = "deferred"
-        _bump(d, "admitted", len(out)) if out else _bump(d, "admit_noop")
-        _save(d)
+            if (it.get("state") != prev_state
+                    or not (prev.get("action") == decision["action"]
+                            and prev.get("reason") == decision["reason"]
+                            and prev.get("free_eff_mib") == decision["free_eff_mib"])):
+                dirty = True
+        if out:
+            _bump(d, "admitted", len(out))
+        else:
+            _bump(d, "admit_noop")
+        # A blocked-but-unchanged queue (steady ``await-valley``) no longer
+        # rewrites the file every 5s; the counters flush at least every
+        # COUNTER_FLUSH_S so the health metrics stay fresh.
+        if dirty or time.time() - int(d.get("generated_ts") or 0) >= COUNTER_FLUSH_S:
+            _save(d)
     return out
 
 
