@@ -415,12 +415,16 @@ def admit(now=None):
         forecast = None
     with _locked():
         d = _load()
+        pend = [it for it in d["items"].values()
+                if it.get("state") in ("queued", "deferred") and it.get("kind") == "train"]
+        if not pend:
+            # Nothing to decide → do not touch the file.  gpu_loop calls this
+            # every 5s; rewriting an empty queue would churn ~17k files/day.
+            return out
         favail = _forecast_ok(now)
         if not favail:
             _bump(d, "forecast_fallback")
         conf = _confidence(now) if favail else "low"
-        pend = [it for it in d["items"].values()
-                if it.get("state") in ("queued", "deferred") and it.get("kind") == "train"]
         pend.sort(key=lambda it: (it.get("deadline_ts") is None,
                                   it.get("deadline_ts") or 0,
                                   -(it.get("vram_mb") or 0)))
