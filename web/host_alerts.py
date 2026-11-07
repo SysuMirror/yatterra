@@ -63,7 +63,8 @@ WATCHED_UNITS = tuple(
     u.strip() for u in os.environ.get(
         "YATTERRA_ALERT_UNITS",
         "yatterra-web,sse-pressure-writer,sse-priority-kill,gpu-scheduler,"
-        "yatterra-fleet-sampler,yatterra-pwa-alert-monitor,yatterra-req-estimator",
+        "yatterra-fleet-sampler,yatterra-pwa-alert-monitor,yatterra-req-estimator,"
+        "yatterra-usage-meter,yatterra-feat-loop",
     ).split(",") if u.strip())
 
 ALERT_URL = "/infra/host"

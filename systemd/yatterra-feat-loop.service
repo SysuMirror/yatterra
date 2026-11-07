@@ -1,0 +1,19 @@
+[Unit]
+Description=YatTerra time-series feature daemon (forecast substrate)
+After=network.target k3s.service yatterra-usage-meter.service
+Wants=k3s.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/yatterra/web
+ExecStart=/usr/bin/python3 /opt/yatterra/web/feat_loop.py --interval 30
+Environment=PYTHONUNBUFFERED=1
+Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+EnvironmentFile=-/opt/yatterra/.env
+Restart=always
+RestartSec=5
+User=root
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
