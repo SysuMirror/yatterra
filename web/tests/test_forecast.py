@@ -80,6 +80,51 @@ class StoreFallback(ForecastCase):
         self.assertEqual(rows[0]["value"], 1.0)
 
 
+# ── supply ledger (P1-c prerequisite) ───────────────────────────
+class Capacity(ForecastCase):
+    def _fake(self, samples, alloc=None, allowed=None):
+        mod = mock.MagicMock()
+        mod.sample.return_value = samples
+        mod.all_deploys.return_value = alloc or {}
+        mod._group_gpus.return_value = allowed
+        return mod
+
+    def _patch_sched(self, mod):
+        return mock.patch.dict(sys.modules, {"scheduler": mod})
+
+    def test_unavailable_when_no_gpus(self):
+        with self._patch_sched(self._fake([])):
+            cap = forecast.capacity(now=NOW)
+            self.assertEqual(cap["source"], "unavailable")
+            self.assertEqual(cap["cards"], [])
+            self.assertIsNone(forecast.free_mib(now=NOW))
+
+    def test_cards_and_committed_only_count_live_status(self):
+        sm = [{"index": 0, "vram_used": 100, "vram_free": 900},
+              {"index": 1, "vram_used": 50, "vram_free": 950}]
+        alloc = {
+            "a": {"gpu": 0, "status": "running", "vram": 200},
+            "b": {"gpu": 0, "status": "queued", "vram": 100},
+            "c": {"gpu": 1, "status": "deferred", "vram": 50},
+            "d": {"gpu": 0, "status": "stopped", "vram": 999},   # ignored
+        }
+        with self._patch_sched(self._fake(sm, alloc)):
+            cap = forecast.capacity(now=NOW)
+        self.assertEqual(cap["source"], "nvidia-smi")
+        self.assertEqual(cap["cards"][0]["total_mib"], 1000)
+        self.assertEqual(cap["cards"][0]["committed_mib"], 300)
+        self.assertEqual(cap["cards"][1]["committed_mib"], 50)
+        self.assertEqual(cap["free_total_mib"], 1850)
+
+    def test_free_mib_respects_group_allowlist(self):
+        sm = [{"index": 0, "vram_used": 100, "vram_free": 900},
+              {"index": 1, "vram_used": 50, "vram_free": 950}]
+        with self._patch_sched(self._fake(sm, {}, allowed={0})):
+            self.assertEqual(forecast.free_mib(group="g", now=NOW), 900)
+        with self._patch_sched(self._fake(sm, {}, allowed=None)):
+            self.assertEqual(forecast.free_mib(group="g", now=NOW), 950)
+
+
 # ── STL-lite ────────────────────────────────────────────────────
 class Stl(ForecastCase):
     def test_empty(self):

@@ -432,6 +432,80 @@ def supply(dim, horizon_bins, delta_s, group=None):
             for s in res.get("slots", [])]
 
 
+# ── supply ledger (P1-c prerequisite, closes U1/C3) ─────────────
+def capacity(now=None):
+    """Host GPU capacity + occupancy ledger, for the defer queue's supply S_t.
+
+    Per card: total/used/free MiB (from ``nvidia-smi`` via ``scheduler``) plus
+    committed train VRAM (from ``gpu_alloc.json``).  Future *free* VRAM is not
+    modelled — the deferred trains are themselves the future consumers, and
+    other consumers are unknowable — so S_t = today's free free VRAM and the
+    forecast supplies only the *timing* (schedule at the valley).  Never raises.
+    """
+    now = float(now if now is not None else time.time())
+    out = {"generated_at": now, "source": "unavailable", "cards": [],
+           "free_total_mib": 0, "committed_total_mib": 0}
+    try:
+        import scheduler
+        sm = scheduler.sample()
+    except Exception:
+        sm = []
+    if not sm:
+        return out
+    try:
+        alloc = scheduler.all_deploys() or {}
+    except Exception:
+        alloc = {}
+    committed = {}
+    for rec in alloc.values():
+        gpu = rec.get("gpu")
+        if gpu is None or (rec.get("status") or "") not in (
+                "running", "queued", "deferred"):
+            continue
+        try:
+            committed[gpu] = committed.get(gpu, 0) + int(rec.get("vram") or 0)
+        except (TypeError, ValueError):
+            continue
+    for g in sm:
+        try:
+            idx = int(g["index"])
+            used = int(g.get("vram_used") or 0)
+            free = int(g.get("vram_free") or 0)
+        except (TypeError, ValueError, KeyError):
+            continue
+        out["cards"].append({"index": idx, "total_mib": used + free,
+                             "used_mib": used, "free_mib": free,
+                             "committed_mib": committed.get(idx, 0)})
+    if out["cards"]:
+        out["source"] = "nvidia-smi"
+        out["free_total_mib"] = sum(c["free_mib"] for c in out["cards"])
+        out["committed_total_mib"] = sum(c["committed_mib"] for c in out["cards"])
+    return out
+
+
+def free_mib(group=None, now=None):
+    """Best single-card free VRAM (MiB) among a group's allowed GPUs.
+
+    The admission question is "does *one* card fit d_j"; returns the largest
+    free on any allowed card, or ``None`` when capacity is unavailable (callers
+    treat None as "degrade to reactive").
+    """
+    cap = capacity(now)
+    if not cap.get("cards"):
+        return None
+    try:
+        import scheduler
+        allowed = scheduler._group_gpus(group) if group else None
+    except Exception:
+        allowed = None
+    best = 0
+    for c in cap["cards"]:
+        if allowed is not None and c["index"] not in allowed:
+            continue
+        best = max(best, c["free_mib"])
+    return best
+
+
 # ── publishing (single writer of timeline.json) ─────────────────
 def snapshot(now=None):
     """Compute the phase + valley window and publish ``timeline.json``."""
