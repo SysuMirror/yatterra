@@ -246,13 +246,17 @@ ROLE_PERMS = {
               "infra.host", "infra.storage", "infra.db", "infra.scheduler", "infra.proxy",
               "dev.harness", "dev.mcp", "dev.agent", "dev.llm",
               "ops.audit", "ops.threat", "ops.shared.read", "ops.shared.write", "ops.deploy",
-              "billing.pay", "billing.price", "billing.account",
+              "billing.pay", "billing.price", "billing.account", "billing.allocate",
               "admin.users"],
-    "user":  ["group.create", "group.view", "group.terminal", "dev.agent", "dev.llm",
-              "ops.shared.read", "ops.threat",
-              "billing.pay",
-              "infra.host", "infra.storage.read", "infra.db.read"],
-    "guest": ["group.view", "infra.host.view"],
+    # `user` = 外部租户/学院成员。只保留「自己的组 + 终端 + 账单」加**只读**的
+    # 主机/GPU 概览(infra.host.view)、对象存储(infra.storage.read)、共享文件
+    # (ops.shared.read)。平台内部面(服务器命令 infra.host、DB 内部 infra.db.read、
+    # 威胁地图 ops.threat、平台 Agent/LLM 面板 dev.*)一律不给 —— 内部人员用 admin。
+    "user":  ["group.create", "group.view", "group.terminal",
+              "infra.host.view", "infra.storage.read", "ops.shared.read",
+              "billing.pay", "billing.allocate"],
+    # guest = 匿名/未登录访客，只能看自己所在(或未登录=看不到)的组。
+    "guest": ["group.view"],
 }
 ROLES = [("super", "超级管理员"), ("admin", "管理员"),
          ("user", "普通用户"), ("guest", "游客")]
@@ -289,6 +293,7 @@ PERM_GROUPS = [
     ]),
     ("计费", [
         ("billing.pay", "充值 / 查看账单"),
+        ("billing.allocate", "给 Pod 分配额度"),
         ("billing.price", "设置单价"),
         ("billing.account", "账户与台账管理"),
     ]),

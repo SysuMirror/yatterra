@@ -20,9 +20,14 @@ Crash/restart safety comes from the charge being keyed by
 ``(group, period, resource)`` in ``billing_charges``: re-settling an hour that
 partially succeeded only charges the keys that did not land.
 
-The daemon never suspends an account on its own unless
-``YATTERRA_BILLING_AUTO_SUSPEND=1``; by default it warns (push + notification)
-and leaves the enforcement decision to an operator via the admin API.
+By default the daemon **suspends** a Pod that has been at or below zero credit
+for ``BELOW_ZERO_RUNS`` consecutive runs (after warning it: push + notification).
+Set ``YATTERRA_BILLING_AUTO_SUSPEND=0`` to make it warn-only and leave the
+enforcement decision to an operator via the admin API.
+
+Charges come out of each Pod's own quota (``billing_accounts``); the owner's
+wallet (``wallet``) is only debited when they *allocate* to the pod.  So a pod
+runs dry on its own allocation, independently of every other pod.
 """
 import argparse
 import fcntl
@@ -41,10 +46,14 @@ from usage_store import UsageStore, HOUR, hour_of  # noqa: E402
 
 LOG = siteconf.path("billing_settle.log")
 
-# Consecutive settle runs an account may sit below zero before the opt-in
-# auto-suspend fires.  Only consulted when YATTERRA_BILLING_AUTO_SUSPEND is on.
+# Consecutive settle runs an account may sit below zero before auto-suspend
+# fires.  Only consulted when auto-suspend is on (which it is by default).
 _BELOW_ZERO = {}
 BELOW_ZERO_RUNS = 3
+
+# 余额不足提醒的「重新武装」窗口: 同一 (组, 档位) 每 COOLDOWN_S 最多提醒一次。
+# 事件键带窗口号, 所以充值后再次欠费会在新窗口重新提醒(旧的是一次性、永不再报)。
+LOW_COOLDOWN_S = int(os.environ.get("YATTERRA_BILLING_LOW_COOLDOWN", "21600"))
 
 
 def log(msg):
@@ -52,7 +61,13 @@ def log(msg):
 
 
 def _auto_suspend_enabled():
-    return os.environ.get("YATTERRA_BILLING_AUTO_SUSPEND", "").strip().lower() in ("1", "true", "yes", "on")
+    """Auto-suspend at zero is the deployment default; only 0/false/no/off disables.
+
+    (Charges are per-pod and allocation is explicit, so "suspend when the pod's
+    own quota hits zero" is the intended product behaviour — not an opt-in.)
+    """
+    val = os.environ.get("YATTERRA_BILLING_AUTO_SUSPEND", "1").strip().lower()
+    return val not in ("0", "false", "no", "off")
 
 
 def settle_hours(since, until, actor="settle", dry_run=False):
@@ -63,14 +78,16 @@ def settle_hours(since, until, actor="settle", dry_run=False):
     """
     import billing_core
     import billing_store
+    import groups
 
+    internal = groups.internal_groups()   # 平台内部组 → 免计费(黑名单模式)
     store = UsageStore()
     now_hour = hour_of(time.time())
     until = min(int(until), now_hour)          # never bill the in-progress hour
     h = hour_of(since)
     prices = billing_store.get_prices()
     charged = 0
-    groups = set()
+    charged_groups = set()
     hours = 0
     while h < until:
         _series, per_group = store.summary(h, h + HOUR, "hour")
@@ -79,6 +96,8 @@ def settle_hours(since, until, actor="settle", dry_run=False):
             g = row.get("group_name")
             if not g:
                 continue
+            if g in internal:
+                continue          # 内部组不计费
             acct = billing_store.get_account(g)
             if acct is not None and not int(acct.get("billable") or 0):
                 continue
@@ -86,7 +105,7 @@ def settle_hours(since, until, actor="settle", dry_run=False):
             cost = sum(r["cost_cents"] for r in rows)
             if cost <= 0:
                 continue
-            groups.add(g)
+            charged_groups.add(g)
             if dry_run:
                 charged += cost
                 continue
@@ -94,7 +113,7 @@ def settle_hours(since, until, actor="settle", dry_run=False):
                 g, h, h + HOUR, rows, actor=actor,
                 note=f"hour {time.strftime('%Y-%m-%d %H:%M', time.localtime(h))}")
         h += HOUR
-    return {"hours": hours, "charged_cents": charged, "groups": len(groups)}
+    return {"hours": hours, "charged_cents": charged, "groups": len(charged_groups)}
 
 
 def settle_range(since=None, until=None, actor="settle", dry_run=False):
@@ -115,11 +134,14 @@ def enforce(accounts=None):
 
     Tiering: below ``warn_ratio`` of the credit limit → one push per state
     change; at or below zero → alert, and after ``BELOW_ZERO_RUNS`` consecutive
-    runs suspend — but only when auto-suspend is explicitly enabled.
+    runs suspend the pod (auto-suspend is on by default; set
+    ``YATTERRA_BILLING_AUTO_SUSPEND=0`` for warn-only).
     """
     import billing_store
     import billing_core  # noqa: F401  (kept for symmetry / future use)
+    import groups
 
+    internal = groups.internal_groups()
     out = {"warned": [], "suspended": []}
     rows = accounts if accounts is not None else billing_store.list_accounts()
     auto = _auto_suspend_enabled()
@@ -127,6 +149,8 @@ def enforce(accounts=None):
         g = acct.get("group_name")
         if not g or not int(acct.get("billable") or 0):
             continue
+        if g in internal:
+            continue          # 内部组不提醒、不停机
         if acct.get("status") == billing_store.STATUS_CLOSED:
             continue
         balance = int(acct.get("balance_cents") or 0)
@@ -150,7 +174,12 @@ def enforce(accounts=None):
 
 
 def _notify_low(group, balance, ratio, severe):
-    """One notification per (group, state) — notify_event dedupes by key."""
+    """At most one notification per (group, state) per LOW_COOLDOWN_S window.
+
+    The event key carries a rolling window number, so a group that stays low is
+    re-warned each window, and one that tops up then dips again is warned afresh
+    (the old key was one-shot forever).
+    """
     try:
         import pwa_alerts
         yuan = balance / 100.0
@@ -158,14 +187,45 @@ def _notify_low(group, balance, ratio, severe):
         body = (f"组「{group}」{tip}：当前余额 ¥{yuan:.2f}"
                 + (f"（额度使用 {ratio * 100:.0f}%）" if ratio is not None else "")
                 + "。请及时充值，否则资源可能被降级或停机。")
+        if severe:
+            wallet_hint = _wallet_hint(group)
+            if wallet_hint:
+                body += wallet_hint
         state = "zero" if severe else "low"
+        window = int(time.time() // max(LOW_COOLDOWN_S, 1))
         pwa_alerts.notify_event(
-            f"billing-low:{group}:{state}", group,
+            f"billing-low:{group}:{state}:{window}", group,
             f"余额不足提醒 · {group}", body,
-            url=f"/pods/{group}", kind="billing-low",
+            url=f"/billing?group={group}", kind="billing-low",
         )
     except Exception as exc:
         log(f"notify failed group={group}: {type(exc).__name__}: {exc}")
+
+
+def _wallet_hint(group, max_show=3):
+    """Best-effort suffix pointing the owner(s) at their wallet, for the zero state.
+
+    Money now lives in a per-user wallet and must be *allocated* to this pod, so a
+    zero balance is often "wallet still has funds, pod was never topped up".
+    Returns "" when nothing useful can be read (never raises).
+    """
+    try:
+        import groups
+        import wallet
+        owners = (groups.load_state()["groups"].get(group) or {}).get("owners") or []
+        parts = []
+        for name in owners[:max_show]:
+            acct = wallet.get_account(name)
+            if not acct:
+                continue
+            parts.append(f"{name} ¥{int(acct.get('balance_cents') or 0) / 100.0:.2f}")
+        if not parts:
+            return ""
+        tail = " 等" if len(owners) > max_show else ""
+        return (f"（所属人钱包余额：{' · '.join(parts)}{tail}，"
+                "可在「我的 Pod 额度」把钱包额度分配给该 Pod。）")
+    except Exception:
+        return ""
 
 
 def run_once(actor="settle"):

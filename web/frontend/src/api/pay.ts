@@ -29,6 +29,8 @@ export interface PayOrder {
   credit_cents: number
   group_name: string
   username: string | null
+  /** 'wallet' (记入个人钱包) | 'group' (legacy 组账户) */
+  credit_target?: 'wallet' | 'group'
   status: string
   transaction_id: string | null
   paid_at: string | null
@@ -56,12 +58,13 @@ export interface PayStats {
 
 export const payApi = {
   items: (): Promise<{ items: PayItem[]; configured: boolean }> => api.get('/billing/pay/items'),
-  create: (itemKey: string, group: string): Promise<CreateResult> =>
-    api.post('/billing/pay/create', { item_key: itemKey, group }),
+  /** 充值进**自己的钱包**(不再选组);group 仅为兼容旧调用保留、会被忽略。 */
+  create: (itemKey: string, group?: string): Promise<CreateResult> =>
+    api.post('/billing/pay/create', group ? { item_key: itemKey, group } : { item_key: itemKey }),
   order: (no: string): Promise<{ order: PayOrder }> =>
     api.get(`/billing/pay/order/${encodeURIComponent(no)}`),
-  orders: (group?: string, limit = 50): Promise<{ orders: PayOrder[] }> =>
-    api.get(`/billing/pay/orders?limit=${limit}${group ? `&group=${encodeURIComponent(group)}` : ''}`),
+  orders: (limit = 50): Promise<{ orders: PayOrder[] }> =>
+    api.get(`/billing/pay/orders?limit=${limit}`),
   account: (group: string, limit = 50): Promise<PayAccount> =>
     api.get(`/billing/pay/account/${encodeURIComponent(group)}?limit=${limit}`),
 

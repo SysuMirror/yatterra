@@ -73,10 +73,11 @@ const navGroups: NavGroup[] = [
   },
   {
     label: '计费',
+    to: '/billing/overview',
     items: [
-      { to: '/billing', icon: <Wallet size={18} />, label: '充值/账单', perm: 'billing.pay' },
-      { to: '/ops/pricing', icon: <Coins size={18} />, label: '单价设置', perm: 'billing.price' },
-      { to: '/ops/orders', icon: <CreditCard size={18} />, label: '充值订单', perm: 'billing.account' },
+      { to: '/billing', icon: <Wallet size={18} />, label: '钱包与额度', perm: 'billing.pay' },
+      { to: '/ops/pricing', icon: <Coins size={18} />, label: '计费设置', perm: 'billing.price' },
+      { to: '/ops/orders', icon: <CreditCard size={18} />, label: '充值商品', perm: 'billing.account' },
     ],
   },
   {
@@ -118,8 +119,11 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
             </div>
           )}
           {group.items.map((item) => {
-            const isActive = item.to === '/console'
-              ? location.pathname === '/console'
+            // /console 与 /billing 自身还有子路由(如 /billing/overview),用精确
+            // 匹配,免得子页面把父项也点亮。
+            const exact = item.to === '/console' || item.to === '/billing'
+            const isActive = exact
+              ? location.pathname === item.to
               : location.pathname.startsWith(item.to)
             return (
               <NavLink
@@ -129,7 +133,7 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
                 data-assistant-control={`nav-${item.to === '/console' ? 'home' : item.to.slice(1).replace(/\//g, '-')}`}
                 data-assistant-label={item.label}
                 data-assistant-actions="navigate inspect"
-                end={item.to === '/console'}
+                end={item.to === '/console' || item.to === '/billing'}
                 // IDE 项右键 = Pod 切换器(桌面;手机用底栏 IDE Tab 长按)
                 onContextMenu={item.to === '/ide' ? (e) => { e.preventDefault(); openPodPicker() } : undefined}
                 onClick={() => { haptic('light'); onNavigate?.() }}

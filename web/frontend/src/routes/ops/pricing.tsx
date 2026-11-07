@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Coins, Save, RefreshCw, Play, Plus } from 'lucide-react'
+import { Coins, Save, RefreshCw, Play, Info } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { Card } from '@/components/ui/Card'
@@ -12,7 +12,7 @@ import { SkeletonCard } from '@/components/ui/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Dialog } from '@/components/ui/Dialog'
 import { useToastStore } from '@/stores/toast'
-import { billingMoneyApi, type BillingAccount } from '@/api/billing'
+import { billingMoneyApi, type BillingAccount, type WalletAccount } from '@/api/billing'
 
 const yuan = (cents: number | null | undefined) => `¥${(((cents ?? 0) as number) / 100).toFixed(2)}`
 
@@ -32,6 +32,8 @@ export default function OpsPricing() {
   const toast = useToastStore((s) => s.add)
   const qc = useQueryClient()
   const [draft, setDraft] = useState<Record<string, string>>({})
+  const [bulkText, setBulkText] = useState('')
+  const [bulkBusy, setBulkBusy] = useState(false)
   const [adjustFor, setAdjustFor] = useState<BillingAccount | null>(null)
   const [adjustCents, setAdjustCents] = useState('')
   const [adjustNote, setAdjustNote] = useState('')
@@ -60,6 +62,20 @@ export default function OpsPricing() {
     staleTime: 30_000,
   })
   const byKind = incomeData?.by_kind ?? {}
+
+  const { data: walletData, refetch: refetchWallets } = useQuery({
+    queryKey: ['billing-wallets'],
+    queryFn: () => billingMoneyApi.adminWallets(),
+    staleTime: 15_000,
+  })
+  const wallets: WalletAccount[] = walletData?.wallets ?? []
+  const [walletAdjustFor, setWalletAdjustFor] = useState<WalletAccount | null>(null)
+  const [walletAdjustYuan, setWalletAdjustYuan] = useState('')
+  const [walletAdjustNote, setWalletAdjustNote] = useState('')
+  const [allocWallet, setAllocWallet] = useState<WalletAccount | null>(null)
+  const [allocGroup, setAllocGroup] = useState('')
+  const [allocDir, setAllocDir] = useState<'in' | 'out'>('in')
+  const [allocYuan, setAllocYuan] = useState('')
 
   const [saving, setSaving] = useState(false)
   const savePrices = async () => {
@@ -124,8 +140,88 @@ export default function OpsPricing() {
     }
   }
 
+  const setInternal = async (acct: BillingAccount, flag: boolean) => {
+    try {
+      await billingMoneyApi.bulkAccounts([acct.group_name], { internal: flag })
+      toast({ type: 'success', message: `${acct.group_name} → ${flag ? '内部组(不计费)' : '外部组(计费)'}` })
+      void refetchAccts()
+    } catch (e) {
+      toast({ type: 'error', message: e instanceof Error ? e.message : '修改失败' })
+    }
+  }
+
+  const runBulk = async (flag: boolean) => {
+    const names = bulkText.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean)
+    if (!names.length) { toast({ type: 'info', message: '请先填写组名(逗号/空格分隔)' }); return }
+    setBulkBusy(true)
+    try {
+      const r = await billingMoneyApi.bulkAccounts(names, { internal: flag })
+      toast({
+        type: r.errors.length ? 'warning' : 'success',
+        message: `已设为${flag ? '内部' : '外部'} ${r.updated.length} 个${r.errors.length ? `，失败 ${r.errors.length} 个` : ''}`,
+      })
+      setBulkText('')
+      void refetchAccts()
+    } catch (e) {
+      toast({ type: 'error', message: e instanceof Error ? e.message : '批量修改失败' })
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  // ── 用户钱包（两层资金的个人层）──────────────────────────────────
+  const doWalletAdjust = async () => {
+    if (!walletAdjustFor) return
+    const cents = Math.round(Number(walletAdjustYuan) * 100)
+    if (!Number.isFinite(cents) || cents === 0) { toast({ type: 'error', message: '请输入非零金额（元）' }); return }
+    try {
+      await billingMoneyApi.adminWalletAdjust(walletAdjustFor.username, cents, walletAdjustNote || '人工调整')
+      toast({ type: 'success', message: `已调整 ${walletAdjustFor.username} 钱包 ${yuan(cents)}` })
+      setWalletAdjustFor(null); setWalletAdjustYuan(''); setWalletAdjustNote('')
+      void refetchWallets()
+      void refetchIncome()
+    } catch (e) {
+      toast({ type: 'error', message: e instanceof Error ? e.message : '调整失败' })
+    }
+  }
+
+  const setWalletStatus = async (w: WalletAccount, status: string) => {
+    try {
+      await billingMoneyApi.adminWalletSet(w.username, { status: status as WalletAccount['status'] })
+      toast({ type: 'success', message: `${w.username} → ${status}` })
+      void refetchWallets()
+    } catch (e) {
+      toast({ type: 'error', message: e instanceof Error ? e.message : '修改失败' })
+    }
+  }
+
+  const doAdminAllocate = async () => {
+    if (!allocWallet) return
+    const group = allocGroup.trim()
+    const cents = Math.round(Number(allocYuan) * 100)
+    if (!group) { toast({ type: 'error', message: '请填写目标 Pod 名' }); return }
+    if (!Number.isFinite(cents) || cents <= 0) { toast({ type: 'error', message: '请输入正的金额（元）' }); return }
+    try {
+      await billingMoneyApi.adminAllocate(allocWallet.username, group, cents, allocDir, '管理员代分配')
+      toast({ type: 'success', message: `${allocDir === 'in' ? '分配' : '收回'} ${yuan(cents)} · ${allocWallet.username} ⇄ ${group}` })
+      setAllocWallet(null); setAllocGroup(''); setAllocYuan('')
+      void refetchWallets()
+      void refetchAccts()
+      void refetchIncome()
+    } catch (e) {
+      toast({ type: 'error', message: e instanceof Error ? e.message : '操作失败' })
+    }
+  }
+
   const acctCols: Column<BillingAccount>[] = [
     { key: 'group_name', title: '组', width: 'minmax(120px, 2fr)' },
+    { key: 'internal', title: '归属', width: '80px', render: (a) => (
+      <button className={`text-xs hover:underline ${a.internal ? 'text-muted' : 'text-accent'}`}
+              onClick={() => setInternal(a, !a.internal)}
+              title={a.internal ? '平台内部组：不计费' : '外部组：按用量计费'}>
+        {a.internal ? '内部' : '外部'}
+      </button>
+    ) },
     { key: 'balance_cents', title: '余额', width: '110px', render: (a) => (
       <span className={`tnum ${a.balance_cents <= 0 ? 'text-bad' : 'text-ink'}`}>{yuan(a.balance_cents)}</span>
     ) },
@@ -149,19 +245,52 @@ export default function OpsPricing() {
     ) },
   ]
 
+  const walletCols: Column<WalletAccount>[] = [
+    { key: 'username', title: '用户', width: 'minmax(140px, 2fr)', render: (w) => (
+      <span>{w.label || w.username}{w.label && w.label !== w.username ? <span className="text-muted text-xs"> ({w.username})</span> : null}</span>
+    ) },
+    { key: 'balance_cents', title: '钱包余额', width: '110px', render: (w) => (
+      <span className={`tnum ${w.balance_cents <= 0 ? 'text-muted' : 'text-ink'}`}>{yuan(w.balance_cents)}</span>
+    ) },
+    { key: 'status', title: '状态', width: '110px', render: (w) => (
+      <Select
+        className="w-24"
+        value={w.status}
+        onChange={(v) => setWalletStatus(w, v)}
+        options={[{ value: 'active', label: '正常' }, { value: 'suspended', label: '冻结' }, { value: 'closed', label: '关闭' }]}
+      />
+    ) },
+    { key: 'op', title: '操作', width: '130px', render: (w) => (
+      <div className="flex items-center gap-3">
+        <button className="text-xs text-accent hover:underline" onClick={() => setWalletAdjustFor(w)}>调整</button>
+        <button className="text-xs text-accent hover:underline" onClick={() => { setAllocWallet(w); setAllocGroup(''); setAllocYuan(''); setAllocDir('in') }}>代分配</button>
+      </div>
+    ) },
+  ]
+
   const aiContext = `计费单价设置\n`
     + keys.map((k) => `  ${labels[k] ?? k}: ${prices[k] ?? 0} 分/单位`).join('\n')
     + `\n账户 ${accounts.length} 个；收支：` + Object.entries(byKind).map(([k, v]) => `${k} ${yuan(v.total_cents)}`).join('，')
 
   return (
     <>
-      <PageHeader title="计费·定价" description="资源单价 / 组账户 / 结算与对账"
-                  doc={{ section: 'ops', item: 3, label: '计费文档' }}>
-        <Button variant="secondary" size="sm" onClick={() => { void refetchPrices(); void refetchAccts(); void refetchIncome() }}>
+      <PageHeader title="计费设置" description="单价 / 组账户 / 结算（管理员）"
+                  doc={{ section: 'ops', item: 3, label: '计费说明' }}>
+        <Button variant="secondary" size="sm" onClick={() => { void refetchPrices(); void refetchAccts(); void refetchWallets(); void refetchIncome() }}>
           <RefreshCw size={14} /> 刷新
         </Button>
         <PageAiAssistant page="pricing" context={aiContext} />
       </PageHeader>
+
+      <Card padding="md" className="mb-5 bg-accent/[0.04] border-accent/20">
+        <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-ink"><Info size={15} className="text-accent" /> 怎么用</div>
+        <ul className="list-disc list-inside text-xs text-muted space-y-1 leading-relaxed">
+          <li>① 设单价：填每种资源的「分 / 计量单位」，<b>0 表示该项不计费</b>。填完点保存，立即对下一次结算生效。</li>
+          <li>② 看账户：结算或充值后每个组会自动建账，可在此查看余额、切换<b>归属（内部/外部）</b>、开关计费、人工调整余额。<b>默认全部组计费</b>；把平台自己的组标记为「内部」即免计费（不结算、不提醒）。</li>
+          <li>③ 看钱包：用户的充值先进<b>个人钱包</b>（本页「用户钱包」表），再由用户/管理员<b>分配</b>给具体 Pod。可人工调整钱包余额、冻结钱包、或代用户给某 Pod 分配/收回额度。</li>
+          <li>④ 跑结算：每小时结算一次（幂等，重复跑只补未结算的小时）。改动后可点「试算」预览不落账。</li>
+        </ul>
+      </Card>
 
       {priceLoading ? <SkeletonCard /> : (
         <Card padding="md" className="mb-5">
@@ -208,10 +337,35 @@ export default function OpsPricing() {
       )}
 
       <Card padding="none">
-        <div className="px-4 py-3 text-sm font-semibold text-ink border-b border-black/[0.06]">组账户</div>
+        <div className="px-4 py-3 border-b border-black/[0.06]">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm font-semibold text-ink">组账户</span>
+            <span className="text-xs text-muted">默认全部计费；「内部组」免计费（不结算、不提醒）。</span>
+            <div className="flex flex-wrap items-center gap-2 ml-auto">
+              <div className="w-64">
+                <Input value={bulkText} onChange={(e) => setBulkText(e.target.value)}
+                       placeholder="批量：组名，逗号/空格分隔" />
+              </div>
+              <Button size="sm" variant="outline" loading={bulkBusy} onClick={() => runBulk(true)}>设为内部</Button>
+              <Button size="sm" variant="outline" loading={bulkBusy} onClick={() => runBulk(false)}>设为外部</Button>
+            </div>
+          </div>
+        </div>
         <div className="p-2">
           <DataTable columns={acctCols} data={accounts} keyFn={(a) => a.group_name}
                      empty={<EmptyState icon={<Coins size={20} />} title="暂无账户" description="结算或首次充值后自动建账。" />} />
+        </div>
+      </Card>
+
+      {/* 用户钱包 */}
+      <Card padding="none" className="mt-5">
+        <div className="px-4 py-3 border-b border-black/[0.06]">
+          <div className="text-sm font-semibold text-ink">用户钱包</div>
+          <div className="text-xs text-muted">充值的钱先进这里；用户把钱分配给它所属的 Pod，Pod 再独立扣费。可人工调整、冻结、或代分配/收回。</div>
+        </div>
+        <div className="p-2">
+          <DataTable columns={walletCols} data={wallets} keyFn={(w) => w.username}
+                     empty={<EmptyState icon={<Coins size={20} />} title="暂无钱包" description="用户首次充值或首次分配后自动建钱包。" />} />
         </div>
       </Card>
 
@@ -229,6 +383,48 @@ export default function OpsPricing() {
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" onClick={() => setAdjustFor(null)}>取消</Button>
             <Button onClick={doAdjust}>确认调整</Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* 调整钱包余额 */}
+      <Dialog
+        open={!!walletAdjustFor}
+        onClose={() => setWalletAdjustFor(null)}
+        title={`调整钱包 · ${walletAdjustFor?.username ?? ''}`}
+        width="max-w-sm"
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted">当前钱包余额 {yuan(walletAdjustFor?.balance_cents)}。正数增加、负数扣减（单位：元）。</p>
+          <Input label="金额（元）" type="number" step="0.01" value={walletAdjustYuan}
+                 onChange={(e) => setWalletAdjustYuan(e.target.value)} placeholder="如 100 或 -5.5" />
+          <Input label="备注" value={walletAdjustNote} onChange={(e) => setWalletAdjustNote(e.target.value)} placeholder="原因" />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setWalletAdjustFor(null)}>取消</Button>
+            <Button onClick={doWalletAdjust}>确认调整</Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* 代分配 / 收回 */}
+      <Dialog
+        open={!!allocWallet}
+        onClose={() => setAllocWallet(null)}
+        title={`代分配 · ${allocWallet?.username ?? ''}`}
+        width="max-w-sm"
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted">以该用户钱包代向指定 Pod 分配额度（in），或从 Pod 收回退回其钱包（out）。</p>
+          <Input label="目标 Pod 名" value={allocGroup} onChange={(e) => setAllocGroup(e.target.value)} placeholder="如 my-pod" />
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant={allocDir === 'in' ? 'primary' : 'outline'} onClick={() => setAllocDir('in')}>分配进 Pod</Button>
+            <Button size="sm" variant={allocDir === 'out' ? 'primary' : 'outline'} onClick={() => setAllocDir('out')}>从 Pod 收回</Button>
+          </div>
+          <Input label="金额（元）" type="number" step="0.01" value={allocYuan}
+                 onChange={(e) => setAllocYuan(e.target.value)} placeholder="如 50" />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setAllocWallet(null)}>取消</Button>
+            <Button onClick={doAdminAllocate}>确认</Button>
           </div>
         </div>
       </Dialog>

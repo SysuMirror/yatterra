@@ -81,10 +81,12 @@ _DDL = (
         period_start     BIGINT       NULL,
         period_end       BIGINT       NULL,
         out_trade_no     VARCHAR(64)  NULL,
+        transfer_token   VARCHAR(64)  NULL,
         note             VARCHAR(255) NOT NULL DEFAULT '',
         actor            VARCHAR(64)  NOT NULL DEFAULT '',
         created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uniq_topup (out_trade_no),
+        UNIQUE KEY uniq_transfer (transfer_token),
         INDEX idx_group_time (group_name, created_at),
         INDEX idx_kind_time (kind, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -103,6 +105,33 @@ _DDL = (
 )
 
 
+def _column_exists(cur, table, column):
+    cur.execute("SELECT COUNT(*) AS n FROM information_schema.columns "
+                "WHERE table_schema=DATABASE() AND table_name=%s AND column_name=%s",
+                (table, column))
+    return bool((cur.fetchone() or {}).get("n"))
+
+
+def _index_exists(cur, table, index):
+    cur.execute("SELECT COUNT(*) AS n FROM information_schema.statistics "
+                "WHERE table_schema=DATABASE() AND table_name=%s AND index_name=%s",
+                (table, index))
+    return bool((cur.fetchone() or {}).get("n"))
+
+
+def _migrate(cur):
+    """Guarded additive migrations (re-running ``ensure_schema`` is a no-op).
+
+    ``billing_ledger.transfer_token`` + its unique key back the wallet↔pod
+    transfer idempotency (see ``wallet.transfer_to_pod``).  Existing rows get a
+    NULL token; MySQL unique keys allow many NULLs, so nothing is affected.
+    """
+    if not _column_exists(cur, "billing_ledger", "transfer_token"):
+        cur.execute("ALTER TABLE billing_ledger ADD COLUMN transfer_token VARCHAR(64) NULL")
+    if not _index_exists(cur, "billing_ledger", "uniq_transfer"):
+        cur.execute("ALTER TABLE billing_ledger ADD UNIQUE KEY uniq_transfer (transfer_token)")
+
+
 def ensure_schema():
     """Create the billing tables once (piggybacks on users.py's DB bootstrap)."""
     global _INITED
@@ -116,7 +145,12 @@ def ensure_schema():
             with cn.cursor() as cur:
                 for ddl in _DDL:
                     cur.execute(ddl)
+                _migrate(cur)
         _INITED = True
+    # The per-user wallet layer shares this bootstrap path; it must not call
+    # back into ensure_schema (it owns only its own tables).
+    import wallet  # noqa: E402  (local import avoids an import cycle)
+    wallet.ensure_schema()
 
 
 @contextmanager

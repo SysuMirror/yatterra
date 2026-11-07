@@ -29,6 +29,11 @@ except Exception:  # pragma: no cover - only breaks if the module is missing
     billing_core = None
     billing_store = None
 
+try:
+    import wallet
+except Exception:  # pragma: no cover
+    wallet = None
+
 billing_bp = Blueprint("api_billing", __name__, url_prefix="/api/billing")
 
 _RANGES = {"24h": 24 * HOUR, "7d": 7 * DAY, "30d": 30 * DAY}
@@ -216,7 +221,64 @@ def set_prices():
 def list_accounts():
     if (bad := _money_ready()):
         return bad
-    return jsonify({"accounts": billing_store.list_accounts()})
+    return jsonify({"accounts": _with_internal(billing_store.list_accounts())})
+
+
+def _with_internal(accounts):
+    """Annotate each account row with the group's `internal` flag (平台内部组)."""
+    try:
+        import groups
+        internal = groups.internal_groups()
+    except Exception:
+        internal = set()
+    return [dict(a, internal=(a.get("group_name") in internal)) for a in accounts]
+
+
+@billing_bp.route("/admin/accounts/bulk", methods=["POST"])
+@require_auth("billing.account")
+def bulk_accounts():
+    """Batch-classify groups or set the billable flag.
+
+    Body: ``{"groups": ["a","b"], "internal": true|false, "billable": 0|1}``
+    (any subset).  ``internal=true`` marks 平台内部组 and turns OFF billing for
+    them (creates a billable=0 account row if absent); un-marking does **not**
+    auto re-enable billing.  ``billable`` is the per-account override for groups
+    that stay external.
+    """
+    if (bad := _money_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    names = body.get("groups") or []
+    if not isinstance(names, list) or not names:
+        return jsonify({"error": {"code": "BAD_REQUEST",
+                                  "message": "groups 须为非空数组"}}), 400
+    has_internal = "internal" in body
+    has_billable = "billable" in body
+    if not has_internal and not has_billable:
+        return jsonify({"error": {"code": "BAD_REQUEST",
+                                  "message": "须提供 internal 或 billable"}}), 400
+    import groups
+    actor = (getattr(g, "api_user", None) or {}).get("username") or ""
+    done, errors = [], []
+    for raw in names:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        try:
+            if has_internal:
+                flag = bool(body.get("internal"))
+                groups.set_internal(name, flag)
+                if flag:
+                    billing_store.ensure_account(name, billable=0)
+            if has_billable:
+                billing_store.set_account(name, billable=int(body.get("billable")))
+            done.append(name)
+        except (ValueError, TypeError) as exc:
+            errors.append({"group": name, "error": str(exc)})
+    _audit("billing_accounts_bulk",
+           f"n={len(done)} internal={body.get('internal')} billable={body.get('billable')}",
+           actor)
+    return jsonify({"ok": True, "updated": done, "errors": errors})
 
 
 @billing_bp.route("/admin/accounts/<name>", methods=["POST"])
@@ -288,6 +350,265 @@ def income():
         return bad
     since = request.args.get("since")
     return jsonify({"by_kind": billing_store.income_summary(int(since) if since else None)})
+
+
+# ── money: per-user wallet + pod allocation ──────────────────────
+def _wallet_ready():
+    if not billing_store or not wallet:
+        return jsonify({"error": {"code": "UNAVAILABLE",
+                                  "message": "计费资金层不可用"}}), 503
+    return None
+
+
+def _caller():
+    return getattr(g, "api_user", None) or {}
+
+
+def _caller_name():
+    return _caller().get("username") or ""
+
+
+def _is_admin(user):
+    return (user or {}).get("role") in ("admin", "super")
+
+
+def _gen_transfer_token():
+    """Idempotency key for one wallet↔pod transfer (client may supply its own)."""
+    import os
+    n = int(time.time() * 1000)
+    digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    b36 = ""
+    while n:
+        n, r = divmod(n, 36)
+        b36 = digits[r] + b36
+    return "TR" + (b36 or "0") + os.urandom(3).hex().upper()
+
+
+def _visible_pods(user):
+    """Pods the caller may allocate to: their own (owner/member); admins see all
+    外部(billable) groups.  Each entry carries the pod quota balance/status."""
+    import groups
+    import users
+    try:
+        state = groups.load_state().get("groups", {})
+        internal = groups.internal_groups()
+    except Exception:
+        return []
+    out = []
+    for name, pod in state.items():
+        if _is_admin(user):
+            if name in internal:
+                continue
+            role = "owner"
+        else:
+            role = users.pod_role(user, pod)
+            if not role:
+                continue
+        acct = billing_store.get_account(name) or {}
+        out.append({
+            "name": name,
+            "my_role": role,
+            "balance_cents": int(acct.get("balance_cents") or 0),
+            "status": acct.get("status"),
+            "billable": int(acct.get("billable") or 0),
+        })
+    out.sort(key=lambda p: p["name"])
+    return out
+
+
+@billing_bp.route("/wallet", methods=["GET"])
+@require_auth(min_role="user")
+def wallet_home():
+    """The caller's own wallet + the pods they can fund (no path param → no IDOR)."""
+    if (bad := _wallet_ready()):
+        return bad
+    user = _caller()
+    username = user.get("username")
+    if not username:
+        return jsonify({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}), 401
+    try:
+        acct = wallet.get_account(username)
+        if acct is None:
+            acct = {"username": username, "balance_cents": 0, "credit_limit_cents": 0,
+                    "status": "active", "warn_ratio": 0.2}
+        return jsonify({
+            "username": username,
+            "account": acct,
+            "balance_ratio": wallet.balance_ratio(acct),
+            "ledger": wallet.ledger(username, limit=int(request.args.get("limit", 50))),
+            "pods": _visible_pods(user),
+        })
+    except Exception as exc:
+        return jsonify({"error": {"code": "ERROR", "message": str(exc)}}), 500
+
+
+def _check_pod_target(user, group):
+    """Returns (pod, error_response).  Admins bypass the membership check."""
+    import groups
+    import users
+    try:
+        pod = groups.load_state().get("groups", {}).get(group)
+    except Exception:
+        pod = None
+    if not pod:
+        return None, (jsonify({"error": {"code": "NOT_FOUND", "message": "组不存在"}}), 404)
+    if not _is_admin(user) and users.pod_role(user, pod) not in ("owner", "member"):
+        return None, (jsonify({"error": {"code": "FORBIDDEN",
+                                         "message": f"不是 Pod {group} 的成员"}}), 403)
+    return pod, None
+
+
+@billing_bp.route("/allocate", methods=["POST"])
+@require_auth("billing.allocate")
+def allocate():
+    """Move cents from the caller's wallet into a pod they belong to.
+
+    ``{group, amount_cents, note?, token?}``.
+    """
+    if (bad := _wallet_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    group = str(body.get("group") or "").strip()
+    if not group:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "缺少 group"}}), 400
+    try:
+        cents = int(body.get("amount_cents"))
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "amount_cents 必须为整数"}}), 400
+    if cents <= 0:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "分配金额必须为正"}}), 400
+    user = _caller()
+    username = _caller_name()
+    _, err = _check_pod_target(user, group)
+    if err:
+        return err
+    if wallet.is_frozen(username):
+        return jsonify({"error": {"code": "FORBIDDEN", "message": "钱包已冻结"}}), 403
+    token = str(body.get("token") or "").strip() or _gen_transfer_token()
+    try:
+        bal = wallet.transfer_to_pod(group, username, cents, token=token,
+                                     note=body.get("note") or "", actor=username)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": str(exc)}}), 400
+    except Exception as exc:
+        return jsonify({"error": {"code": "ERROR", "message": str(exc)}}), 500
+    _audit("billing_allocate", f"user={username} group={group} amount={cents} token={token}", username)
+    return jsonify({"ok": True, "balance_cents": bal, "reused": bal is None})
+
+
+@billing_bp.route("/deallocate", methods=["POST"])
+@require_auth("billing.account")
+def deallocate():
+    """Admin-only reclaim: move unused pod quota back to a *specified* user's
+    wallet.  ``{username, group, amount_cents, note?, token?}``."""
+    if (bad := _wallet_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    group = str(body.get("group") or "").strip()
+    username = str(body.get("username") or "").strip()
+    if not group or not username:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "缺少 group 或 username"}}), 400
+    try:
+        cents = int(body.get("amount_cents"))
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "amount_cents 必须为整数"}}), 400
+    token = str(body.get("token") or "").strip() or _gen_transfer_token()
+    actor = _caller_name()
+    try:
+        bal = wallet.transfer_from_pod(group, username, cents, token=token,
+                                       note=body.get("note") or "", actor=actor)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": str(exc)}}), 400
+    except Exception as exc:
+        return jsonify({"error": {"code": "ERROR", "message": str(exc)}}), 500
+    _audit("billing_deallocate", f"user={username} group={group} amount={cents} token={token}", actor)
+    return jsonify({"ok": True, "balance_cents": bal, "reused": bal is None})
+
+
+@billing_bp.route("/admin/wallets", methods=["GET"])
+@require_auth("billing.account")
+def admin_wallets():
+    if (bad := _wallet_ready()):
+        return bad
+    rows = wallet.list_accounts()
+    labels = {}
+    try:
+        import users as users_mod
+        labels = users_mod.user_labels([r.get("username") for r in rows])
+    except Exception:
+        labels = {}
+    return jsonify({"wallets": [dict(r, label=labels.get(r.get("username"), "")) for r in rows]})
+
+
+@billing_bp.route("/admin/wallets/<username>", methods=["POST"])
+@require_auth("billing.account")
+def admin_wallet_set(username):
+    """Admin override: wallet status / credit limit."""
+    if (bad := _wallet_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    actor = _caller_name()
+    try:
+        acct = wallet.set_account(username, status=body.get("status"),
+                                  credit_limit_cents=body.get("credit_limit_cents"))
+    except ValueError as exc:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": str(exc)}}), 400
+    _audit("wallet_set", f"user={username} body={body}", actor)
+    return jsonify({"ok": True, "account": acct})
+
+
+@billing_bp.route("/admin/wallet/adjust", methods=["POST"])
+@require_auth("billing.account")
+def admin_wallet_adjust():
+    """Signed manual wallet correction: ``{username, amount_cents, note}``."""
+    if (bad := _wallet_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    username = str(body.get("username") or "").strip()
+    if not username:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "缺少 username"}}), 400
+    try:
+        cents = int(body.get("amount_cents"))
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "amount_cents 必须为整数"}}), 400
+    actor = _caller_name()
+    balance = wallet.adjust(username, cents, note=body.get("note") or "", actor=actor)
+    _audit("wallet_adjust", f"user={username} amount={cents}", actor)
+    return jsonify({"ok": True, "balance_cents": balance})
+
+
+@billing_bp.route("/admin/allocate", methods=["POST"])
+@require_auth("billing.account")
+def admin_allocate():
+    """Admin transfer on behalf: ``{username, group, amount_cents, direction}``."""
+    if (bad := _wallet_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    group = str(body.get("group") or "").strip()
+    username = str(body.get("username") or "").strip()
+    direction = str(body.get("direction") or "in").strip()
+    if not group or not username:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "缺少 group 或 username"}}), 400
+    try:
+        cents = int(body.get("amount_cents"))
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "amount_cents 必须为整数"}}), 400
+    actor = _caller_name()
+    token = str(body.get("token") or "").strip() or _gen_transfer_token()
+    try:
+        if direction == "out":
+            bal = wallet.transfer_from_pod(group, username, cents, token=token,
+                                           note=body.get("note") or "", actor=actor)
+        else:
+            bal = wallet.transfer_to_pod(group, username, cents, token=token,
+                                         note=body.get("note") or "", actor=actor)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": str(exc)}}), 400
+    except Exception as exc:
+        return jsonify({"error": {"code": "ERROR", "message": str(exc)}}), 500
+    _audit("billing_admin_allocate",
+           f"user={username} group={group} dir={direction} amount={cents}", actor)
+    return jsonify({"ok": True, "balance_cents": bal, "reused": bal is None})
 
 
 def _audit(action, detail, actor):

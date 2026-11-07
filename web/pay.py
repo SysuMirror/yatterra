@@ -1,7 +1,9 @@
 """学人汇「通用开放支付」客户端 + 订单/回调结算(预付费充值)。
 
 移植自 sysudate pod 的 ``api/pay.js``,但**只保留充值入账**这条主干:它不再发放
-"权益"(entitlement),支付的产物是**组账户余额**——`billing_store.credit_topup`。
+"权益"(entitlement),支付的产物是**个人钱包余额**——``wallet.credit_topup``
+(用户再把钱包里的钱**分配**给它拥有的 Pod;见 ``wallet``)。旧订单若带
+``credit_target='group'`` 仍按老路 ``billing_store.credit_topup`` 入组账户。
 
 配置读取顺序:环境变量 → ``<platform root>/pay.json``(``{app_id, app_secret,
 api_base, notify_url, return_url}``)。密钥只从这里来,绝不写死、绝不入日志。
@@ -197,6 +199,7 @@ _DDL = (
         credit_cents   BIGINT       NOT NULL DEFAULT 0,
         group_name     VARCHAR(64)  NOT NULL,
         username       VARCHAR(64)  NULL,
+        credit_target  VARCHAR(16)  NOT NULL DEFAULT 'wallet',
         status         VARCHAR(16)  NOT NULL DEFAULT 'pending',
         transaction_id VARCHAR(64)  NULL,
         paid_at        TIMESTAMP    NULL,
@@ -221,6 +224,14 @@ def ensure_schema():
     with u._conn() as cn, cn.cursor() as cur:
         for ddl in _DDL:
             cur.execute(ddl)
+        # additive migration: top-ups now credit the user's wallet, so orders
+        # carry a credit_target ('wallet' for new orders, legacy rows 'group').
+        cur.execute("SELECT COUNT(*) AS n FROM information_schema.columns "
+                    "WHERE table_schema=DATABASE() AND table_name='pay_orders' "
+                    "AND column_name='credit_target'")
+        if not (cur.fetchone() or {}).get("n"):
+            cur.execute("ALTER TABLE pay_orders ADD COLUMN credit_target "
+                        "VARCHAR(16) NOT NULL DEFAULT 'wallet'")
     _INIT = True
 
 
@@ -281,33 +292,36 @@ def get_order(out_trade_no):
 
 
 def record_order(*, out_trade_no, fs_order_no, item_key, subject, amount_cents,
-                 credit_cents, group_name, username=None, status="pending"):
+                 credit_cents, group_name, username=None, status="pending",
+                 credit_target="wallet"):
     ensure_schema()
     u = _users()
     with u._conn() as cn, cn.cursor() as cur:
         cur.execute(
             """INSERT INTO pay_orders
                    (out_trade_no, fs_order_no, item_key, subject, amount_cents,
-                    credit_cents, group_name, username, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    credit_cents, group_name, username, status, credit_target)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (out_trade_no, fs_order_no, item_key, subject, int(amount_cents),
-             int(credit_cents), group_name, username, status))
+             int(credit_cents), group_name, username, status, credit_target))
 
 
-def list_orders(group_name=None, limit=50, offset=0):
+def list_orders(group_name=None, username=None, limit=50, offset=0):
     ensure_schema()
     u = _users()
-    where, args = "", []
+    where, args = [], []
     if group_name:
-        where = "WHERE group_name=%s"
-        args.append(group_name)
+        where.append("group_name=%s"); args.append(group_name)
+    if username:
+        where.append("username=%s"); args.append(username)
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
     args += [int(limit), int(offset)]
     with u._conn() as cn, cn.cursor() as cur:
         cur.execute(
             f"""SELECT out_trade_no, fs_order_no, item_key, subject, amount_cents,
                        credit_cents, group_name, username, status, transaction_id,
-                       paid_at, created_at
-                FROM pay_orders {where} ORDER BY id DESC LIMIT %s OFFSET %s""",
+                       paid_at, created_at, credit_target
+                FROM pay_orders {clause} ORDER BY id DESC LIMIT %s OFFSET %s""",
             args)
         return cur.fetchall() or []
 
@@ -336,12 +350,13 @@ def order_stats():
 
 # ── settlement ───────────────────────────────────────────────────
 def settle_paid(out_trade_no, transaction_id=None, raw=None):
-    """Mark an order paid and credit its group's balance — exactly once.
+    """Mark an order paid and credit the wallet (or a legacy group) — exactly once.
 
-    Idempotent on both sides: the ledger's ``UNIQUE(out_trade_no)`` absorbs a
-    replayed callback (``credit_topup`` returns None), and the order status
-    update is a no-op once already ``paid``.  Returns the credited cents (0 when
-    it was already settled / order unknown).
+    New orders credit the payer's **wallet** (``credit_target='wallet'``); legacy
+    group-targeted orders still credit the group via ``billing_store``.  Idempotent
+    on both sides: the ledger's ``UNIQUE(out_trade_no)`` absorbs a replayed callback
+    (``credit_topup`` returns None), and the status update is a no-op once paid.
+    Returns the credited cents (0 when already settled / order unknown).
     """
     import billing_store
 
@@ -352,15 +367,20 @@ def settle_paid(out_trade_no, transaction_id=None, raw=None):
 
     credit = int(order.get("credit_cents") or 0)
     group = order.get("group_name")
+    username = order.get("username")
+    target = order.get("credit_target") or ("group" if group else "wallet")
     credited = 0
-    if group and credit > 0:
+    if credit > 0:
+        note = f"微信充值 · {order.get('subject') or order.get('item_key') or ''}"
         # credit first: a crash between the two steps is repaired by the next
         # callback (credit_topup dedupes on out_trade_no, then we mark paid).
-        bal = billing_store.credit_topup(
-            group, credit, out_trade_no,
-            note=f"微信充值 · {order.get('subject') or order.get('item_key') or ''}",
-            actor="pay",
-        )
+        if target == "wallet" and username:
+            import wallet
+            bal = wallet.credit_topup(username, credit, out_trade_no, note=note, actor="pay")
+        elif group:
+            bal = billing_store.credit_topup(group, credit, out_trade_no, note=note, actor="pay")
+        else:
+            bal = None
         if bal is not None:
             credited = credit
 

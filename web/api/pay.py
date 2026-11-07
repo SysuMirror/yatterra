@@ -1,12 +1,14 @@
 """Payment API blueprint — /api/billing/pay (学人汇「通用开放支付」充值)。
 
-预付费余额的资金入口:用户为**组**下单充值,微信小程序内付款,学人汇签名回调
-``POST /notify`` → ``pay.settle_paid`` 给组账户入账(见 ``billing_store``)。
+个人钱包的资金入口:用户为**自己的钱包**下单充值(不再选组),微信小程序内付款,
+学人汇签名回调 ``POST /notify`` → ``pay.settle_paid`` 给钱包入账(``wallet``)。
+用户随后在 ``/api/billing/allocate`` 把钱包余额分配给它拥有的 Pod(见 ``wallet``)。
 
 鉴权分层:
 
-* 用户端(``/items`` ``/create`` ``/order`` ``/orders`` ``/account``)——需要登录,
-  下单必须是自己**所属组**的成员(``users.can_pod`` level=member);查单只限本组。
+* 用户端(``/items`` ``/create`` ``/order`` ``/orders``)——需要登录;下单/查单
+  **只针对调用者本人**(``/orders`` 回自己的充值单;``/order`` 按 ``order.username``
+  或管理员授权)。``/account/<group>`` 仍是 Pod 额度视图(组内成员可读)。
 * ``POST /notify`` —— **无鉴权/无 CSRF**(``/api/`` 已在 ``app.csrf_protect`` 豁免),
   安全性来自 HMAC 验签(``pay_sign``):校验 ``X-App-Id``、``|now-ts| <= 300``、
   原始 body 字节签名。
@@ -52,6 +54,23 @@ def _member_of(user, group):
         return False
 
 
+def _is_admin(user):
+    return (user or {}).get("role") in ("admin", "super")
+
+
+def _owns_order(user, order):
+    """True when ``user`` paid for this order (or is an admin)."""
+    me = (user or {}).get("username")
+    if not me:
+        return False
+    if order.get("username") == me:
+        return True
+    if _is_admin(user):
+        return True
+    # legacy group-targeted orders: fall back to membership of the group
+    return _member_of(user, order.get("group_name"))
+
+
 def _gen_trade_no():
     """Order id: 'YT' + base36(ms) + 6 hex chars — unique enough, unguessable-ish."""
     n = int(time.time() * 1000)
@@ -84,17 +103,18 @@ def items():
 @pay_bp.route("/create", methods=["POST"])
 @require_auth("billing.pay")
 def create():
-    """Create a top-up order for a group: ``{item_key, group, out_trade_no?}``."""
+    """Create a top-up order crediting the caller's wallet: ``{item_key, out_trade_no?}``.
+
+    (A legacy ``group`` field is accepted and ignored — money now lands in the
+    personal wallet; the user allocates it to pods afterwards.)
+    """
     body = request.get_json(silent=True) or {}
     item_key = str(body.get("item_key") or "").strip()
-    group = str(body.get("group") or body.get("group_name") or "").strip()
+    username = _username()
     if not item_key:
         return jsonify({"error": {"code": "BAD_REQUEST", "message": "缺少 item_key"}}), 400
-    if not group:
-        return jsonify({"error": {"code": "BAD_REQUEST", "message": "缺少 group"}}), 400
-    user = getattr(g, "api_user", None)
-    if not _member_of(user, group):
-        return jsonify({"error": {"code": "FORBIDDEN", "message": f"不是组 {group} 的成员"}}), 403
+    if not username:
+        return jsonify({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}), 401
 
     item = pay_mod.get_item(item_key)
     if not item or not int(item.get("is_active") or 0):
@@ -106,7 +126,7 @@ def create():
             return jsonify({"error": {"code": "BAD_REQUEST", "message": "out_trade_no 非法"}}), 400
         existing = pay_mod.get_order(reuse)
         if existing:
-            if existing.get("group_name") != group:
+            if existing.get("username") != username:
                 return jsonify({"error": {"code": "CONFLICT", "message": "订单号已被占用"}}), 409
             return jsonify({"ok": True, "reused": True, "order": existing,
                             "short_url": "", "scheme_url": ""})
@@ -121,7 +141,7 @@ def create():
         r = pay_mod.create_order(
             amount_cents=amount, subject=item["title"], out_trade_no=out_trade_no,
             return_url=(body.get("return_url") or cfg.get("return_url") or None),
-            extra={"item_key": item_key, "group": group, "username": _username()},
+            extra={"item_key": item_key, "username": username},
         )
     except pay_mod.PayError as exc:
         return jsonify({"error": {"code": "UPSTREAM", "message": str(exc)}}), int(exc.status or 500)
@@ -131,11 +151,12 @@ def create():
         pay_mod.record_order(
             out_trade_no=out_trade_no, fs_order_no=r.get("order_no"),
             item_key=item_key, subject=item["title"], amount_cents=amount,
-            credit_cents=credit, group_name=group, username=_username(), status="pending")
+            credit_cents=credit, group_name="", username=username, status="pending",
+            credit_target="wallet")
     except Exception as exc:
         return jsonify({"error": {"code": "ERROR", "message": f"订单入库失败: {exc}"}}), 500
 
-    _audit("pay_order_create", f"group={group} item={item_key} no={out_trade_no} amount={amount}")
+    _audit("pay_order_create", f"user={username} item={item_key} no={out_trade_no} amount={amount}")
     return jsonify({
         "ok": True, "out_trade_no": out_trade_no, "amount_cents": amount,
         "credit_cents": credit, "currency": "CNY", "subject": item["title"],
@@ -150,7 +171,7 @@ def order(out_trade_no):
     o = pay_mod.get_order(out_trade_no)
     if not o:
         return jsonify({"error": {"code": "NOT_FOUND", "message": "订单不存在"}}), 404
-    if not _member_of(getattr(g, "api_user", None), o.get("group_name")):
+    if not _owns_order(getattr(g, "api_user", None), o):
         return jsonify({"error": {"code": "FORBIDDEN", "message": "无权查看该订单"}}), 403
     if o.get("status") != "paid":
         try:
@@ -167,15 +188,12 @@ def order(out_trade_no):
 @pay_bp.route("/orders", methods=["GET"])
 @require_auth(min_role="user")
 def orders():
-    """Orders for the caller's groups (``?group=`` narrows to one)."""
-    group = request.args.get("group")
-    if group and not _member_of(getattr(g, "api_user", None), group):
-        return jsonify({"error": {"code": "FORBIDDEN", "message": "无权查看该组订单"}}), 403
+    """The caller's **own** wallet top-up orders."""
     try:
         limit = max(1, min(200, int(request.args.get("limit", 50))))
     except (TypeError, ValueError):
         limit = 50
-    return jsonify({"orders": pay_mod.list_orders(group_name=group or None, limit=limit)})
+    return jsonify({"orders": pay_mod.list_orders(username=_username(), limit=limit)})
 
 
 @pay_bp.route("/account/<group>", methods=["GET"])
@@ -291,6 +309,7 @@ def admin_orders():
     except (TypeError, ValueError):
         limit = 50
     return jsonify({"orders": pay_mod.list_orders(group_name=request.args.get("group"),
+                                                  username=request.args.get("username"),
                                                   limit=limit)})
 
 
