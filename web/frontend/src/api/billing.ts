@@ -172,8 +172,21 @@ export interface TransferResult {
   reused: boolean
 }
 
+export interface MyGroupAccount {
+  group: string
+  balance_cents: number
+  credit_limit_cents: number
+  status: 'active' | 'suspended' | 'closed'
+  billable: number
+  internal: boolean
+  blocked: boolean
+}
+
 export const billingMoneyApi = {
   prices: (): Promise<PricesResponse> => api.get('/billing/prices'),
+  /** 调用者可见的各组余额/状态 —— 一次请求（替代逐组 /account/<name> 扇出）。 */
+  myAccounts: (): Promise<{ accounts: MyGroupAccount[]; count: number }> =>
+    api.get('/billing/accounts/mine'),
   account: (group: string, limit = 50): Promise<GroupAccount> =>
     api.get(`/billing/account/${encodeURIComponent(group)}?limit=${limit}`),
   setPrices: (prices: ResourcePrice): Promise<{ ok: boolean; prices: ResourcePrice }> =>

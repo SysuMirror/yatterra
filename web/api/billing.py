@@ -178,6 +178,54 @@ def group_account(name):
         return jsonify({"error": {"code": "ERROR", "message": str(exc)}}), 500
 
 
+@billing_bp.route("/accounts/mine", methods=["GET"])
+@require_auth(min_role="user")
+def my_accounts():
+    """Balances/status for every group the caller can see — one request, one query.
+
+    Replaces the per-group ``GET /account/<name>`` fan-out the 计费总览 page used
+    to issue (N round-trips, each lazily creating an account row).  Visibility
+    follows ``GET /api/pods``: a user sees the groups they own or belong to;
+    admins see all.  Group names without an account row read as ¥0 / 正常.
+    """
+    if (bad := _money_ready()):
+        return bad
+    import users
+    u = _caller()
+    is_admin = u.get("role") in ("super", "admin")
+    try:
+        state = _load_groups()
+    except Exception:
+        return jsonify({"error": {"code": "ERROR", "message": "组状态不可用"}}), 500
+    internal = {n for n, g in state.items() if g.get("internal")}
+    rows = {r["group_name"]: r for r in billing_store.list_accounts()}
+    out = []
+    for name in sorted(state.keys()):
+        if not is_admin and users.pod_role(u, state[name]) is None:
+            continue
+        acct = rows.get(name) or {}
+        status = acct.get("status") or "active"
+        # no row ⇒ default (计费开), matching _merge_groups / ensure_account
+        billable = int(acct.get("billable") or 0) if acct else 1
+        out.append({
+            "group": name,
+            "balance_cents": int(acct.get("balance_cents") or 0),
+            "credit_limit_cents": int(acct.get("credit_limit_cents") or 0),
+            "status": status,
+            "billable": billable,
+            "internal": name in internal,
+            # mirrors billing_store.is_blocked: an explicit status, never a dip
+            "blocked": bool(billable) and status in ("suspended", "closed"),
+        })
+    return jsonify({"accounts": out, "count": len(out)})
+
+
+def _load_groups():
+    """groups.json's ``{name: pod}`` map (empty when unreadable)."""
+    import groups
+    return groups.load_state().get("groups", {})
+
+
 @billing_bp.route("/prices", methods=["GET"])
 @require_auth(min_role="user")
 def get_prices():
@@ -235,9 +283,9 @@ def _merge_groups(accounts):
     ``internal`` flag from groups.json.
     """
     try:
-        import groups
-        internal = groups.internal_groups()
-        names = set(groups.load_state().get("groups", {}).keys())
+        state = _load_groups()
+        names = set(state.keys())
+        internal = {n for n, g in state.items() if g.get("internal")}
     except Exception:
         internal, names = set(), set()
     by_name = {a.get("group_name"): dict(a) for a in accounts}

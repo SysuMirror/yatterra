@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -10,8 +10,8 @@ import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { MetricCard } from '@/components/domain/MetricCard'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
+import { Input } from '@/components/ui/Input'
 import { SkeletonCard } from '@/components/ui/Skeleton'
-import { podsApi } from '@/api/pods'
 import { payApi } from '@/api/pay'
 import { billingMoneyApi, type BillingAccount } from '@/api/billing'
 import { useToastStore } from '@/stores/toast'
@@ -28,33 +28,27 @@ export default function BillingOverview() {
   const canPlatform = hasPerm('ops.audit')
   const toast = useToastStore((s) => s.add)
   const qc = useQueryClient()
+  const [acctQuery, setAcctQuery] = useState('')
+  const [acctView, setAcctView] = useState<'all' | 'internal' | 'external'>('all')
+  const [acctExpanded, setAcctExpanded] = useState(false)
 
-  // 我的组 + 各组余额(聚合)
-  const { data: podsData, isLoading: podsLoading } = useQuery({
-    queryKey: ['billing-overview-pods'],
-    queryFn: () => podsApi.list({ per_page: 100 }),
-    staleTime: 60_000,
-  })
-  const groups = useMemo(() => (podsData?.pods ?? []).map((p) => p.name), [podsData])
-
-  const { data: acct, isLoading: acctLoading } = useQuery({
-    queryKey: ['billing-overview-accounts', groups],
-    queryFn: async () => {
-      const rs = await Promise.all(groups.map((g) => payApi.account(g, 1).catch(() => null)))
-      let balance = 0
-      const alerts: { group: string; balance: number; blocked: boolean }[] = []
-      groups.forEach((g, i) => {
-        const row = rs[i]
-        const bal = row?.account?.balance_cents ?? 0
-        const blocked = !!row?.blocked || row?.account?.status === 'suspended'
-        balance += bal
-        if (blocked || bal <= 0) alerts.push({ group: g, balance: bal, blocked })
-      })
-      return { balance, alerts, count: groups.length }
-    },
-    enabled: groups.length > 0,
+  // 我的组 + 各组余额 —— 单请求聚合(替代逐组 /account/<name> 扇出)
+  const { data: mineData, isLoading: acctLoading } = useQuery({
+    queryKey: ['billing-overview-mine'],
+    queryFn: () => billingMoneyApi.myAccounts(),
     staleTime: 30_000,
   })
+  const groups = useMemo(() => (mineData?.accounts ?? []).map((m) => m.group), [mineData])
+  const acct = useMemo(() => {
+    if (!mineData) return undefined
+    let balance = 0
+    const alerts: { group: string; balance: number; blocked: boolean }[] = []
+    for (const m of mineData.accounts) {
+      balance += m.balance_cents
+      if (m.blocked || m.balance_cents <= 0) alerts.push({ group: m.group, balance: m.balance_cents, blocked: m.blocked })
+    }
+    return { balance, alerts, count: mineData.accounts.length }
+  }, [mineData])
 
   // 我的充值订单(含未付款)
   const { data: ordersData } = useQuery({
@@ -84,6 +78,17 @@ export default function BillingOverview() {
   })
   const accts = acctsData?.accounts ?? []
   const internalCount = accts.filter((a) => a.internal).length
+  const ACCT_CAP = 12
+  const viewAccts = useMemo(() => {
+    const rows = acctsData?.accounts ?? []
+    const q = acctQuery.trim().toLowerCase()
+    return rows.filter((a) => {
+      if (acctView === 'internal' && !a.internal) return false
+      if (acctView === 'external' && a.internal) return false
+      return !q || a.group_name.toLowerCase().includes(q)
+    })
+  }, [acctsData, acctQuery, acctView])
+  const shownAccts = acctExpanded ? viewAccts : viewAccts.slice(0, ACCT_CAP)
 
   const setInternal = async (a: BillingAccount, flag: boolean) => {
     try {
@@ -125,7 +130,7 @@ export default function BillingOverview() {
 
       {/* 我的账户总览 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {podsLoading ? (
+        {acctLoading ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
           <>
@@ -200,37 +205,73 @@ export default function BillingOverview() {
           {accts.length === 0 ? (
             <p className="text-sm text-muted py-4 text-center">暂无组</p>
           ) : (
-            <div className="space-y-1">
-              {accts.map((a) => (
-                <div key={a.group_name} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
-                  <span className="text-sm font-medium flex-1 min-w-0 flex items-center gap-1.5">
-                    <span className="truncate">{a.group_name}</span>
-                    {a.synthetic && (
-                      <span className="text-[10px] text-muted/70 flex-shrink-0"
-                            title="尚未建账：结算 / 充值 / 调整后自动建账">未建账</span>
-                    )}
-                  </span>
-                  <span className={`tnum text-xs ${a.balance_cents <= 0 ? 'text-bad' : 'text-muted'}`}>{yuan(a.balance_cents)}</span>
+            <>
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                {([
+                  ['all', `全部 ${accts.length}`],
+                  ['internal', `内部 ${internalCount}`],
+                  ['external', `外部 ${accts.length - internalCount}`],
+                ] as const).map(([k, label]) => (
                   <button
+                    key={k}
                     type="button"
-                    onClick={() => setInternal(a, !a.internal)}
-                    title={a.internal ? '平台内部组：不计费（点击改为外部）' : '外部组：按用量计费（点击改为内部）'}
-                    className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-colors ${a.internal ? 'bg-black/[0.05] text-muted hover:bg-black/[0.08]' : 'bg-accent/10 text-accent hover:bg-accent/20'}`}
+                    onClick={() => setAcctView(k)}
+                    className={`rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors ${acctView === k ? 'bg-accent/10 text-accent' : 'bg-black/[0.04] text-muted hover:bg-black/[0.07]'}`}
                   >
-                    {a.internal ? '内部 · 免计费' : '外部 · 计费'}
+                    {label}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setBillable(a)}
-                    title="单独开关该组的计费"
-                    disabled={a.internal}
-                    className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-colors ${a.internal ? 'text-muted/40 cursor-not-allowed' : a.billable ? 'bg-ok/10 text-ok hover:bg-ok/20' : 'bg-bad/10 text-bad hover:bg-bad/20'}`}
-                  >
-                    计费{a.billable ? '开' : '关'}
-                  </button>
+                ))}
+                <div className="w-44 ml-auto">
+                  <Input value={acctQuery} onChange={(e) => setAcctQuery(e.target.value)} placeholder="筛选组名…" />
                 </div>
-              ))}
-            </div>
+              </div>
+
+              {viewAccts.length === 0 ? (
+                <p className="text-sm text-muted py-4 text-center">无匹配组</p>
+              ) : (
+                <div className="space-y-1">
+                  {shownAccts.map((a) => (
+                    <div key={a.group_name} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
+                      <span className="text-sm font-medium flex-1 min-w-0 flex items-center gap-1.5">
+                        <span className="truncate">{a.group_name}</span>
+                        {a.synthetic && (
+                          <span className="text-[10px] text-muted/70 flex-shrink-0"
+                                title="尚未建账：结算 / 充值 / 调整后自动建账">未建账</span>
+                        )}
+                      </span>
+                      <span className={`tnum text-xs ${a.balance_cents <= 0 ? 'text-bad' : 'text-muted'}`}>{yuan(a.balance_cents)}</span>
+                      <button
+                        type="button"
+                        onClick={() => setInternal(a, !a.internal)}
+                        title={a.internal ? '平台内部组：不计费（点击改为外部）' : '外部组：按用量计费（点击改为内部）'}
+                        className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-colors ${a.internal ? 'bg-black/[0.05] text-muted hover:bg-black/[0.08]' : 'bg-accent/10 text-accent hover:bg-accent/20'}`}
+                      >
+                        {a.internal ? '内部 · 免计费' : '外部 · 计费'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBillable(a)}
+                        title="单独开关该组的计费"
+                        disabled={a.internal}
+                        className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-colors ${a.internal ? 'text-muted/40 cursor-not-allowed' : a.billable ? 'bg-ok/10 text-ok hover:bg-ok/20' : 'bg-bad/10 text-bad hover:bg-bad/20'}`}
+                      >
+                        计费{a.billable ? '开' : '关'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {viewAccts.length > ACCT_CAP && (
+                <button
+                  type="button"
+                  onClick={() => setAcctExpanded((v) => !v)}
+                  className="mt-2 w-full rounded-lg py-1.5 text-xs font-medium text-accent hover:bg-black/[0.03] transition-colors"
+                >
+                  {acctExpanded ? '收起' : `显示全部 ${viewAccts.length} 组`}
+                </button>
+              )}
+            </>
           )}
         </Card>
       )}

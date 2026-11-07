@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Coins, Save, RefreshCw, Play, Info } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
@@ -34,6 +34,7 @@ export default function OpsPricing() {
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [bulkText, setBulkText] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [acctFilter, setAcctFilter] = useState('')
   const [adjustFor, setAdjustFor] = useState<BillingAccount | null>(null)
   const [adjustCents, setAdjustCents] = useState('')
   const [adjustNote, setAdjustNote] = useState('')
@@ -55,6 +56,12 @@ export default function OpsPricing() {
     staleTime: 15_000,
   })
   const accounts: BillingAccount[] = acctData?.accounts ?? []
+  const internalCount = accounts.filter((a) => a.internal).length
+  const acctQuery = acctFilter.trim().toLowerCase()
+  const filteredAccts = useMemo(() => {
+    const rows = acctData?.accounts ?? []
+    return acctQuery ? rows.filter((a) => a.group_name.toLowerCase().includes(acctQuery)) : rows
+  }, [acctData, acctQuery])
 
   const { data: incomeData, refetch: refetchIncome } = useQuery({
     queryKey: ['billing-income'],
@@ -214,7 +221,7 @@ export default function OpsPricing() {
   }
 
   const acctCols: Column<BillingAccount>[] = [
-    { key: 'group_name', title: '组', width: 'minmax(120px, 2fr)', render: (a) => (
+    { key: 'group_name', title: '组', width: 'minmax(120px, 2fr)', sortable: true, render: (a) => (
       <span className="flex items-center gap-1.5 min-w-0">
         <span className="truncate">{a.group_name}</span>
         {a.synthetic && (
@@ -230,10 +237,10 @@ export default function OpsPricing() {
         {a.internal ? '内部' : '外部'}
       </button>
     ) },
-    { key: 'balance_cents', title: '余额', width: '110px', render: (a) => (
+    { key: 'balance_cents', title: '余额', width: '110px', sortable: true, render: (a) => (
       <span className={`tnum ${a.balance_cents <= 0 ? 'text-bad' : 'text-ink'}`}>{yuan(a.balance_cents)}</span>
     ) },
-    { key: 'credit_limit_cents', title: '额度', width: '100px', render: (a) => <span className="tnum">{yuan(a.credit_limit_cents)}</span> },
+    { key: 'credit_limit_cents', title: '额度', width: '100px', sortable: true, render: (a) => <span className="tnum">{yuan(a.credit_limit_cents)}</span> },
     { key: 'status', title: '状态', width: '110px', render: (a) => (
       <Select
         className="w-24"
@@ -362,8 +369,19 @@ export default function OpsPricing() {
           </div>
         </div>
         <div className="p-2">
-          <DataTable columns={acctCols} data={accounts} keyFn={(a) => a.group_name}
-                     empty={<EmptyState icon={<Coins size={20} />} title="暂无账户" description="结算或首次充值后自动建账。" />} />
+          <div className="flex flex-wrap items-center gap-3 px-2 pb-2">
+            <div className="w-56">
+              <Input value={acctFilter} onChange={(e) => setAcctFilter(e.target.value)} placeholder="筛选组名…" />
+            </div>
+            <span className="text-xs text-muted tnum">
+              {acctQuery ? `匹配 ${filteredAccts.length} / ${accounts.length}` : `共 ${accounts.length} 组`}
+              {internalCount > 0 ? ` · 内部 ${internalCount}` : ''}
+            </span>
+          </div>
+          <DataTable columns={acctCols} data={filteredAccts} keyFn={(a) => a.group_name}
+                     empty={<EmptyState icon={<Coins size={20} />}
+                                        title={acctQuery ? '无匹配组' : '暂无账户'}
+                                        description={acctQuery ? '换个关键字试试。' : '结算或首次充值后自动建账。'} />} />
         </div>
       </Card>
 
