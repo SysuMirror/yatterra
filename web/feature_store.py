@@ -178,6 +178,8 @@ def _sum_level_seconds(rows):
         except (TypeError, ValueError):
             continue
         dt = float(dt or 0)
+        if dt <= 0:
+            continue
         for dim, lvl in (levels or {}).items():
             if dim not in LEVEL_DIMS or not isinstance(lvl, str):
                 continue
