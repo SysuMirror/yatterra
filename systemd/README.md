@@ -29,6 +29,7 @@ systemctl cat yatterra-web
 | `sse-priority-kill` | `web/priority_kill.py` | 按 PRIORITY 驱逐（root） |
 | `yatterra-pwa-alert-monitor` | `web/pwa_alerts.py` | Pod 告警 → PWA 推送 |
 | `yatterra-pwa-alert-queue` | `web/pwa_alerts.py` | 推送队列 worker |
+| `mihomo-guard` | `host/mihomo-guard`（+ `.timer` 每 2min） | 宿主 mihomo 代理看门狗：真实链路探活 → 挂了切最快活节点 |
 
 `yatterra-web` 还有一个 drop-in 副本：`yatterra-web.service.d/llm-concurrency.conf`
 （设 `LLM_MAX_CONCURRENCY`、`LLM_MAX_RETRIES`）。

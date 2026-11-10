@@ -1,0 +1,14 @@
+[Unit]
+Description=Run mihomo-guard every 2 minutes
+# The guard does a real-traffic probe and, if the proxy is broken, switches to
+# the fastest healthy node.  A 2-minute cadence keeps recovery quick without
+# hammering the controller; it is a no-op (silent) while the proxy is healthy.
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

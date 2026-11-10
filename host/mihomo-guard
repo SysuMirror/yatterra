@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""mihomo-guard — keep an outbound mihomo/clash proxy actually usable.
+
+Periodically verifies *real* traffic through the local proxy and, when it is
+broken, re-points the main selector to the fastest healthy node (and, if almost
+nothing is alive, refreshes the subscription).  Built to run from a systemd
+timer, but safe to run by hand.
+
+Why a real-traffic probe: a node can pass the core's built-in URLTest health
+check yet still fail real TLS (e.g. the relay front returns 5xx / hangs), so we
+curl through the mixed port the way a client would.
+
+It talks to the core's external controller over HTTP and drives ``curl`` through
+the mixed port.  **No credentials live in this file** — the controller secret
+(if any) and the subscription URL stay in the local config dir and are only read
+by the refresh command you point it at.
+
+Env knobs (all optional):
+  MIHOMO_CTRL                    controller URL              (default http://127.0.0.1:9090)
+  MIHOMO_CTRL_SECRET             controller secret           (default: none)
+  MIHOMO_MIXED                   host:port of the mixed proxy(default 127.0.0.1:7890)
+  MIHOMO_SELECTOR                selector to manage          (default: auto-detect)
+  MIHOMO_GUARD_TEST_URLS         comma-separated probe URLs  (default gstatic 204 + ipify)
+  MIHOMO_GUARD_DELAY_URL         URL used for node delay test(default: first test URL)
+  MIHOMO_GUARD_UPDATE_CMD        shell cmd to refresh subs   (default: $HOME/bin/clash-update if present)
+  MIHOMO_GUARD_UPDATE_COOLDOWN   seconds between refreshes   (default 1800)
+  MIHOMO_GUARD_MIN_ALIVE         refresh when alive/total <  (default 0.3)
+  MIHOMO_GUARD_LOG               log file                    (default <conf>/guard.log)
+  MIHOMO_GUARD_STATE             state file                  (default <conf>/guard.state)
+  MIHOMO_GUARD_CONF_DIR          config dir for log/state     (default ~/.config/mihomo)
+
+Exit code is always 0 (timer-friendly); problems are reported in the log.
+"""
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+HOME = os.environ.get("HOME") or os.path.expanduser("~")
+CONF_DIR = os.environ.get("MIHOMO_GUARD_CONF_DIR") or os.environ.get(
+    "MIHOMO_DIR") or os.path.join(HOME, ".config", "mihomo")
+CTRL = os.environ.get("MIHOMO_CTRL", "http://127.0.0.1:9090").rstrip("/")
+CTRL_SECRET = os.environ.get("MIHOMO_CTRL_SECRET", "")
+MIXED = os.environ.get("MIHOMO_MIXED", "127.0.0.1:7890")
+SELECTOR_ENV = os.environ.get("MIHOMO_SELECTOR", "")
+TEST_URLS = [u.strip() for u in os.environ.get(
+    "MIHOMO_GUARD_TEST_URLS",
+    "https://www.gstatic.com/generate_204,https://api.ipify.org").split(",") if u.strip()]
+DELAY_URL = os.environ.get("MIHOMO_GUARD_DELAY_URL") or TEST_URLS[0]
+UPDATE_CMD = os.environ.get("MIHOMO_GUARD_UPDATE_CMD", "").strip() or \
+    (os.path.join(HOME, "bin", "clash-update")
+     if os.access(os.path.join(HOME, "bin", "clash-update"), os.X_OK) else "")
+UPDATE_COOLDOWN = int(os.environ.get("MIHOMO_GUARD_UPDATE_COOLDOWN", "1800"))
+MIN_ALIVE = float(os.environ.get("MIHOMO_GUARD_MIN_ALIVE", "0.3"))
+LOG = os.environ.get("MIHOMO_GUARD_LOG") or os.path.join(CONF_DIR, "guard.log")
+STATE = os.environ.get("MIHOMO_GUARD_STATE") or os.path.join(CONF_DIR, "guard.state")
+
+# Proxy node types that are groups/decisions, not selectable real nodes.
+GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance",
+               "Direct", "Reject", "RejectDrop", "Compatible", "Pass"}
+# Minimal env for curl so proxy vars inherited from the caller cannot leak in.
+CURL_ENV = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": HOME}
+
+DEBUG = os.environ.get("MIHOMO_GUARD_DEBUG") == "1"
+
+
+def log(msg):
+    line = "%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+    if DEBUG:
+        sys.stderr.write(line)
+    try:
+        os.makedirs(os.path.dirname(LOG) or ".", exist_ok=True)
+        if os.path.exists(LOG) and os.path.getsize(LOG) > 1 << 20:
+            os.replace(LOG, LOG + ".1")
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+def api(path, method="GET", data=None, timeout=10):
+    headers = {"Content-Type": "application/json"}
+    if CTRL_SECRET:
+        headers["Authorization"] = "Bearer " + CTRL_SECRET
+    req = urllib.request.Request(
+        CTRL + path, method=method,
+        data=json.dumps(data).encode() if data is not None else None,
+        headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read()
+    try:
+        return json.loads(body) if body else {}
+    except ValueError:
+        return {}
+
+
+def enc(s):
+    return urllib.parse.quote(s, safe="")
+
+
+def real_ok(url, timeout=8):
+    """True if an actual HTTP(S) GET through the mixed proxy succeeds."""
+    try:
+        p = subprocess.run(
+            ["curl", "-s", "-m", str(timeout), "-x", "http://" + MIXED,
+             "-o", "/dev/null", "-w", "%{http_code}", url],
+            capture_output=True, text=True, env=CURL_ENV, timeout=timeout + 3)
+        return p.stdout.strip() in ("200", "204")
+    except Exception:
+        return False
+
+
+def proxy_healthy():
+    return all(real_ok(u) for u in TEST_URLS)
+
+
+def pick_selector(proxies):
+    """Which selector to manage.  Explicit env wins; otherwise the Selector
+    (excluding GLOBAL) that offers the most options — normally the
+    user-facing 'node selection' the rules point at."""
+    if SELECTOR_ENV:
+        return SELECTOR_ENV
+    best, best_n = "", -1
+    for name, v in proxies.items():
+        if v.get("type") == "Selector" and name.upper() != "GLOBAL":
+            n = len(v.get("all") or [])
+            if n > best_n:
+                best, best_n = name, n
+    return best
+
+
+def candidates(proxies, selector):
+    sel = proxies.get(selector) or {}
+    out = []
+    for name in (sel.get("all") or []):
+        p = proxies.get(name) or {}
+        if p.get("type") and p["type"] not in GROUP_TYPES:
+            out.append(name)
+    return out
+
+
+def delay(name):
+    try:
+        r = api("/proxies/%s/delay?timeout=4000&url=%s" % (enc(name), enc(DELAY_URL)))
+        d = r.get("delay")
+        return d if isinstance(d, int) and d > 0 else None
+    except Exception:
+        return None
+
+
+def set_selector(selector, name):
+    api("/proxies/%s" % enc(selector), method="PUT", data={"name": name})
+
+
+def measure(cand):
+    if not cand:
+        return []
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        out = [(n, d) for n, d in zip(cand, ex.map(delay, cand)) if d]
+    out.sort(key=lambda x: x[1])
+    return out
+
+
+def maybe_refresh_subscription(alive, total):
+    """Subscription-level outage -> run the configured refresh command
+    (rate-limited).  No-op when no refresh command is configured."""
+    if not UPDATE_CMD:
+        return False
+    if total and alive / total >= MIN_ALIVE:
+        return False
+    now = time.time()
+    try:
+        last = float(open(STATE).read().strip())
+    except Exception:
+        last = 0.0
+    if now - last < UPDATE_COOLDOWN:
+        log("alive %d/%d but subscription refresh on cooldown" % (alive, total))
+        return False
+    log("alive %d/%d (< %.0f%%) -> refreshing subscription: %s"
+        % (alive, total, MIN_ALIVE * 100, UPDATE_CMD))
+    try:
+        p = subprocess.run(shlex.split(UPDATE_CMD), capture_output=True,
+                           text=True, env=dict(CURL_ENV), timeout=180)
+        log("refresh rc=%d %s" % (p.returncode, (p.stderr or "").strip()[-200:]))
+    except Exception as e:
+        log("refresh failed: %r" % (e,))
+    try:
+        os.makedirs(os.path.dirname(STATE) or ".", exist_ok=True)
+        open(STATE, "w").write("%d" % now)
+    except OSError:
+        pass
+    return True
+
+
+def run(dry_run=False):
+    try:
+        proxies = api("/proxies")["proxies"]
+    except Exception as e:
+        log("controller unreachable (%s): %r" % (CTRL, e))
+        return
+    selector = pick_selector(proxies)
+    if not selector:
+        log("no selector found to manage (set MIHOMO_SELECTOR)")
+        return
+    if proxy_healthy():
+        return  # silent while healthy
+    cur = (proxies.get(selector) or {}).get("now", "?")
+    log("proxy UNHEALTHY (selector=%r now=%r) — probing candidates" % (selector, cur))
+    cand = candidates(proxies, selector)
+    measured = measure(cand)
+    log("%d/%d candidates alive" % (len(measured), len(cand)))
+    if not measured:
+        maybe_refresh_subscription(len(measured), len(cand))
+        try:
+            proxies = api("/proxies")["proxies"]
+        except Exception:
+            return
+        selector = pick_selector(proxies)
+        measured = measure(candidates(proxies, selector))
+        if not measured:
+            log("no alive node found — giving up this round")
+            return
+    if dry_run:
+        log("dry-run: best=%r (%dms); would switch %s" % (measured[0][0], measured[0][1], selector))
+        return
+    for name, d in measured[:5]:
+        set_selector(selector, name)
+        time.sleep(1.5)
+        if proxy_healthy():
+            log("switched %s -> %r (%dms) — OK" % (selector, name, d))
+            return
+        log("tried %r (%dms) but still unhealthy" % (name, d))
+    log("exhausted candidates, proxy still unhealthy")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="mihomo proxy health guard")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="report the node it would pick, without switching")
+    ap.add_argument("--status", action="store_true",
+                    help="print health + current selection, then exit")
+    a = ap.parse_args()
+    if a.status:
+        try:
+            proxies = api("/proxies")["proxies"]
+            sel = pick_selector(proxies)
+            print("selector :", sel, "->", (proxies.get(sel) or {}).get("now"))
+        except Exception as e:
+            print("controller unreachable:", e)
+        print("healthy  :", proxy_healthy())
+        return
+    run(dry_run=a.dry_run)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:  # never let the timer go failed
+        log("unexpected error: %r" % (e,))
+    sys.exit(0)

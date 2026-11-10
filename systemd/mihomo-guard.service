@@ -1,0 +1,26 @@
+[Unit]
+Description=Mihomo proxy health guard (auto-switch node when the proxy breaks)
+# Only meaningful where a mihomo/clash core runs with its external controller
+# on 127.0.0.1:9090.  Harmless elsewhere (it just logs "controller unreachable").
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Path is the documented placeholder — point it at the deployed copy.
+ExecStart=/srv/yatterra/host/mihomo-guard
+# Run as the same user that runs mihomo, with that user's HOME, so the guard
+# can read the core config dir and write its log/state there.
+User=sse
+Group=sse
+Environment=HOME=/home/sse
+# Optional overrides (uncomment / set in .env or a drop-in):
+# Environment=MIHOMO_CTRL=http://127.0.0.1:9090
+# Environment=MIHOMO_MIXED=127.0.0.1:7890
+# Environment=MIHOMO_SELECTOR=
+# Environment=MIHOMO_GUARD_UPDATE_CMD=%h/bin/clash-update
+# Never fails the timer: the script itself always exits 0.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target
