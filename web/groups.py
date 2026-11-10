@@ -318,9 +318,11 @@ def _windows_deployment_yaml(g):
             '          value: "--server=10.43.0.10 --server=223.5.5.5"'
         )
     # outbound proxy defaults (host mihomo) so the image can fetch the ISO;
-    # overridable by the group's custom env below.
+    # overridable by the group's custom env below, or disabled outright with
+    # YATTERRA_PROXY_MODE=off (then the Pod is opt-in via `proxy on`).
     _custom_keys = {str(k).upper() for k in (g.get("env") or {})}
-    for k, v in siteconf.proxy_env_defaults().items():
+    _proxy_env = siteconf.proxy_env_defaults() if siteconf.proxy_auto_enabled(g.get("env")) else {}
+    for k, v in _proxy_env.items():
         if k.upper() in _custom_keys:
             continue
         env_lines.append(f'        - name: {k}\n          value: {json.dumps(v)}')
@@ -434,9 +436,12 @@ def deployment_yaml(g):
         env_lines.append('        - name: CUDA_HOME\n          value: "/usr/local/cuda"')
         runtime_class = "      runtimeClassName: nvidia\n"
     # outbound proxy defaults (host mihomo core, rule mode routing). Skipped when
-    # the group overrides that key in its custom env below.
+    # the group overrides that key in its custom env below, or when the group
+    # opts out entirely with YATTERRA_PROXY_MODE=off — the Pod then comes up with
+    # no proxy env and the user turns it on per-shell with `proxy on`.
     _custom_keys = {str(k).upper() for k in (g.get("env") or {})}
-    for k, v in siteconf.proxy_env_defaults().items():
+    _proxy_env = siteconf.proxy_env_defaults() if siteconf.proxy_auto_enabled(g.get("env")) else {}
+    for k, v in _proxy_env.items():
         if k.upper() in _custom_keys:
             continue
         env_lines.append(f'        - name: {k}\n          value: {json.dumps(v)}')

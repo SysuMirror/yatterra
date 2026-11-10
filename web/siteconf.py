@@ -216,3 +216,15 @@ def proxy_env_defaults():
         "http_proxy": PROXY_URL, "https_proxy": PROXY_URL, "all_proxy": PROXY_URL,
         "no_proxy": NO_PROXY,
     }
+
+
+def proxy_auto_enabled(group_env):
+    """Whether a group wants the default outbound proxy injected into the Pod.
+
+    A group can opt out by setting ``YATTERRA_PROXY_MODE`` in its custom env to
+    off / manual / 0 / false / no (case-insensitive). The Pod then starts with
+    **no** proxy env and reaches the internet only after the interactive
+    ``proxy on`` command (the opt-in shell helper sourced from ~/.bashrc).
+    Anything else, or unset, keeps the historical always-on default."""
+    mode = str((group_env or {}).get("YATTERRA_PROXY_MODE", "auto")).strip().lower()
+    return mode not in ("off", "manual", "0", "false", "no")
