@@ -10,6 +10,7 @@ services survive pod restart and auto-restart on crash. Logs go to logfiles in
 ~/deploy/<name>/logs/; the platform tails them on demand.
 """
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -24,9 +25,11 @@ from urllib.parse import urlparse
 
 import audit
 import groups
+import nodes
 import siteconf
 
 STATE_FILE = siteconf.path("deploys.json")
+LOCK_DIR = siteconf.path("locks")      # 跨进程 flock 目录(同一 deploy 串行化)
 WEBHOOK_CONF = siteconf.path("webhook.conf")
 ALLOWED_HOSTS = ("github.com", "gitee.com")
 CLONE_TIMEOUT = 180            # clone/pull cap (s)
@@ -34,6 +37,9 @@ LOG_TAIL = 400                 # lines returned by logs()
 HEALTH_POLL_S = 2
 HEALTH_DEFAULT_TIMEOUT = 60
 MPS_TRAIN_COPERCENT = 35       # max active-thread % for training co-resident with serve (MPS)
+
+# Train-only "flexibility contract" env keys (single source; api/pods.py imports this).
+CONTRACT_KEYS = ("DEFER_OK", "PREEMPT_OK", "DEADLINE", "EST_DURATION_S", "DEADLINE_KIND")
 
 SUPERVISORD_CONF = "/home/cloud/deploy/supervisord.conf"
 PROGRAMS_DIR = "/home/cloud/deploy/programs"
@@ -60,6 +66,45 @@ files = /home/cloud/deploy/programs/*.conf
 
 
 # --- state ---
+def _state_lock(wait_max=10):
+    """状态文件(deploys.json)读改写互斥: 跨进程 flock, best-effort。
+
+    为什么: _mutate/add/remove_record 都是 load -> 改 -> save 的读改写, 而写者不止
+    部署流程(priority_kill 改 gpu、podwatch 改 report/画像…)。并发时是整个文件
+    last-writer-wins, 会丢掉别人的字段(report 里就出现过记录被“改写回去”)。
+    最多等 wait_max 秒, 超时就**降级照写**(宁可偶发丢字段, 也不让调用方无限卡住)。
+    返回 fd(即使降级也返回, 供 close); 调用方务必走 _state_unlock。
+    """
+    try:
+        os.makedirs(LOCK_DIR, exist_ok=True)
+        fd = os.open(os.path.join(LOCK_DIR, "deploys-state.lock"),
+                     os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return None
+    deadline = time.time() + max(0, wait_max)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.time() >= deadline:
+                return fd          # 降级: 未持锁, 照常写
+            time.sleep(0.05)
+
+
+def _state_unlock(fd):
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def load():
     if not os.path.exists(STATE_FILE):
         return {"deploys": {}}
@@ -96,17 +141,22 @@ def get(group, did):
 
 
 def _mutate(group, did, fn):
-    state = load()
-    deps = state.setdefault("deploys", {}).setdefault(group, [])
-    for d in deps:
-        if d["id"] == did:
-            fn(d)
-            save(state)
-            return d
-    return None
+    fd = _state_lock()          # load/改/save 全程持锁, 避免与其它写者互相覆盖
+    try:
+        state = load()
+        deps = state.setdefault("deploys", {}).setdefault(group, [])
+        for d in deps:
+            if d["id"] == did:
+                fn(d)
+                save(state)
+                return d
+        return None
+    finally:
+        _state_unlock(fd)
 
 
 def add(group, spec):
+    _fd = _state_lock()
     state = load()
     deps = state.setdefault("deploys", {}).setdefault(group, [])
     dep = {
@@ -127,6 +177,7 @@ def add(group, spec):
         "health_timeout": spec.get("health_timeout", HEALTH_DEFAULT_TIMEOUT),
         "env": dict(spec.get("env") or {}),      # per-deploy env (incl. P1-c contract keys)
         "report_token": secrets.token_hex(16),  # pod app 上报鉴权
+        "webhook_secret": spec.get("webhook_secret", ""),  # per-deploy push 回调密钥
         "last_ref": "",                         # 当前部署的 git ref
         "last_good_ref": "",                    # 最近通过健康检查的 ref
         "report": None,                         # 最新 app 上报 {state,metrics,message,ts}
@@ -134,20 +185,90 @@ def add(group, spec):
         "last_status": "pending",
         "last_msg": "",
     }
+    if dep["auto_deploy"] and not dep["webhook_secret"]:
+        dep["webhook_secret"] = secrets.token_hex(16)
+    # A CPU pod has no card: drop pin/vram/train-class before anything reads them.
+    dep.update(sanitize_gpu_fields(group, dep))
     deps.append(dep)
     save(state)
+    _state_unlock(_fd)
     return dep
 
 
 def update(group, did, **fields):
-    return _mutate(group, did, lambda d: d.update(fields))
+    return _mutate(group, did, lambda d: d.update(sanitize_gpu_fields(group, fields)))
+
+
+# --- GPU capability of the pod -------------------------------------------
+# A deploy can only be pinned/trained when the pod itself owns cards: the pod's
+# manifest injects NVIDIA_VISIBLE_DEVICES only for ``type == "gpu"`` groups, so
+# on a CPU pod CUDA_VISIBLE_DEVICES is a no-op and the train queue would wait on
+# a card that never comes.
+def _group_cards(group):
+    """``(known, gpu_ids)`` — ``known`` is False when the pod can't be looked up."""
+    try:
+        g = (groups.load_state().get("groups") or {}).get(group)
+    except Exception:
+        return False, []
+    if not g:
+        return False, []
+    if g.get("type") != "gpu":
+        return True, []
+    return True, sorted(g.get("gpus") or [])
+
+
+def group_gpu_ids(group):
+    """GPU ids assigned to this pod; [] for CPU / Windows / Android / NPU pods."""
+    return _group_cards(group)[1]
+
+
+def pod_supports_gpu(group):
+    """Whether a deploy on this pod can use a card at all.
+
+    Unknown pod (already deleted, state unreadable) answers True: never strip a
+    GPU pin on a guess — the pod is normally there and the fields are valid.
+    """
+    known, ids = _group_cards(group)
+    return bool(ids) or not known
+
+
+def sanitize_gpu_fields(group, fields):
+    """Neutralise GPU-only settings on a pod that has no GPU.
+
+    ``gpu`` / ``vram`` / the ``train`` scheduling class (and its P1-c contract
+    env) only mean something when the container actually owns a card.  Only keys
+    already present are touched — presence-driven callers stay presence-driven.
+    Returns a new dict (never mutates the input).
+    """
+    out = dict(fields or {})
+    if pod_supports_gpu(group):
+        return out
+    if "kind" in out:
+        out["kind"] = "serve"
+    for k in ("gpu", "vram"):
+        if k in out:
+            out[k] = ""
+    env = out.get("env")
+    if isinstance(env, dict):
+        out["env"] = {k: v for k, v in env.items() if k not in CONTRACT_KEYS}
+    return out
+
+
+def gpu_fields_normalized(group, fields):
+    """True when ``sanitize_gpu_fields`` would strip something from ``fields``
+    (i.e. the caller asked for GPU settings this pod can't have)."""
+    return sanitize_gpu_fields(group, fields) != (fields or {})
 
 
 def remove_record(group, did):
-    state = load()
-    deps = state.get("deploys", {}).get(group, [])
-    state["deploys"][group] = [d for d in deps if d["id"] != did]
-    save(state)
+    fd = _state_lock()
+    try:
+        state = load()
+        deps = state.get("deploys", {}).get(group, [])
+        state["deploys"][group] = [d for d in deps if d["id"] != did]
+        save(state)
+    finally:
+        _state_unlock(fd)
 
 
 # --- validation / helpers ---
@@ -214,9 +335,8 @@ def load_webhook_secret():
         return ""
 
 
-def verify_webhook(source, headers, body):
-    """Verify a webhook callback signature. Returns True/False."""
-    secret = load_webhook_secret()
+def _signature_ok(source, headers, body, secret):
+    """Core signature check for a single secret. False when secret is empty."""
     if not secret:
         return False
     if source == "github":
@@ -228,6 +348,41 @@ def verify_webhook(source, headers, body):
     # gitee: X-Gitee-Token header carries the secret verbatim
     tok = headers.get("X-Gitee-Token", "")
     return bool(tok) and hmac.compare_digest(tok, secret)
+
+
+def verify_global(source, headers, body):
+    """Verify a signature against the platform-wide webhook secret."""
+    return _signature_ok(source, headers, body, load_webhook_secret())
+
+
+def verify_for_deploy(source, headers, body, dep):
+    """Verify a signature against one deploy's per-deploy webhook secret."""
+    return _signature_ok(source, headers, body, (dep or {}).get("webhook_secret") or "")
+
+
+def verify_webhook(source, headers, body):
+    """Back-compat wrapper: verify against the global secret only."""
+    return verify_global(source, headers, body)
+
+
+def match_webhook(source, headers, body, repo_url, branch):
+    """Authorize a push for (repo_url, branch). Returns (matched, mode).
+
+    matched : list of (group, dep) to trigger
+    mode    : "per_deploy" (>=1 deploy's own secret signed the body),
+              "global"     (global secret signed it → all repo/branch matches),
+              None         (nothing authorized)
+
+    Per-deploy secrets only authorize deploys whose repo+branch already matched,
+    so a leaked per-deploy secret cannot trigger a different repo.
+    """
+    cands = find_by_repo_branch(repo_url, branch)
+    matched = [(g, d) for (g, d) in cands if verify_for_deploy(source, headers, body, d)]
+    if matched:
+        return matched, "per_deploy"
+    if verify_global(source, headers, body):
+        return cands, "global"
+    return [], None
 
 
 def find_by_repo_branch(repo_url, branch):
@@ -244,6 +399,18 @@ def find_by_repo_branch(repo_url, branch):
             if normalize_repo(d["repo"]) == norm and d["branch"] == branch:
                 out.append((group, d))
     return out
+
+
+def rotate_webhook_secret(group, did):
+    """Generate (or replace) a deploy's per-deploy webhook secret. Returns it."""
+    d = _mutate(group, did, lambda dep: dep.__setitem__("webhook_secret", secrets.token_hex(16)))
+    return (d or {}).get("webhook_secret", "")
+
+
+def webhook_source_for_repo(repo):
+    """Map a repo URL to its webhook source: 'github' / 'gitee' / ''."""
+    host = (urlparse((repo or "").strip()).hostname or "").lower()
+    return {"github.com": "github", "gitee.com": "gitee"}.get(host, "")
 
 
 def resolve_pod(group):
@@ -331,6 +498,57 @@ def browse(group, path):
 
 
 # --- credential injection ---
+_host_facts_cache = {}  # node -> (monotonic ts, facts dict)
+
+
+def _host_facts_remote(node):
+    """HOST_* facts for a remote node, one round-trip via nodes.run_on.
+
+    Cached ~60s (deploys re-render env often; the relay hop to spark costs
+    seconds). Never raises — on failure returns {} and the deploy simply
+    carries no HOST_*/GPU_* facts. N/A cells (GB10 memory.total) are dropped
+    rather than leaking '[N/A]' into env.
+    """
+    now = time.monotonic()
+    hit = _host_facts_cache.get(node)
+    if hit and now - hit[0] < 60:
+        return hit[1]
+    facts = {}
+    try:
+        cmd = (
+            "hostname; uname -r; nproc; "
+            "free -m | awk '/^Mem:/{print $2}'; "
+            "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits"
+        )
+        ok, out = nodes.run_on(node, cmd, timeout=20)
+        if ok:
+            lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
+            # stderr may interleave on failure; require the 3 mandatory lines
+            if len(lines) >= 3:
+                facts["HOST_NAME"] = lines[0]
+                facts["HOST_KERNEL"] = lines[1]
+                facts["HOST_CPU_COUNT"] = lines[2]
+                rest = lines[3:]
+                if rest and rest[0].isdigit():
+                    facts["HOST_MEM_MB"] = rest[0]
+                    rest = rest[1:]
+                names, mtot = [], []
+                for line in rest:
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 2 and parts[0] and "N/A" not in parts[0].upper():
+                        names.append(parts[0])
+                        if "N/A" not in parts[1].upper():
+                            mtot.append(parts[1])
+                if names:
+                    facts["GPU_MODELS"] = ",".join(names)
+                    if mtot:
+                        facts["GPU_MEM_TOTAL_MB"] = ",".join(mtot)
+    except Exception:
+        facts = {}
+    _host_facts_cache[node] = (now, facts)
+    return facts
+
+
 def _env_for_group(group):
     """Build env dict for a group's deploy.sh: endpoints + matching creds.
     Creds are matched by label == group name (case-insensitive)."""
@@ -406,7 +624,19 @@ def _env_for_group(group):
                 env[k] = str(v)
     except Exception:
         pass
-    # host facts (best-effort; never break deploys)
+    # host facts (best-effort; never break deploys). For groups placed on a
+    # remote node the facts describe THAT node (via nodes.run_on), not the
+    # platform host — a spark pod must see HOST_NAME=spark-b973 / GB10.
+    try:
+        placement = nodes.node_for(
+            groups.load_state().get("groups", {}).get(group) or {})
+        if placement:
+            for k, v in _host_facts_remote(placement).items():
+                if k not in env:
+                    env[k] = v
+            return env
+    except Exception:
+        pass
     try:
         import socket as _sock
         host = {
@@ -446,6 +676,15 @@ def _env_for_group(group):
     return env
 
 
+def _group_node(group):
+    """Node this group's deploys run on (default node when auto/unknown)."""
+    try:
+        g = groups.load_state().get("groups", {}).get(group) or {}
+        return nodes.node_for(g) or nodes.DEFAULT_NODE
+    except Exception:
+        return nodes.DEFAULT_NODE
+
+
 def _scheduling_ctx(dep, env):
     """Build the scheduling block for context.json from the alloc table."""
     base = {"model": "pooled", "kind": (dep.get("kind") or "serve").lower()}
@@ -454,6 +693,7 @@ def _scheduling_ctx(dep, env):
         rec = scheduler.get(dep["id"])
         if rec:
             base["gpu"] = rec.get("gpu")
+            base["node"] = rec.get("node") or nodes.DEFAULT_NODE
             base["status"] = rec.get("status")
             base["preemptable"] = base["kind"] == "train"
         if base["kind"] == "train":
@@ -766,20 +1006,90 @@ def _notify_deploy_result(group, dep, ok, msg):
         pass
 
 
-def run(group, dep):
+def _deploy_lock(group, dep_id, wait=False, wait_max=900):
+    """同一 deploy 的跨进程互斥锁(flock)。返回 (fd, got)。
+
+    为什么要锁: webhook 每次投递都起一个线程, GitHub 重投/连推两下/网页端同时点
+    都会对同一份 clone 并发跑 git + supervisorctl restart —— 会撞 git index.lock、
+    重复重启、健康门限互相打架。这里让同一记录严格串行。
+
+    wait=False: 拿不到立即返回 (None, False) -> 调用方回"已有部署在进行中";
+    wait=True : 最多等 wait_max 秒再放弃 —— webhook 在**独立线程**里等(见 app.py),
+                不占 gunicorn 的请求线程; 等到的后续跑会重新取最新 ref, 自然合并。
+    fd 由调用方 close(进程退出/崩溃时内核也会自动释放, 不存在"锁永久卡死")。
+    """
+    os.makedirs(LOCK_DIR, exist_ok=True)
+    fd = os.open(os.path.join(LOCK_DIR, "deploy-%s-%s.lock" % (group, dep_id)),
+                 os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.time() + max(0, wait_max)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd, True
+        except OSError:
+            if not wait or time.time() >= deadline:
+                os.close(fd)
+                return None, False
+            time.sleep(2)
+
+
+def run(group, dep, wait=False, skip_if_same_ref=False):
     """Clone/pull, (re)write program conf, (re)start via supervisorctl.
-    Returns (ok, msg). 结束(成功/失败)后异步推送部署结果通知。"""
+    Returns (ok, msg). 结束(成功/失败)后异步推送部署结果通知。
+
+    wait / skip_if_same_ref 供 push-to-deploy(webhook)用:
+      wait=True           同一记录已有部署在跑就排队等待(后台线程里等，不阻塞请求)
+      skip_if_same_ref=True  ref 未变化且程序 RUNNING 时跳过重启(重投/重推幂等)
+    """
+    fd, got = _deploy_lock(group, dep["id"], wait=wait)
+    if not got:
+        msg = "已有部署正在进行中，本次未执行（请稍后重试）"
+        audit.record("deploy_run",
+                     detail="%s/%s id=%s skipped=locked" % (group, dep.get("name"), dep["id"]),
+                     module="deploys")
+        return False, msg
     ok = None
+    msg = ""
     try:
-        ok, msg = _run_impl(group, dep)
+        ok, msg = _run_impl(group, dep, skip_if_same_ref=skip_if_same_ref)
         return ok, msg
     finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
         # 通知绝不阻塞/搞挂部署流程: 独立线程 + 全量吞异常
-        threading.Thread(target=_notify_deploy_result, args=(group, dep, ok),
+        # (msg 必须一起传: 早期漏传导致线程 TypeError -> 部署结果通知静默丢失)
+        threading.Thread(target=_notify_deploy_result, args=(group, dep, ok, msg),
                          daemon=True).start()
 
 
-def _run_impl(group, dep):
+def run_bounded(group, dep, budget=110):
+    """同步调用方(网页/API 的"部署"按钮)专用: 在后台线程里跑, 最多等 budget 秒。
+
+    为什么: gunicorn 的 worker timeout=120s, 而一次部署最坏 = clone 180s + 健康门限 60s。
+    直接 `deploys.run()` 同步等, 超 120s 会让 worker 被 SIGKILL —— 部署线程在半途被杀,
+    可能留下"已 reset 代码但没重启/没回滚"的状态。
+    这里把真正的部署放进**后台线程**(线程不会被 worker timeout 杀), 请求本身最多阻塞
+    budget 秒: 常见情况(十几秒)行为完全不变; 慢情况返回"仍在进行中", 前端去日志看结果。
+    """
+    box = {}
+
+    def _work():
+        try:
+            box["r"] = run(group, dep)
+        except Exception as e:              # 异常也带回去, 别让调用方拿到空
+            box["r"] = (False, "部署异常: %s" % e)
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(max(1, budget))
+    if t.is_alive():
+        return False, "部署仍在进行中（已超过 %ds 未结束），请稍后在日志/状态中查看结果" % budget
+    return box.get("r") or (False, "部署线程无返回")
+
+
+def _run_impl(group, dep, skip_if_same_ref=False):
     if groups.pod_status(group) != "Running":
         msg = "Pod 未运行"
         update(group, dep["id"], last_status="failed", last_msg=msg)
@@ -812,8 +1122,11 @@ def _run_impl(group, dep):
     # 2a) GPU placement + scheduling-class / checkpoint env
     try:
         import scheduler
+        node = _group_node(group)
         kind = (dep.get("kind") or "serve").lower()
-        gpu = scheduler.gpu_for_deploy(dep, group)
+        if not pod_supports_gpu(group):
+            kind = "serve"      # CPU pod: the train class can never be placed
+        gpu = scheduler.gpu_for_deploy(dep, group, node)
         if gpu is None and kind == "train":
             # P1-c (C5): a delayable train with no free card must NOT start on
             # the default card.  Queue it for a valley instead.  Default-off:
@@ -829,9 +1142,11 @@ def _run_impl(group, dep):
                 pass
         if gpu is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu)
-            # MPS: dynamic cap when training co-resident with a serve deploy
-            if kind == "train" and gpu in scheduler.serve_gpus():
-                pct = scheduler.mps_target_percent(gpu)
+            # MPS: dynamic cap when training co-resident with a serve deploy,
+            # on nodes that actually run an MPS daemon (spark/GB10 does not).
+            if (kind == "train" and scheduler.has_mps(node)
+                    and gpu in scheduler.serve_gpus(node)):
+                pct = scheduler.mps_target_percent(gpu, node)
                 env["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(pct)
                 scheduler.set_mps_pct(dep["id"], pct)
         env["KIND"] = kind
@@ -846,6 +1161,20 @@ def _run_impl(group, dep):
 
     # 2a.1) capture deployed git ref
     ref = _current_ref(group, dep)
+    prev_ref = dep.get("last_ref") or ""
+    if skip_if_same_ref and ref and ref == prev_ref:
+        # 幂等闸门: 同一 ref 重复投递(=GitHub redelivery / 双 push 同一 commit)不再重启,
+        # 只在程序确实 RUNNING 时跳过 —— 崩了/停了还是要重起一次。
+        rc, out, _ = _supctl(group, "status", "deploy-%s" % dep["id"], timeout=10)
+        if "RUNNING" in (out or ""):
+            msg = ("ref 未变化 (%s) 且程序运行中，跳过重启（重复投递/幂等）"
+                   % ref[:12])
+            update(group, dep["id"], last_status="ok", last_msg=msg)
+            audit.record("deploy_run",
+                         detail="%s/%s id=%s skipped ref=%s" % (group, dep.get("name"),
+                                                                dep["id"], ref[:12]),
+                         module="deploys")
+            return True, msg
     if ref:
         update(group, dep["id"], last_ref=ref)
         dep["last_ref"] = ref
@@ -885,8 +1214,13 @@ def _run_impl(group, dep):
     started = rc == 0
 
     # 4) health gate + rollback (only if health path configured)
+    #    注意: supervisorctl 的 rc 只当参考 —— restart 时旧进程慢退出/端口没让出来会让
+    #    新进程立刻退出, supervisord 的 autorestart 随后就把它拉回来了(实测: 记录被判
+    #    failed, 服务其实是好的)。所以只要配了 health, 就一律以健康门限为准。
+    if not started:
+        sup_out += "\n(supervisorctl rc!=0，改以健康门限复核)"
     gate_msg = ""
-    if started and (dep.get("health") or "").strip():
+    if (dep.get("health") or "").strip():
         # re-read latest dep (last_ref updated above) for the gate
         dep = get(group, dep["id"]) or dep
         gok, gate_msg = _health_gate(group, dep, env)
@@ -917,14 +1251,19 @@ def _build_env(group, dep, gpu=None, resume=False):
     _per_deploy_env(dep, env)
     try:
         import scheduler
+        node = _group_node(group)
         kind = (dep.get("kind") or "serve").lower()
-        if gpu is None:
-            gpu = scheduler.gpu_for_deploy(dep, group)
+        if not pod_supports_gpu(group):
+            kind, gpu = "serve", None     # CPU pod: never inject a card
+        elif gpu is None:
+            gpu = scheduler.gpu_for_deploy(dep, group, node)
         if gpu is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu)
-            # MPS: dynamic cap when training co-resident with a serve deploy
-            if kind == "train" and gpu in scheduler.serve_gpus():
-                pct = scheduler.mps_target_percent(gpu)
+            # MPS: dynamic cap when training co-resident with a serve deploy,
+            # on nodes that actually run an MPS daemon (spark/GB10 does not).
+            if (kind == "train" and scheduler.has_mps(node)
+                    and gpu in scheduler.serve_gpus(node)):
+                pct = scheduler.mps_target_percent(gpu, node)
                 env["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(pct)
                 scheduler.set_mps_pct(dep["id"], pct)
         env["KIND"] = kind

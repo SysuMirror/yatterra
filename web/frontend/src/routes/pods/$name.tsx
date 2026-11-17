@@ -32,6 +32,13 @@ import { useToastStore } from '@/stores/toast'
 import { podStatusLabel } from '@/lib/format'
 import { DOMAIN, PUBLIC_HOST, PUBLIC_SCHEME, publicUrl, subdomainUrl } from '@/lib/site'
 
+const POD_STAGES = [
+  { id: 'watch', label: '看状态', keys: ['monitor', 'usage', 'profile'] },
+  { id: 'work', label: '干活', keys: ['connect', 'terminal', 'files', 'logs', 'app-logs'] },
+  { id: 'ship', label: '发布', keys: ['creds', 'domains', 'deploys'] },
+  { id: 'admin', label: '管理', keys: ['members', 'settings'] },
+] as const
+
 const tabDefs = [
   { key: 'monitor', label: '监控', icon: <Activity size={15} /> },
   { key: 'connect', label: '连接', icon: <Link2 size={15} /> },
@@ -52,6 +59,7 @@ export default function PodDetail() {
   const { name } = useParams()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('monitor')
+  const [stage, setStage] = useState<'all' | 'watch' | 'work' | 'ship' | 'admin'>('all')
   const toast = useToastStore((s) => s.add)
   const qc = useQueryClient()
   const [joinReason, setJoinReason] = useState('')
@@ -75,6 +83,24 @@ export default function PodDetail() {
   })
 
   const noAccess = error && (error as any)?.status === 403
+
+  useEffect(() => {
+    if (!name) return
+    const saved = sessionStorage.getItem(`ux-pod-tab:${name}`)
+    if (saved && tabDefs.some((t) => t.key === saved)) setActiveTab(saved)
+  }, [name])
+
+  const stageKeys = stage === 'all' ? null : POD_STAGES.find((s) => s.id === stage)?.keys
+  const visibleTabs = stageKeys ? tabDefs.filter((t) => (stageKeys as readonly string[]).includes(t.key)) : tabDefs
+  const chooseTab = (key: string) => {
+    setActiveTab(key)
+    if (name) sessionStorage.setItem(`ux-pod-tab:${name}`, key)
+  }
+  const chooseStage = (id: 'all' | 'watch' | 'work' | 'ship' | 'admin') => {
+    setStage(id)
+    const keys = id === 'all' ? tabDefs.map((t) => t.key) : [...(POD_STAGES.find((s) => s.id === id)?.keys ?? [])]
+    if (!keys.includes(activeTab)) chooseTab(keys[0] ?? 'monitor')
+  }
 
   const joinPod = useMutation({
     mutationFn: () => api.post(`/pods/${name}/join`, { reason: joinReason }),
@@ -137,6 +163,9 @@ export default function PodDetail() {
   const running = status === 'Running'
   const statusVariant = running ? 'ok' : status === 'Stopped' ? 'muted' : status === 'Failed' ? 'bad' : 'accent'
   const canManage = pod?.my_role === 'owner' || pod?.my_role === 'admin' || pod?.my_role === 'super'
+  // Deploy management is open to members too (owner/member/admin/super); Pod
+  // settings and membership stay owner-only (canManage above).
+  const canManageDeploys = ['owner', 'member', 'admin', 'super'].includes(pod?.my_role)
 
   return (
     <>
@@ -151,7 +180,11 @@ export default function PodDetail() {
             <DocHint section="pods" item={4} label="新手部署文档" onboardingTarget="page-docs" />
           </div>
           <p className="text-sm text-muted mt-0.5 truncate">
-            {pod?.owners?.[0] && `所有者: ${pod?.labels?.[pod.owners[0]] || pod.owners[0]}`}{pod?.my_role && ` · 角色: ${pod.my_role === 'owner' ? '负责人' : pod.my_role}`}
+            {pod?.owners?.[0] && `所有者: ${pod?.labels?.[pod.owners[0]] || pod.owners[0]}`}{pod?.my_role_for_display && ` · 角色: ${
+              pod.my_role_for_display === 'owner' ? '负责人'
+              : pod.my_role_for_display === 'super' || pod.my_role_for_display === 'admin' ? '管理员'
+              : pod.my_role_for_display
+            }`}
           </p>
         </div>
 
@@ -183,7 +216,15 @@ export default function PodDetail() {
       />
       </div>
 
-      <Tabs onboardingPrefix="pod-tab" tabs={tabDefs} active={activeTab} onChange={setActiveTab} className="mb-6" swipeable />
+      <div data-ux="ux-pod-stages" className="mb-3 flex flex-wrap gap-2">
+        <button type="button" aria-pressed={stage === 'all'} className="rounded-md border border-black/10 px-2 py-1 text-xs" onClick={() => chooseStage('all')}>全部步骤</button>
+        {POD_STAGES.map((s) => (
+          <button key={s.id} type="button" aria-pressed={stage === s.id} className="rounded-md border border-black/10 px-2 py-1 text-xs" onClick={() => chooseStage(s.id)}>{s.label}</button>
+        ))}
+      </div>
+      <div data-ux="ux-pod-tab-memory">
+        <Tabs onboardingPrefix="pod-tab" tabs={visibleTabs} active={activeTab} onChange={chooseTab} className="mb-6" swipeable />
+      </div>
 
       <AnimatePresence mode="wait">
         <motion.div
@@ -202,7 +243,7 @@ export default function PodDetail() {
           {activeTab === 'app-logs' && <AppLogsTab podName={name!} />}
           {activeTab === 'creds' && <CredsTab podName={name!} pod={pod} />}
           {activeTab === 'domains' && <SubdomainsTab podName={name!} />}
-          {activeTab === 'deploys' && <DeploysTab podName={name!} canManage={canManage} />}
+          {activeTab === 'deploys' && <DeploysTab podName={name!} canManage={canManageDeploys} />}
           {activeTab === 'profile' && <ProfileTab podName={name!} />}
           {activeTab === 'usage' && <UsageTab podName={name!} />}
           {activeTab === 'members' && <MembersTab podName={name!} canManage={canManage} />}
@@ -215,6 +256,7 @@ export default function PodDetail() {
 }
 
 function ConnectTab({ pod }: { pod?: any }) {
+  const toast = useToastStore((s) => s.add)
   const [pwVisible, setPwVisible] = useState(false)
   const [sshCfgOpen, setSshCfgOpen] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
@@ -277,7 +319,7 @@ function ConnectTab({ pod }: { pod?: any }) {
             <div className="px-4 pb-3 space-y-2">
               <p className="text-xs text-muted">添加到本地 <code className="font-mono bg-black/[0.04] px-1 rounded">~/.ssh/config</code> 即可 <code className="font-mono bg-black/[0.04] px-1 rounded">ssh {podName}</code> 直连。</p>
               <pre className="bg-[#1d1d1f] text-[#f5f5f7] text-xs leading-6 p-3 rounded-lg overflow-x-auto">{sshConfigSnippet}</pre>
-              <Button variant="secondary" size="sm" onClick={() => navigator.clipboard.writeText(sshConfigSnippet)}>复制</Button>
+              <Button data-ux="ux-ssh-copied" variant="secondary" size="sm" onClick={() => { navigator.clipboard.writeText(sshConfigSnippet).then(() => toast({ type: 'success', message: 'SSH 配置已复制' })).catch(() => toast({ type: 'error', message: '复制失败，请手动选择上面的配置' })) }}>复制</Button>
             </div>
           )}
         </div>

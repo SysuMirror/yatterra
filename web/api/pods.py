@@ -12,7 +12,9 @@ from flask import Blueprint, request, jsonify, g, Response, current_app
 import siteconf
 users = import_module("users")
 import groups, lifecycle, audit, deploys
+import nodes
 import contract
+import quota
 import minio_svc as minio_mod
 import db_svc as db_mod
 import cpu_stats, gpu_stats, metrics
@@ -73,7 +75,11 @@ def _parse_health_timeout(value):
 # contract._sources(); these UPPER keys are how the UI opts a train deploy into
 # valley-deferral / preemption.  Absent keys fall back to contract defaults
 # (defer_ok=False for every kind) — so a deploy created without them is unchanged.
-_CONTRACT_KEYS = ("DEFER_OK", "PREEMPT_OK", "DEADLINE", "EST_DURATION_S", "DEADLINE_KIND")
+# Train-only flexibility-contract env keys — single source is the deploy store.
+# getattr default: some tests load this file with ``deploys`` stubbed out.
+_CONTRACT_KEYS = tuple(getattr(deploys, "CONTRACT_KEYS",
+                               ("DEFER_OK", "PREEMPT_OK", "DEADLINE",
+                                "EST_DURATION_S", "DEADLINE_KIND")))
 
 
 def _contract_env(b, kind):
@@ -95,6 +101,68 @@ def _contract_env(b, kind):
 
 
 pods_bp = Blueprint("pods", __name__, url_prefix="/api/pods")
+
+
+def _deploy_edit_fields(dep, b):
+    """Build a partial-update dict for an existing deploy from a request body.
+
+    Only keys present in ``b`` are changed (presence-driven), so the legacy
+    contract-only PUT (``{kind:'train', defer_ok:...}``) keeps working and does
+    NOT wipe repo/branch/etc.  Returns ``(fields, error)`` where ``error`` is a
+    ``(response, status)`` tuple on validation failure.
+    """
+    fields = {}
+    source = dep.get("source") or "repo"
+    for key in ("repo", "branch", "subdir", "gpu", "vram", "health"):
+        if key not in b:
+            continue
+        if source == "local" and key in ("repo", "branch", "subdir"):
+            continue
+        val = (b.get(key) or "").strip()
+        if key == "repo":
+            ok, err = deploys.validate_repo(val)
+            if not ok:
+                return None, (jsonify({"error": err}), 400)
+        fields[key] = val
+    if source == "local" and "script" in b:
+        val = (b.get("script") or "").strip()
+        if val:
+            ok, err = deploys.validate_script(val)
+            if not ok:
+                return None, (jsonify({"error": err}), 400)
+            fields["script"] = val
+    if "mode" in b:
+        mode = (b.get("mode") or "").strip()
+        if mode not in ("service", "oneshot"):
+            return None, (jsonify({"error": "mode 必须为 service 或 oneshot"}), 400)
+        fields["mode"] = mode
+    if "kind" in b:
+        kind = (b.get("kind") or "").strip()
+        if kind not in ("serve", "train"):
+            return None, (jsonify({"error": "kind 必须为 serve 或 train"}), 400)
+        fields["kind"] = kind
+    if "health_timeout" in b:
+        fields["health_timeout"] = _parse_health_timeout(b.get("health_timeout"))
+    if "token" in b:
+        tok = b.get("token")
+        if tok is None or b.get("clear_token"):
+            fields["token"] = ""              # explicit clear
+        elif str(tok).strip():
+            fields["token"] = str(tok).strip()  # overwrite
+        # blank string → keep existing token
+    if "auto_deploy" in b:
+        fields["auto_deploy"] = bool(b.get("auto_deploy")) and source != "local"
+    # flexibility contract (train): rebuild env only when the body speaks to it,
+    # so an unrelated partial edit (e.g. health only) never wipes an existing
+    # train deploy's contract keys.
+    kind = fields.get("kind", dep.get("kind") or "serve")
+    if "kind" in b or any(k.lower() in b for k in _CONTRACT_KEYS):
+        env = dict(dep.get("env") or {})
+        for k in _CONTRACT_KEYS:
+            env.pop(k, None)
+        env.update(_contract_env(b, kind))
+        fields["env"] = env
+    return fields, None
 
 # ── Quickstart templates (mirrored from app.py) ───────────────
 _TEMPLATES = {
@@ -316,6 +384,7 @@ if [ ! -d .venv ]; then python3 -m venv .venv; fi
     },
     "vllm": {
         "name": "vllm-serve",
+        "needs_gpu": True,      # 无卡 Pod 上 vLLM 起不来，apply_template 会拒绝
         "files": {
             "deploy.sh": """#!/bin/bash
 set -e
@@ -361,7 +430,7 @@ def list_pods():
     except (ValueError, TypeError):
         page = 1
     try:
-        per_page = min(100, max(1, int(request.args.get("per_page", 50))))
+        per_page = min(500, max(1, int(request.args.get("per_page", 50))))
     except (ValueError, TypeError):
         per_page = 50
 
@@ -386,13 +455,23 @@ def list_pods():
             "cpu": pod.get("cpu"),
             "mem": pod.get("mem"),
             "storage": pod.get("storage"),
+            "node": pod.get("node", "auto"),
+            "tag": pod.get("tag"),
+            # effective placement (auto resolved to the default node) — the
+            # frontend shows this as the pod's location badge
+            "node_effective": nodes.node_for(pod) or nodes.DEFAULT_NODE,
             "status": st,
             "owners": owners,
             "members": members,
             "pending": pod.get("pending", []),
             "owner_labels": [labels.get(o, o) for o in owners],
             "member_labels": [labels.get(m, m) for m in members],
+            # ``my_role`` is the *effective* role used for permission gating
+            # (super/admin are owners everywhere); the two extras are what the
+            # UI shows, so implicit admin ownership is not displayed.
             "my_role": role,
+            "my_role_explicit": users.pod_role_explicit(u, pod),
+            "my_role_for_display": users.pod_display_role(u, pod),
         })
 
     total = len(all_pods)
@@ -415,16 +494,34 @@ def create_pod():
     gpus = None
     if b.get("gpus"):
         gpus = [int(x) for x in str(b["gpus"]).split(",") if x.strip()]
+    # 活动资源上限：UniSSO 用户超限直接拒绝（返回可读的中文提示）。
+    try:
+        quota.validate_create(g.api_user, cpu=b.get("cpu"), mem=b.get("mem"),
+                              storage=b.get("storage"), gpus=gpus or None)
+    except quota.QuotaError as e:
+        return jsonify({"error": str(e)}), 400
     try:
         pod = groups.create_group(
             b.get("name", ""), gpus=gpus or None,
             cpu=b.get("cpu"), mem=b.get("mem"),
-            storage=b.get("storage"), creator=_actor())
+            storage=b.get("storage"), creator=_actor(),
+            node=b.get("node") or "auto", tag=b.get("tag"))
         audit.record("api_create_pod", detail=pod["name"], actor=_actor())
         return jsonify({"ok": True, "name": pod["name"]}), 201
+    except quota.QuotaError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         current_app.logger.warning("create_pod failed: %s", e, exc_info=True)
         return jsonify({"error": "创建 Pod 失败，请检查名称是否合法或已存在"}), 400
+
+
+# ═══════════════════════════════════════════════════════════════
+#  GET /api/pods/limits  — 活动资源上限（供创建表单做约束）
+# ═══════════════════════════════════════════════════════════════
+@pods_bp.route("/limits", methods=["GET"])
+@api_auth()
+def pod_limits():
+    return jsonify(quota.limits(g.api_user))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -463,6 +560,9 @@ def get_pod(name):
         "cpu": pod.get("cpu"),
         "mem": pod.get("mem"),
         "storage": pod.get("storage"),
+        "node": pod.get("node", "auto"),
+        "node_effective": nodes.node_for(pod) or nodes.DEFAULT_NODE,
+        "tag": pod.get("tag"),
         "status": st,
         "owners": _owners,
         "members": _members,
@@ -471,6 +571,8 @@ def get_pod(name):
         "creator": pod.get("creator", ""),
         "creator_label": _labels.get(pod.get("creator", ""), pod.get("creator", "")),
         "my_role": role,
+        "my_role_explicit": users.pod_role_explicit(u, pod),
+        "my_role_for_display": users.pod_display_role(u, pod),
         "password": pod.get("password", ""),
         "ssh_public": pod.get("ssh_public", 0),
         "web_public": pod.get("web_public", 0),
@@ -528,6 +630,24 @@ def restart_pod(name):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  POST /api/pods/<name>/migrate  — move pod to another node (LAN)
+#  body: {"node": "spark"|"wz8", "exclude_weights": true}
+# ═══════════════════════════════════════════════════════════════
+@pods_bp.route("/<name>/migrate", methods=["POST"])
+@api_pod("owner")
+def migrate_pod(name):
+    b = _body()
+    node = b.get("node")
+    exclude_weights = b.get("exclude_weights", True)
+    try:
+        g = groups.migrate_group(name, node, exclude_weights=exclude_weights)
+        audit.record("api_migrate_pod", detail=f"{name}->{node}", actor=_actor())
+        return jsonify({"ok": True, "node": g.get("node", "auto")})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+# ═══════════════════════════════════════════════════════════════
 #  POST /api/pods/<name>/resize  — resize pod resources
 # ═══════════════════════════════════════════════════════════════
 @pods_bp.route("/<name>/resize", methods=["POST"])
@@ -537,13 +657,31 @@ def resize_pod(name):
     cpu = b.get("cpu")
     mem = b.get("mem")
     storage = b.get("storage")
+    # 活动资源上限：UniSSO 用户超限的维度夹取到上限（而非报错）。
+    cpu, mem, storage, clamped = quota.clamp_resize(g.api_user, cpu, mem, storage)
     try:
         g = groups.resize_group(name, cpu, mem, storage=storage)
         audit.record("api_resize_pod",
-                     detail=f"{name} cpu={cpu} mem={mem} storage={storage}",
+                     detail=f"{name} cpu={cpu} mem={mem} storage={storage}"
+                            + (f" clamped={clamped}" if clamped else ""),
                      actor=_actor())
         return jsonify({"ok": True, "cpu": g["cpu"], "mem": g["mem"],
-                        "storage": g.get("storage")})
+                        "storage": g.get("storage"), "clamped": clamped})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+# ═══════════════════════════════════════════════════════════════
+#  POST /api/pods/<name>/tag  — set/clear the activity tag
+# ═══════════════════════════════════════════════════════════════
+@pods_bp.route("/<name>/tag", methods=["POST"])
+@api_pod("owner")
+def set_pod_tag(name):
+    b = _body()
+    try:
+        tag = groups.set_tag(name, b.get("tag"), actor=_actor())
+        audit.record("api_pod_tag", detail=f"{name} tag={tag}", actor=_actor())
+        return jsonify({"ok": True, "tag": tag})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -1180,12 +1318,15 @@ def apply_template(name):
         return jsonify({"error": "未知模板: " + tpl_id}), 400
     if groups.pod_status(name) != "Running":
         return jsonify({"error": "Pod 未运行"}), 400
+    if tpl.get("needs_gpu") and not deploys.pod_supports_gpu(name):
+        # 无卡 Pod 跑 vLLM 只会反复 OOM/报 CUDA 不可用。
+        return jsonify({"error": "该模板需要 GPU，但本 Pod 未分配显卡"}), 400
 
     tpl_name = tpl["name"]
     # Re-run if deploy already exists
     existing = [d for d in deploys.list_for(name) if d.get("name") == tpl_name]
     if existing:
-        ok, msg = deploys.run(name, existing[0])
+        ok, msg = deploys.run_bounded(name, existing[0])
         return jsonify({"ok": ok, "msg": msg or "已重新部署",
                         "deploy_id": existing[0]["id"]})
 
@@ -1211,7 +1352,7 @@ def apply_template(name):
             "auto_deploy": False, "health": "/health", "health_timeout": 60,
         }
         dep = deploys.add(name, spec)
-        ok, msg = deploys.run(name, dep)
+        ok, msg = deploys.run_bounded(name, dep)
         audit.record("api_template_apply",
                      detail=f"{name}/{tpl_name} ok={ok}", actor=_actor())
         return jsonify({"ok": ok, "msg": msg, "deploy_id": dep["id"]})
@@ -1497,39 +1638,50 @@ def list_deploys(name):
         out.append({
             "id": d["id"], "name": d.get("name"), "repo": d.get("repo"),
             "branch": d.get("branch", ""), "kind": d.get("kind", "serve"),
-            "source": d.get("source", "repo"),
+            "source": d.get("source", "repo"), "script": d.get("script", ""),
+            "subdir": d.get("subdir", ""), "mode": d.get("mode", "service"),
+            "gpu": d.get("gpu", ""), "vram": d.get("vram", ""),
+            "health": d.get("health", ""), "health_timeout": d.get("health_timeout", ""),
             "state": st.get("state"), "auto_deploy": d.get("auto_deploy", False),
             "last_ref": (d.get("last_ref") or "")[:12],
+            "has_token": bool(d.get("token")),
+            "has_webhook_secret": bool(d.get("webhook_secret")),
             "contract": contract.contract_for(name, d),
         })
-    return jsonify({"deploys": out})
+    # Whether this Pod owns cards at all: without them the UI hides the
+    # inference/training class and the GPU pin (both are no-ops on a CPU pod).
+    return jsonify({"deploys": out,
+                    "gpu_capable": deploys.pod_supports_gpu(name),
+                    "gpus": deploys.group_gpu_ids(name)})
 
 
 @pods_bp.route("/<name>/deploys/<did>", methods=["PATCH", "PUT"])
-@api_pod("owner")
+@api_pod("member")
 def update_deploy(name, did):
-    """Edit a train deploy's flexibility contract (P1-c).  Body keys mirror the
-    create form: kind, vram, defer_ok, preempt_ok, deadline, est_duration_s,
-    deadline_kind.  Only ``train`` carries a contract; serve is rejected."""
+    """Edit an existing deploy.  Editable: repo, branch, subdir, token, mode,
+    kind, gpu, vram, health, health_timeout, auto_deploy, plus the train
+    flexibility contract (kind/defer_ok/preempt_ok/deadline/deadline_kind/
+    est_duration_s).  Only keys present in the body are changed."""
     b = _body()
     dep = deploys.get(name, did)
     if not dep:
         return jsonify({"error": "部署不存在"}), 404
-    kind = str(b.get("kind") or dep.get("kind") or "serve").strip().lower()
-    if kind != "train":
-        return jsonify({"error": "仅训练(池化)部署支持弹性契约"}), 400
-    fields = {}
-    if "vram" in b:
-        fields["vram"] = str(b.get("vram") or "").strip()
-    env = dict(dep.get("env") or {})
-    for k in _CONTRACT_KEYS:
-        env.pop(k, None)
-    env.update(_contract_env(b, kind))
-    fields["env"] = env
+    fields, err = _deploy_edit_fields(dep, b)
+    if err:
+        return err
+    if not fields:
+        return jsonify({"error": "没有可更新的字段"}), 400
+    normalized = deploys.gpu_fields_normalized(name, fields)
     deploys.update(name, did, **fields)
+    # Enabling auto_deploy on a deploy with no secret yet → mint one.
+    if fields.get("auto_deploy") and not (dep.get("webhook_secret") or ""):
+        deploys.rotate_webhook_secret(name, did)
     audit.record("api_deploy_update",
                  detail=f"{name}/{dep.get('name')} id={did}", actor=_actor())
-    return jsonify({"ok": True, "contract": contract.contract_for(name, deploys.get(name, did))})
+    return jsonify({"ok": True,
+                    "contract": contract.contract_for(name, deploys.get(name, did)),
+                    "gpu_capable": deploys.pod_supports_gpu(name),
+                    "gpu_normalized": normalized})
 
 
 @pods_bp.route("/<name>/defer-queue", methods=["GET"])
@@ -1553,7 +1705,7 @@ def defer_queue_view(name):
 
 
 @pods_bp.route("/<name>/deploys", methods=["POST"])
-@api_pod("owner")
+@api_pod("member")
 def add_deploy(name):
     b = _body()
     source = (b.get("source") or "repo").strip()
@@ -1591,14 +1743,19 @@ def add_deploy(name):
         "health_timeout": _parse_health_timeout(b.get("health_timeout", "60")),
     }
     spec["env"] = _contract_env(b, spec["kind"])
+    # CPU pod: the store neutralises kind/gpu/vram/contract — tell the caller so
+    # the UI can explain why its 推理/训练 or 绑卡 choice didn't stick.
+    normalized = deploys.gpu_fields_normalized(name, spec)
     d = deploys.add(name, spec)
     audit.record("api_deploy_add",
                  detail=f"{name}/{d['name']} id={d['id']}", actor=_actor())
-    return jsonify({"ok": True, "id": d["id"], "name": d["name"]}), 201
+    return jsonify({"ok": True, "id": d["id"], "name": d["name"],
+                    "gpu_capable": deploys.pod_supports_gpu(name),
+                    "gpu_normalized": normalized}), 201
 
 
 @pods_bp.route("/<name>/deploys", methods=["DELETE"])
-@api_pod("owner")
+@api_pod("member")
 def delete_deploy(name):
     """Delete a deploy. ?id=<deploy_id>"""
     did = request.args.get("id", "")
@@ -1613,19 +1770,19 @@ def delete_deploy(name):
 
 
 @pods_bp.route("/<name>/deploys/<did>/run", methods=["POST"])
-@api_pod("owner")
+@api_pod("member")
 def run_deploy(name, did):
     d = deploys.get(name, did)
     if not d:
         return jsonify({"error": "部署不存在"}), 404
-    ok, msg = deploys.run(name, d)
+    ok, msg = deploys.run_bounded(name, d)
     audit.record("api_deploy_run",
                  detail=f"{name}/{did} ok={ok}", actor=_actor())
     return jsonify({"ok": ok, "msg": msg})
 
 
 @pods_bp.route("/<name>/deploys/<did>/stop", methods=["POST"])
-@api_pod("owner")
+@api_pod("member")
 def stop_deploy(name, did):
     d = deploys.get(name, did)
     if not d:
@@ -1633,6 +1790,38 @@ def stop_deploy(name, did):
     deploys.stop(name, d)
     audit.record("api_deploy_stop", detail=f"{name}/{did}", actor=_actor())
     return jsonify({"ok": True})
+
+
+@pods_bp.route("/<name>/deploys/<did>/webhook", methods=["GET"])
+@api_pod("member")
+def get_deploy_webhook(name, did):
+    """Per-deploy webhook config: callback URL + this deploy's own secret.
+
+    Only the per-deploy secret is returned here — never the platform-wide one.
+    """
+    d = deploys.get(name, did)
+    if not d:
+        return jsonify({"error": "部署不存在"}), 404
+    src = deploys.webhook_source_for_repo(d.get("repo"))
+    url = f"{request.host_url.rstrip('/')}/deploy/webhook"
+    if src:
+        url += f"?source={src}"
+    return jsonify({
+        "auto_deploy": bool(d.get("auto_deploy")),
+        "source": src, "repo": d.get("repo") or "", "branch": d.get("branch") or "",
+        "url": url, "secret": d.get("webhook_secret") or "",
+    })
+
+
+@pods_bp.route("/<name>/deploys/<did>/webhook/rotate", methods=["POST"])
+@api_pod("member")
+def rotate_deploy_webhook(name, did):
+    d = deploys.get(name, did)
+    if not d:
+        return jsonify({"error": "部署不存在"}), 404
+    secret = deploys.rotate_webhook_secret(name, did)
+    audit.record("api_deploy_webhook_rotate", detail=f"{name}/{did}", actor=_actor())
+    return jsonify({"ok": True, "secret": secret})
 
 
 @pods_bp.route("/<name>/deploys/<did>/status", methods=["GET"])

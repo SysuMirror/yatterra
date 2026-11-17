@@ -18,6 +18,11 @@ Pod access levels:
   username in pod["owners"] → "owner"
   username in pod["members"] → "member"
   else → None
+
+Displayed role (implicit admin ownership must not be shown):
+  pod_role_explicit(user, pod_dict) → real owners/members membership, else None
+  pod_display_role(user, pod_dict)  → explicit role, else 管理员(super/admin),
+                                       else 负责人 when the pod has no owner
 """
 import json, os, subprocess, hashlib, hmac, secrets, threading, uuid, re
 from queue import Queue, Empty, Full
@@ -374,6 +379,38 @@ def pod_role(user, pod):
         return "owner"
     if username in (pod.get("members") or []):
         return "member"
+    return None
+
+
+def pod_role_explicit(user, pod):
+    """Role coming from the pod's own owners/members lists (no admin override).
+
+    This is what the UI should show: super/admin hold owner-level access to every
+    pod implicitly, but that implicit ownership is not a real membership.
+    """
+    if not user or not pod:
+        return None
+    username = user.get("username", "")
+    if username in (pod.get("owners") or []):
+        return "owner"
+    if username in (pod.get("members") or []):
+        return "member"
+    return None
+
+
+def pod_display_role(user, pod):
+    """Role to *display* for this user on this pod.
+
+    Explicit membership wins.  Super/admin otherwise display as 管理员, except on
+    a pod with no explicit owner at all — there they are the only effective
+    owner, so they display as 负责人.
+    """
+    explicit = pod_role_explicit(user, pod)
+    if explicit:
+        return explicit
+    role = (user or {}).get("role", "user")
+    if role in ("super", "admin"):
+        return "owner" if not (pod.get("owners") or []) else role
     return None
 
 

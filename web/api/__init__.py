@@ -185,9 +185,12 @@ def api_groups_list():
             continue
         out.append({"name": name, "type": pod.get("type"), "gpus": pod.get("gpus", []),
                      "cpu": pod.get("cpu"), "mem": pod.get("mem"),
+                     "node": pod.get("node", "auto"), "tag": pod.get("tag"),
                      "status": groups.pod_status(name),
                      "owners": pod.get("owners", []), "members": pod.get("members", []),
-                     "my_role": role})
+                     "my_role": role,
+                     "my_role_explicit": users.pod_role_explicit(u, pod),
+                     "my_role_for_display": users.pod_display_role(u, pod)})
     return jsonify({"groups": out})
 
 
@@ -201,7 +204,8 @@ def api_groups_create():
     try:
         pod = groups.create_group(b.get("name", ""), gpus=gpus or None,
                                   cpu=b.get("cpu"), mem=b.get("mem"),
-                                  storage=b.get("storage"), creator=_actor())
+                                  storage=b.get("storage"), creator=_actor(),
+                                  node=b.get("node") or "auto", tag=b.get("tag"))
         audit.record("api_create_group", detail=pod["name"], actor=_actor())
         return jsonify({"ok": True, "name": pod["name"]}), 201
     except Exception as e:
@@ -214,6 +218,7 @@ def api_group_detail(name):
     pod = g.api_pod
     return jsonify({"name": name, "type": pod.get("type"), "gpus": pod.get("gpus", []),
                      "cpu": pod.get("cpu"), "mem": pod.get("mem"), "storage": pod.get("storage"),
+                     "node": pod.get("node", "auto"),
                      "status": groups.pod_status(name),
                      "owners": pod.get("owners", []), "members": pod.get("members", []),
                      "lifecycle": lifecycle.group_lifecycle(name)})
@@ -270,12 +275,17 @@ def api_deploys_list(name):
         out.append({"id": d["id"], "name": d.get("name"), "repo": d.get("repo"),
                      "branch": d.get("branch", ""), "kind": d.get("kind", "serve"),
                      "state": st.get("state"), "auto_deploy": d.get("auto_deploy", False),
+                     "has_token": bool(d.get("token")),
+                     "has_webhook_secret": bool(d.get("webhook_secret")),
                      "last_ref": (d.get("last_ref") or "")[:12]})
-    return jsonify({"deploys": out})
+    # Mirrors family A: without cards the pod can't pin a GPU or train.
+    return jsonify({"deploys": out,
+                    "gpu_capable": deploys.pod_supports_gpu(name),
+                    "gpus": deploys.group_gpu_ids(name)})
 
 
 @api_bp.route("/groups/<name>/deploys", methods=["POST"])
-@api_pod("owner")
+@api_pod("member")
 def api_deploys_add(name):
     b = _body()
     repo = (b.get("repo") or "").strip()
@@ -292,24 +302,27 @@ def api_deploys_add(name):
             "gpu": (b.get("gpu") or "").strip(), "vram": (b.get("vram") or "").strip(),
             "auto_deploy": bool(b.get("auto_deploy", False)), "health": (b.get("health") or "").strip(),
             "health_timeout": _parse_health_timeout(b.get("health_timeout", 60))}
+    normalized = deploys.gpu_fields_normalized(name, spec)
     d = deploys.add(name, spec)
     audit.record("api_deploy_add", detail=f"{name}/{d['name']} id={d['id']}", actor=_actor())
-    return jsonify({"ok": True, "id": d["id"], "name": d["name"]}), 201
+    return jsonify({"ok": True, "id": d["id"], "name": d["name"],
+                    "gpu_capable": deploys.pod_supports_gpu(name),
+                    "gpu_normalized": normalized}), 201
 
 
 @api_bp.route("/groups/<name>/deploys/<did>/run", methods=["POST"])
-@api_pod("owner")
+@api_pod("member")
 def api_deploys_run(name, did):
     d = deploys.get(name, did)
     if not d:
         return jsonify({"error": "部署不存在"}), 404
-    ok, msg = deploys.run(name, d)
+    ok, msg = deploys.run_bounded(name, d)
     audit.record("api_deploy_run", detail=f"{name}/{did} ok={ok}", actor=_actor())
     return jsonify({"ok": ok, "msg": msg})
 
 
 @api_bp.route("/groups/<name>/deploys/<did>/stop", methods=["POST"])
-@api_pod("owner")
+@api_pod("member")
 def api_deploys_stop(name, did):
     d = deploys.get(name, did)
     if not d:
@@ -341,7 +354,7 @@ def api_deploys_logs(name, did):
 
 
 @api_bp.route("/groups/<name>/deploys/<did>", methods=["DELETE"])
-@api_pod("owner")
+@api_pod("member")
 def api_deploys_delete(name, did):
     d = deploys.get(name, did)
     if not d:
@@ -349,6 +362,33 @@ def api_deploys_delete(name, did):
     deploys.delete(name, d)
     audit.record("api_deploy_delete", detail=f"{name}/{did}", actor=_actor())
     return jsonify({"ok": True})
+
+
+@api_bp.route("/groups/<name>/deploys/<did>/webhook", methods=["GET"])
+@api_pod("member")
+def api_deploys_webhook(name, did):
+    """Per-deploy webhook config (callback URL + this deploy's own secret)."""
+    d = deploys.get(name, did)
+    if not d:
+        return jsonify({"error": "部署不存在"}), 404
+    src = deploys.webhook_source_for_repo(d.get("repo"))
+    url = f"{request.host_url.rstrip('/')}/deploy/webhook"
+    if src:
+        url += f"?source={src}"
+    return jsonify({"auto_deploy": bool(d.get("auto_deploy")), "source": src,
+                    "repo": d.get("repo") or "", "branch": d.get("branch") or "",
+                    "url": url, "secret": d.get("webhook_secret") or ""})
+
+
+@api_bp.route("/groups/<name>/deploys/<did>/webhook/rotate", methods=["POST"])
+@api_pod("member")
+def api_deploys_webhook_rotate(name, did):
+    d = deploys.get(name, did)
+    if not d:
+        return jsonify({"error": "部署不存在"}), 404
+    secret = deploys.rotate_webhook_secret(name, did)
+    audit.record("api_deploy_webhook_rotate", detail=f"{name}/{did}", actor=_actor())
+    return jsonify({"ok": True, "secret": secret})
 
 
 # ── storage (MinIO) ───────────────────────────────────────────

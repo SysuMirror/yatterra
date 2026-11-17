@@ -14,17 +14,22 @@ import { Progress } from '@/components/ui/Progress'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiFormHelper } from '@/components/domain/AiFormHelper'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
+import { NodeTag } from '@/components/domain/NodeTag'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import { useToastStore } from '@/stores/toast'
 import { formatBytes, podStatusLabel } from '@/lib/format'
+import { fleetCards } from '@/lib/fleetMachines'
 
 interface GpuInfo {
   index: number
+  hostId?: string
+  hostName?: string
   name: string
   util: number
-  mem_used: number
-  mem_total: number
+  mem_used: number | null
+  mem_total: number | null
+  unified?: boolean
   temp: number
   power: number
   power_limit: number
@@ -37,13 +42,16 @@ interface PodRow {
   gpus: number[]
   status: string
   my_role: string | null
+  /** role to show (admins' implicit ownership is not displayed) */
+  my_role_for_display?: string | null
   cpu: string | number | null
   mem: string | number | null
+  node?: string
 }
 
 interface DashboardData {
   pods: { total: number; running: number; stopped: number; failed: number }
-  metrics: { cpu: number; mem: number; gpu: number; disk: number }
+  metrics: { cpu: number; mem: number; gpu: number; disk: number; diskMount: string }
   k3s: { nodeCount: number; version: string } | null
   groupsCount: number
   agents: { total: number; running: number }
@@ -62,14 +70,15 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const [joinTarget, setJoinTarget] = useState<string | null>(null)
   const [joinReason, setJoinReason] = useState('')
+  const [hideRunning, setHideRunning] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery<DashboardData>({
     queryKey: ['dashboard'],
     queryFn: async () => {
-      const [pods, host, gpu, agents, mcp, llm, audit, threat] = await Promise.all([
+      const [pods, host, fleet, agents, mcp, llm, audit, threat] = await Promise.all([
           api.get<{ pods: any[]; total: number }>('/pods?per_page=200'),
           api.get<any>('/infra/host').catch(() => null),
-          api.get<{ gpus: GpuInfo[]; count: number; error?: string }>('/infra/gpu').catch(() => ({ gpus: [], count: 0 })),
+          api.get<any>('/infra/fleet').catch(() => null),
           api.get<any>('/agents').then(d => ({ total: (d.agents ?? d)?.length ?? 0, running: (d.agents ?? d)?.filter((a: any) => a.run_id)?.length ?? 0 })).catch(() => ({ total: 0, running: 0 })),
           hasPerm('dev.mcp')
             ? api.get<any>('/mcp').then(d => { const s = d.servers ?? d; return { total: s?.length ?? 0, enabled: s?.filter((x: any) => x.enabled !== false)?.length ?? 0 } }).catch(() => ({ total: 0, enabled: 0 }))
@@ -81,15 +90,26 @@ export default function Dashboard() {
           api.get<any>('/threat-map?window=1d').then(d => ({ attacks: d?.stats?.total_attacks ?? d?.attacks?.length ?? 0, banned: d?.stats?.total_banned ?? 0 })).catch(() => ({ attacks: 0, banned: 0 })),
         ])
         const h = host as any
-        const rootDisk = h?.disk?.find((d: any) => d.mount === '/') ?? h?.disk?.[0]
+        const disks: any[] = Array.isArray(h?.disk) ? h.disk : []
+        let peakPct = 0
+        let peakMount = ''
+        for (const disk of disks) {
+          const pct = disk?.used_pct ?? 0
+          if (pct >= peakPct) {
+            peakPct = pct
+            peakMount = disk?.mount ?? ''
+          }
+        }
         const podList: PodRow[] = (pods.pods ?? []).map((p: any) => ({
           name: p.name,
           type: p.type ?? '',
           gpus: p.gpus ?? [],
           status: p.status,
           my_role: p.my_role ?? null,
+          my_role_for_display: p.my_role_for_display ?? p.my_role ?? null,
           cpu: p.cpu ?? null,
           mem: p.mem ?? null,
+          node: p.node_effective ?? p.node,
         }))
         return {
           pods: {
@@ -101,8 +121,9 @@ export default function Dashboard() {
           metrics: {
             cpu: h?.load?.load1 ?? 0,
             mem: h?.mem?.used_pct ?? 0,
-            gpu: gpu.count ?? h?.nvidia?.count ?? 0,
-            disk: rootDisk?.used_pct ?? 0,
+            gpu: fleetCards(fleet?.hosts ?? []).filter((card) => !card.empty).length,
+            disk: peakPct,
+            diskMount: peakMount,
           },
           k3s: h?.k3s ? { nodeCount: h.k3s.count ?? (Array.isArray(h.k3s.nodes) ? h.k3s.nodes.length : 0), version: h.k3s.nodes?.[0]?.version ?? '' } : null,
           groupsCount: h?.groups_count?.count ?? 0,
@@ -111,7 +132,20 @@ export default function Dashboard() {
           llm,
           auditToday: audit.total,
           threat,
-          gpuList: gpu.gpus ?? [],
+          gpuList: fleetCards(fleet?.hosts ?? []).filter((card) => !card.empty).map((card) => ({
+            index: card.index ?? 0,
+            hostId: card.hostId,
+            hostName: card.hostName,
+            name: card.name,
+            util: card.util ?? 0,
+            mem_used: card.memUsedMiB,
+            mem_total: card.memTotalMiB,
+            unified: card.unified,
+            temp: card.temp ?? 0,
+            power: card.power ?? 0,
+            power_limit: card.powerLimit ?? 0,
+            groups: [],
+          })),
           podList,
         }
     },
@@ -120,6 +154,8 @@ export default function Dashboard() {
 
   const d = data
   const hasAlert = (d?.pods.failed ?? 0) > 0 || (d?.metrics.disk ?? 0) > 90
+  const attentionPods = (d?.podList ?? []).filter((p) => p.status === 'Failed' || p.status === 'Stopped')
+  const listedPods = (d?.podList ?? []).filter((p) => !hideRunning || p.status !== 'Running')
 
   // Join pod handler
   const handleJoin = (name: string) => {
@@ -206,8 +242,8 @@ export default function Dashboard() {
             <MetricCard icon={<Box size={15} />} label="运行 Pod" value={d?.pods.running ?? 0} suffix={`/ ${d?.pods.total ?? 0}`} />
             <MetricCard icon={<Cpu size={15} />} label="CPU 负载 (1m)" value={(d?.metrics.cpu ?? 0).toFixed(2)} />
             <MetricCard icon={<HardDrive size={15} />} label="内存使用" value={Math.round(d?.metrics.mem ?? 0)} suffix="%" percent={d?.metrics.mem} />
-            <MetricCard icon={<Activity size={15} />} label="磁盘使用 (/)" value={Math.round(d?.metrics.disk ?? 0)} suffix="%" percent={d?.metrics.disk} />
-            <MetricCard icon={<Server size={15} />} label="GPU" value={d?.metrics.gpu ?? 0} suffix="块" />
+            <MetricCard icon={<Activity size={15} />} label={d?.metrics.diskMount ? `磁盘峰值 ${d.metrics.diskMount}` : '磁盘'} value={Math.round(d?.metrics.disk ?? 0)} suffix="%" percent={d?.metrics.disk} />
+            <MetricCard icon={<Server size={15} />} label="加速器" value={d?.metrics.gpu ?? 0} suffix="块" />
           </>
         )}
       </div>
@@ -289,28 +325,28 @@ export default function Dashboard() {
       {(d?.gpuList?.length ?? 0) > 0 && (
         <section data-onboarding-target="dashboard-gpu" className="glass-card rounded-2xl p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">GPU</h2>
-            <span className="text-xs text-muted">{d!.gpuList.length} 块</span>
+            <h2 className="text-sm font-semibold">加速器</h2>
+            <span className="text-xs text-muted">{d!.gpuList.length} 块 · 全部机器</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {d!.gpuList.map(g => {
-              const memPct = g.mem_total > 0 ? (g.mem_used / g.mem_total) * 100 : 0
+              const memPct = g.mem_total != null && g.mem_total > 0 && g.mem_used != null ? (g.mem_used / g.mem_total) * 100 : 0
               const utilColor = g.util > 85 ? 'bad' : g.util >= 50 ? 'warn' : 'ok'
               const memColor = memPct > 90 ? 'bad' : memPct > 70 ? 'warn' : 'accent'
               return (
-                <div key={g.index} className="p-3 rounded-xl border-[0.5px] border-black/[0.06] bg-[var(--surface-1)] space-y-2">
+                <Link data-ux="ux-dash-gpu-open" key={`${g.hostName}-${g.index}`} to={g.hostId ? `/infra/gpu?host=${encodeURIComponent(g.hostId)}` : '/infra/gpu'} className="block p-3 rounded-xl border-[0.5px] border-black/[0.06] bg-[var(--surface-1)] space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold">GPU {g.index}</span>
+                    <span className="text-sm font-semibold">{g.hostName || '本机'} #{g.index} {g.name}</span>
                     <Badge variant={utilColor} dot>{g.util}%</Badge>
                   </div>
                   <div className="space-y-1">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted">显存</span>
-                      <span className="font-medium tnum">{formatBytes(g.mem_used * 1024 * 1024)} / {formatBytes(g.mem_total * 1024 * 1024)}</span>
+                      <span className="font-medium tnum">{g.mem_total == null ? (g.unified ? '统一内存' : '未上报') : `${formatBytes((g.mem_used ?? 0) * 1024 * 1024)} / ${formatBytes(g.mem_total * 1024 * 1024)}`}</span>
                     </div>
                     <Progress value={memPct} size="sm" color={memColor} />
                   </div>
-                </div>
+                </Link>
               )
             })}
           </div>
@@ -320,19 +356,52 @@ export default function Dashboard() {
         </section>
       )}
 
+      {!isLoading && (
+        <section data-ux="ux-console-attention" className="glass-card rounded-2xl p-5 mb-6">
+          <h2 className="text-sm font-semibold mb-3">失败与已停止</h2>
+          {attentionPods.length === 0 ? (
+            <p className="text-sm text-muted">没有失败或已停止的 Pod</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {attentionPods.map((p) => (
+                <button
+                  key={p.name}
+                  type="button"
+                  className="rounded-md border border-black/10 px-2 py-1 text-xs"
+                  onClick={() => navigate(`/pods/${p.name}`)}
+                >
+                  {p.name} · {podStatusLabel(p.status)}
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Pod list */}
       {(d?.podList?.length ?? 0) > 0 && (
         <section data-onboarding-target="dashboard-pods" className="glass-card rounded-2xl p-5 mb-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-semibold">Pod 列表</h2>
-            <span className="text-xs text-muted">{d!.podList.length} 个</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-ux="ux-console-quiet"
+                aria-pressed={hideRunning}
+                className="rounded-md border border-black/10 px-2 py-1 text-xs"
+                onClick={() => setHideRunning((v) => !v)}
+              >
+                {hideRunning ? '显示运行中' : '隐藏运行中'}
+              </button>
+              <span className="text-xs text-muted">{listedPods.length} 个</span>
+            </div>
           </div>
           <DataTable
             columns={podCols}
-            data={d!.podList}
+            data={listedPods}
             keyFn={(r) => r.name}
             onRowClick={(r) => navigate(`/pods/${r.name}`)}
-            empty={<span className="text-sm text-muted">暂无 Pod</span>}
+            empty={<span className="text-sm text-muted">{hideRunning ? '没有非运行中的 Pod' : '暂无 Pod'}</span>}
           />
         </section>
       )}
@@ -434,6 +503,12 @@ function buildPodColumns(onJoin: (name: string) => void): Column<PodRow>[] {
     render: (r: PodRow) => r.type ? <Badge variant="default">{r.type}</Badge> : <span className="text-muted">—</span>,
   },
   {
+    key: 'node',
+    title: '节点',
+    width: '80px',
+    render: (r: PodRow) => <NodeTag node={r.node} />,
+  },
+  {
     key: 'gpus',
     title: 'GPU',
     width: '80px',
@@ -454,8 +529,10 @@ function buildPodColumns(onJoin: (name: string) => void): Column<PodRow>[] {
     title: '我的角色',
     width: '90px',
     render: (r: PodRow) => {
-      if (r.my_role === 'owner') return <Badge variant="ok">Owner</Badge>
-      if (r.my_role === 'member') return <Badge variant="default">Member</Badge>
+      const role = r.my_role_for_display ?? r.my_role
+      if (role === 'owner') return <Badge variant="ok">Owner</Badge>
+      if (role === 'member') return <Badge variant="default">Member</Badge>
+      if (role === 'super' || role === 'admin') return <Badge variant="default">Admin</Badge>
       return <span className="text-muted text-xs">—</span>
     },
   },
@@ -470,7 +547,7 @@ function buildPodColumns(onJoin: (name: string) => void): Column<PodRow>[] {
     title: '',
     width: '80px',
     render: (r: PodRow) => {
-      if (r.my_role) return <Link to={`/pods/${r.name}`} className="text-xs text-accent hover:underline">详情</Link>
+      if (r.my_role_for_display ?? r.my_role) return <Link to={`/pods/${r.name}`} className="text-xs text-accent hover:underline">详情</Link>
       return (
         <Button
           variant="ghost"

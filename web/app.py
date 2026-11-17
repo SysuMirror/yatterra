@@ -724,9 +724,6 @@ def deploy_webhook():
     No CSRF (external callback); auth via HMAC/token secret."""
     source = (request.args.get("source") or "").lower()
     body = request.get_data()
-    if not deploys.verify_webhook(source, request.headers, body):
-        audit.record("deploy_webhook", detail=f"auth fail source={source}", actor="webhook")
-        return jsonify({"error": "bad signature"}), 403
     try:
         payload = request.get_json(force=True, silent=True) or {}
     except Exception:
@@ -745,8 +742,14 @@ def deploy_webhook():
     if not repo_url or not branch:
         audit.record("deploy_webhook", detail=f"unparseable source={source}", actor="webhook")
         return jsonify({"error": "unparseable"}), 400
-    matches = deploys.find_by_repo_branch(repo_url, branch)
-    audit.record("deploy_webhook", detail=f"source={source} repo={repo_url} branch={branch} matches={len(matches)}", actor="webhook")
+    # Signature check is scoped to the parsed repo+branch: candidate deploys are
+    # matched first, then authorized by their own per-deploy secret (preferred)
+    # or the platform-wide global secret (legacy fallback, admin-managed).
+    matches, mode = deploys.match_webhook(source, request.headers, body, repo_url, branch)
+    if not matches:
+        audit.record("deploy_webhook", detail=f"auth fail source={source} repo={repo_url} branch={branch}", actor="webhook")
+        return jsonify({"error": "bad signature"}), 403
+    audit.record("deploy_webhook", detail=f"source={source} repo={repo_url} branch={branch} matches={len(matches)} mode={mode}", actor="webhook")
     # sseapi: sync local mirror before deploy (pod can't reach github.com)
     if 'SysuMirror/sseapi' in repo_url:
         try:
@@ -763,13 +766,18 @@ def deploy_webhook():
                 (payload.get("head_commit") or {}).get("id") or "")
     payload["_delivery_id"] = str(delivery)[:256]
     for group, dep in matches:
-        threading.Thread(target=deploys.run, args=(group, dep), daemon=True).start()
+        # wait=True: 同一记录已有部署在跑就排队(在**这个后台线程**里等, 不占 gunicorn
+        #   请求线程); skip_if_same_ref=True: ref 未变且程序 RUNNING 就跳过重启,
+        #   让 GitHub 重投/连推同一 commit 变成幂等 no-op。
+        threading.Thread(target=deploys.run, args=(group, dep),
+                         kwargs={"wait": True, "skip_if_same_ref": True},
+                         daemon=True).start()
         try:
             import pwa_alerts
             pwa_alerts.enqueue_webhook(group, dep, repo_url, branch, payload)
         except Exception:
             app.logger.exception("webhook notification enqueue failed for %s", group)
-    return jsonify({"triggered": len(matches), "branch": branch})
+    return jsonify({"triggered": len(matches), "branch": branch, "mode": mode})
 
 
 # --- pod app → host status report (token auth) ---

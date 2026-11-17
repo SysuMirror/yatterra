@@ -39,6 +39,7 @@ export interface PodLite {
   name: string
   status?: string
   my_role?: string | null
+  my_role_for_display?: string | null
 }
 
 const STATUS_VARIANT: Record<string, 'ok' | 'muted' | 'warn' | 'bad'> = {
@@ -108,7 +109,7 @@ function PodPicker({ open, onClose }: { open: boolean; onClose: () => void }) {
 
   const { data, isLoading } = useQuery<{ pods: PodLite[] }>({
     queryKey: ['ide-pods'],
-    queryFn: () => api.get('/pods?per_page=100'),
+    queryFn: () => api.get('/pods?per_page=200'),
     enabled: open,
     staleTime: 30_000,
   })
@@ -192,7 +193,7 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 }
 
 function PodRow({ pod, current, onPick }: { pod: PodLite; current: boolean; onPick: (name: string) => void }) {
-  const role = pod.my_role ? ROLE_LABEL[pod.my_role] : null
+  const role = (pod.my_role_for_display ?? pod.my_role) ? ROLE_LABEL[pod.my_role_for_display ?? pod.my_role ?? ''] : null
   return (
     <button
       type="button"

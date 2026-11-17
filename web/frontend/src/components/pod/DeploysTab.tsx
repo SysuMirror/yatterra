@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Rocket, Play, Square, ScrollText, Plus, Trash2, Zap, Sparkles, SlidersHorizontal, Hourglass } from 'lucide-react'
+import { Rocket, Play, Square, ScrollText, Plus, Trash2, Zap, Sparkles, SlidersHorizontal, Hourglass, Pencil, Copy, RefreshCw, KeyRound } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -14,6 +14,12 @@ import { MarkdownContent } from '@/components/ai'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 import { cn } from '@/lib/cn'
+
+/** Throw on an explicit `{ok:false}` API envelope so react-query surfaces the message. */
+const requireOk = (res: any, fallback: string) => {
+  if (res?.ok === false) throw new Error(res.msg || fallback)
+  return res
+}
 
 /** Quickstart template definitions (mirrors server _TEMPLATES keys) */
 const TEMPLATES = [
@@ -29,6 +35,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
   const qc = useQueryClient()
   const [logsFor, setLogsFor] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
 
   // ── Form state ──
   const [dSource, setDSource] = useState<'repo' | 'local'>('repo')
@@ -39,7 +46,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
   const [dSubdir, setDSubdir] = useState('')
   const [dMode, setDMode] = useState<'service' | 'oneshot'>('service')
   const [dKind, setDKind] = useState<'serve' | 'train'>('serve')
-  const [dGpu, setDGpu] = useState('0')
+  const [dGpu, setDGpu] = useState('')            // '' = 自动分配（见 GPU_OPTIONS）
   const [dVram, setDVram] = useState('')
   const [dToken, setDToken] = useState('')
   const [dHealth, setDHealth] = useState('')
@@ -55,10 +62,32 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
   const resetForm = () => {
     setDSource('repo'); setDName(''); setDRepo(''); setDScript('')
     setDBranch(''); setDSubdir(''); setDMode('service'); setDKind('serve')
-    setDGpu('0'); setDVram(''); setDToken(''); setDHealth('')
+    // 推理服务按设计是「创建时钉一张卡」，默认取本 Pod 分配到的第一张；
+    // 无卡 Pod 走 CPU 部署，这里留空即可（字段反正会被隐藏/归一化）。
+    setDGpu(podGpus.length ? String(podGpus[0]) : '')
+    setDVram(''); setDToken(''); setDHealth('')
     setDHealthTimeout('60'); setDAutoDeploy(false)
     setDDeferOk(false); setDPreemptOk(true); setDDeadline('')
     setDDeadlineKind('soft'); setDEstDur('')
+  }
+
+  const openCreate = () => { resetForm(); setEditingId(null); setCreateOpen(true) }
+  const openEdit = (d: any) => {
+    setEditingId(d.id ?? d.name)
+    setDSource(d.source === 'local' ? 'local' : 'repo')
+    setDName(d.name ?? '')
+    setDRepo(d.repo ?? ''); setDScript(d.script ?? '')
+    setDBranch(d.branch ?? ''); setDSubdir(d.subdir ?? '')
+    setDMode(d.mode === 'oneshot' ? 'oneshot' : 'service')
+    setDKind(d.kind === 'train' ? 'train' : 'serve')
+    setDGpu(d.gpu ?? ''); setDVram(d.vram ?? '')
+    setDToken('')                                  // 留空 = 保持原 token
+    setDHealth(d.health ?? ''); setDHealthTimeout(String(d.health_timeout ?? '60'))
+    setDAutoDeploy(!!d.auto_deploy)
+    const c = d.contract ?? {}
+    setDDeferOk(!!c.defer_ok); setDPreemptOk(c.preempt_ok !== false)
+    setDDeadline(''); setDDeadlineKind('soft'); setDEstDur('')
+    setCreateOpen(true)
   }
 
   const { data, isLoading } = useQuery<any>({
@@ -67,11 +96,16 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
     refetchInterval: 15_000,
   })
   const deploys = data?.deploys ?? data ?? []
+  // 这个 Pod 是否分配了显卡（type=gpu）。没卡的 Pod 容器里根本没有 CUDA 设备，
+  // 所以「推理/训练」调度类型和「绑卡 GPU」对它都是空转 —— 后端也会把这类字段
+  // 归一化掉（deploys.sanitize_gpu_fields），前端据此整块隐藏。
+  const gpuCapable: boolean = data?.gpu_capable !== false
+  const podGpus: number[] = Array.isArray(data?.gpus) ? data.gpus : []
+  const gpuOptions = [
+    { value: '', label: '自动分配' },
+    ...podGpus.map((i) => ({ value: String(i), label: `GPU ${i}` })),
+  ]
   const refresh = () => qc.invalidateQueries({ queryKey: ['deploys', podName] })
-  const requireOk = (res: any, fallback: string) => {
-    if (res?.ok === false) throw new Error(res.msg || fallback)
-    return res
-  }
 
   const run = useMutation({
     mutationFn: async (d: any) => requireOk(await api.post(`/pods/${podName}/deploys/${d.id ?? d.name}/run`), '启动失败'),
@@ -83,38 +117,51 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
     onSuccess: (_d, dd) => { toast({ type: 'success', message: `${dd.name} 停止中` }); refresh() },
     onError: (e: any) => toast({ type: 'error', message: e?.message || '停止失败' }),
   })
-  const createDeploy = useMutation({
-    mutationFn: () => {
+  const saveDeploy = useMutation({
+    mutationFn: async () => {
+      const editing = !!editingId
       const body: any = {
-        name: dName.trim(),
-        source: dSource,
         mode: dMode,
-        kind: dKind,
-        gpu: dGpu,
-        vram: dVram.trim(),
+        // 无卡 Pod 只可能是推理：训练类会被排到永远等不到的卡上，后端也会归一化。
+        kind: gpuCapable ? dKind : 'serve',
+        gpu: gpuCapable ? dGpu : '',
+        vram: gpuCapable ? dVram.trim() : '',
         health: dHealth.trim(),
         health_timeout: dHealthTimeout.trim() || '60',
         auto_deploy: dAutoDeploy,
       }
-      if (dKind === 'train') {
+      if (!editing) { body.name = dName.trim(); body.source = dSource }
+      if (gpuCapable && dKind === 'train') {
         body.defer_ok = dDeferOk
         body.preempt_ok = dPreemptOk
         body.deadline = dDeadline.trim()
         body.deadline_kind = dDeadlineKind
         body.est_duration_s = dEstDur.trim()
       }
-      if (dSource === 'repo') {
+      if (isRepo) {
         body.repo = dRepo.trim()
         body.branch = dBranch.trim()
         body.subdir = dSubdir.trim()
-        body.token = dToken.trim()
-      } else {
+        // 编辑时留空表示保持原 token（presence-driven：只在有值才发送）
+        if (dToken.trim() || !editing) body.token = dToken.trim()
+      } else if (!editing) {
         body.script = dScript.trim()
       }
-      return api.post(`/pods/${podName}/deploys`, body)
+      return requireOk(
+        editing
+          ? await api.put(`/pods/${podName}/deploys/${editingId}`, body)
+          : await api.post(`/pods/${podName}/deploys`, body),
+        editing ? '保存失败' : '创建失败',
+      )
     },
-    onSuccess: () => { toast({ type: 'success', message: '部署创建成功' }); setCreateOpen(false); resetForm(); refresh() },
-    onError: (e: any) => toast({ type: 'error', message: e?.message || '创建失败' }),
+    onSuccess: (res: any) => {
+      toast({ type: 'success', message: editingId ? '部署已更新' : '部署创建成功' })
+      if (res?.gpu_normalized) {
+        toast({ type: 'warning', message: '该 Pod 未分配 GPU，已按 CPU 部署保存（忽略调度类型/绑卡/显存）', duration: 6000 })
+      }
+      setCreateOpen(false); setEditingId(null); resetForm(); refresh()
+    },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || (editingId ? '保存失败' : '创建失败') }),
   })
   const deleteDeploy = useMutation({
     mutationFn: (d: any) => api.del(`/pods/${podName}/deploys?id=${encodeURIComponent(d.id ?? d.name)}`),
@@ -157,13 +204,14 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
     onError: (e: any) => toast({ type: 'error', message: e?.message || '保存失败' }),
   })
 
-  // Validation: name required for local, repo required for repo source
-  const canSubmit = dSource === 'local'
-    ? dName.trim() && dScript.trim()
-    : dRepo.trim()
-
   const isRepo = dSource === 'repo'
-  const isTrain = dKind === 'train'
+  const isTrain = gpuCapable && dKind === 'train'
+
+  // Validation: name required for local, repo required for repo source.
+  // 编辑时 name/source/script 不可改，因此只需 repo 仍有效。
+  const canSubmit = editingId
+    ? (isRepo ? dRepo.trim() : true)
+    : (dSource === 'local' ? dName.trim() && dScript.trim() : dRepo.trim())
 
   return (
     <div className="space-y-3">
@@ -175,7 +223,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
             <a href="/docs?lesson=webhook" className="text-accent hover:underline">Webhook 说明</a>
           </div>
         </div>
-        {canManage && <Button data-onboarding-target="deploy-create" size="sm" onClick={() => setCreateOpen(true)}><Plus size={14} /> 创建部署</Button>}
+        {canManage && <Button data-onboarding-target="deploy-create" size="sm" onClick={openCreate}><Plus size={14} /> 创建部署</Button>}
       </div>
 
       {/* ── Defer queue (P1-c, read-only) ── */}
@@ -187,7 +235,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
           <p className="text-xs text-muted">快速开始 — 选择模板一键部署：</p>
           <p className="text-xs text-muted/80">模板会立即创建并运行；自定义部署会先保存，之后用部署卡片的「启动」运行。</p>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-            {TEMPLATES.map((tpl) => (
+            {TEMPLATES.filter((tpl) => gpuCapable || tpl.id !== 'vllm').map((tpl) => (
               <button
                 key={tpl.id}
                 onClick={() => applyTemplate.mutate(tpl.id)}
@@ -203,10 +251,13 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
         </div>
       )}
 
-      {/* ── Create deploy dialog ── */}
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="创建部署" width="max-w-2xl">
+      {/* ── Create / edit deploy dialog ── */}
+      <Dialog open={createOpen} onClose={() => { setCreateOpen(false); setEditingId(null) }} title={editingId ? `编辑部署 — ${dName}` : '创建部署'} width="max-w-2xl">
         <div className="space-y-4">
           {/* Row 1: Source + Name */}
+          {editingId ? (
+            <div className="text-xs text-muted">名称与来源不可修改；如需更换请删除后重新创建。</div>
+          ) : (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Select label="来源" value={dSource} onChange={(v) => setDSource(v as 'repo' | 'local')} options={[{ value: 'repo', label: '绑仓库' }, { value: 'local', label: '本地脚本' }]} />
             <div className="sm:col-span-2">
@@ -214,6 +265,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
               <div className="mt-1"><AiFormHelper type="deploy" partial={dName} onApply={setDName} /></div>
             </div>
           </div>
+          )}
 
           {/* Row 2: Repo URL or Script path */}
           {isRepo ? (
@@ -244,19 +296,27 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
 
           <p className="text-xs text-muted">常驻服务会自动重启；一次性脚本可能在 supervisor 启动时执行一次。按任务选择模式。</p>
 
-          {/* Row 4: Mode + Kind + GPU/VRAM */}
+          {/* Row 4: Mode (+ 调度类型 / 绑卡 only when the Pod actually owns cards) */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Select label="类型" value={dMode} onChange={(v) => setDMode(v as 'service' | 'oneshot')} options={[{ value: 'service', label: '常驻服务' }, { value: 'oneshot', label: '一次性脚本' }]} />
-            <Select label="调度类型" value={dKind} onChange={(v) => setDKind(v as 'serve' | 'train')} options={[{ value: 'serve', label: '推理服务' }, { value: 'train', label: '训练(池化)' }]} />
-            {isTrain ? (
+            {gpuCapable && (
+              <Select label="调度类型" value={dKind} onChange={(v) => setDKind(v as 'serve' | 'train')} options={[{ value: 'serve', label: '推理服务' }, { value: 'train', label: '训练(池化)' }]} />
+            )}
+            {gpuCapable && (isTrain ? (
               <div>
                 <Input label="显存(MB)" value={dVram} onChange={e => setDVram(e.target.value)} placeholder="默认 12000" />
                 <div className="mt-1"><AiFormHelper type="general" partial={dVram} context="显存限制 MB" onApply={setDVram} /></div>
               </div>
             ) : (
-              <Select label="绑卡 GPU" value={dGpu} onChange={setDGpu} options={[{ value: '0', label: 'GPU 0' }, { value: '1', label: 'GPU 1' }, { value: '2', label: 'GPU 2' }]} />
-            )}
+              <Select label="绑卡 GPU" value={dGpu} onChange={setDGpu} options={gpuOptions} />
+            ))}
           </div>
+
+          {!gpuCapable && (
+            <p className="text-xs text-muted">
+              该 Pod 未分配 GPU：容器内没有 CUDA 设备，因此不需要选择调度类型或绑卡，部署按常驻/一次性方式运行即可。
+            </p>
+          )}
 
           {/* Row 4b: Flexibility contract (train only, P1-c) */}
           {isTrain && (
@@ -284,7 +344,7 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
           {/* Row 5: Token (repo only) + Health check */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {isRepo && (
-              <Input data-onboarding-target="deploy-token" label="私有库 token" type="password" value={dToken} onChange={e => setDToken(e.target.value)} placeholder="公开库留空" />
+              <Input data-onboarding-target="deploy-token" label="私有库 token" type="password" value={dToken} onChange={e => setDToken(e.target.value)} placeholder={editingId ? '保持不变（留空不改）' : '公开库留空'} />
             )}
             <div>
               <Input label="健康检查路径（可选）" value={dHealth} onChange={e => setDHealth(e.target.value)} placeholder="/health 留空跳过" />
@@ -303,14 +363,14 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
             <div className="flex items-center gap-2">
               <Switch checked={dAutoDeploy} onChange={setDAutoDeploy} />
               <span className="text-sm text-ink-2">push 自动部署</span>
-              <span className="text-xs text-muted">需明确分支；仅切换分支不会完成 Webhook 切换，还需管理员配置回调。</span>
+              <span className="text-xs text-muted">需明确分支。开启后本部署会生成独立回调密钥，可在部署卡片查看/复制/轮换；推送须匹配本部署的仓库与非空分支。</span>
             </div>
           )}
 
           {/* Actions */}
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" onClick={() => setCreateOpen(false)}>取消</Button>
-            <Button data-onboarding-target="deploy-submit" disabled={!canSubmit} loading={createDeploy.isPending} onClick={() => createDeploy.mutate()}>确认</Button>
+            <Button variant="secondary" onClick={() => { setCreateOpen(false); setEditingId(null) }}>取消</Button>
+            <Button data-onboarding-target="deploy-submit" disabled={!canSubmit} loading={saveDeploy.isPending} onClick={() => saveDeploy.mutate()}>{editingId ? '保存' : '确认'}</Button>
           </div>
         </div>
       </Dialog>
@@ -358,39 +418,50 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
               <Rocket size={15} className="text-muted flex-shrink-0" />
               <span className="text-sm font-medium font-mono truncate min-w-0">{d.name}</span>
               <Badge variant={running ? 'ok' : 'muted'} dot>{d.state || 'stopped'}</Badge>
-              {d.kind && d.kind !== 'serve' && <Badge variant="accent">{d.kind === 'train' ? '训练' : d.kind}</Badge>}
-              {d.kind === 'train' && d.contract?.defer_ok && <Badge variant="accent">谷期可延迟</Badge>}
-              {d.kind === 'train' && d.contract && d.contract.preempt_ok === false && <Badge variant="muted">不可抢占</Badge>}
-              {d.kind === 'train' && d.contract?.deadline && <Badge variant="muted">截止 {fmtDeadline(d.contract.deadline)}</Badge>}
+              {gpuCapable && d.kind && d.kind !== 'serve' && <Badge variant="accent">{d.kind === 'train' ? '训练' : d.kind}</Badge>}
+              {gpuCapable && d.kind === 'train' && d.contract?.defer_ok && <Badge variant="accent">谷期可延迟</Badge>}
+              {gpuCapable && d.kind === 'train' && d.contract && d.contract.preempt_ok === false && <Badge variant="muted">不可抢占</Badge>}
+              {gpuCapable && d.kind === 'train' && d.contract?.deadline && <Badge variant="muted">截止 {fmtDeadline(d.contract.deadline)}</Badge>}
               {d.source === 'local' && <Badge variant="muted">本地</Badge>}
               {d.auto_deploy && <Badge variant="accent">自动部署</Badge>}
               {running && <DeployStatusBadge podName={podName} deployId={id} />}
               <div className="flex-1" />
               {canManage && (
-                <div className="flex items-center gap-1.5">
+                <div data-ux="ux-deploy-touch" className="flex w-full items-center gap-1.5 sm:w-auto">
                   {running ? (
-                    <Button variant="secondary" size="sm" onClick={() => stop.mutate(d)}><Square size={13} /> 停止</Button>
+                    <Button variant="secondary" size="sm" className="min-h-11 flex-1 sm:min-h-0 sm:flex-none" onClick={() => stop.mutate(d)}><Square size={13} /> 停止</Button>
                   ) : (
-                    <Button variant="secondary" size="sm" onClick={() => run.mutate(d)}><Play size={13} /> 启动</Button>
+                    <Button variant="secondary" size="sm" className="min-h-11 flex-1 sm:min-h-0 sm:flex-none" onClick={() => run.mutate(d)}><Play size={13} /> 启动</Button>
                   )}
-                  {d.kind === 'train' && (
-                    <Button variant="ghost" size="sm" aria-label="弹性契约" title="弹性契约" onClick={() => openContract(d)}>
+                  {gpuCapable && d.kind === 'train' && (
+                    <Button variant="ghost" size="sm" className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0" aria-label="弹性契约" title="弹性契约" onClick={() => openContract(d)}>
                       <SlidersHorizontal size={13} />
                     </Button>
                   )}
                   <Button
                     variant="ghost" size="sm"
+                    className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
+                    aria-label="编辑部署"
+                    title="编辑部署"
+                    onClick={() => openEdit(d)}
+                  >
+                    <Pencil size={13} />
+                  </Button>
+                  <Button
+                    variant="ghost" size="sm"
+                    className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
                     aria-label="查看日志"
                     onClick={() => setLogsFor(logsFor === id ? null : id)}
                   >
                     <ScrollText size={13} />
                   </Button>
-                  <Button variant="ghost" size="sm" aria-label="删除" onClick={() => { if (confirm(`删除部署 ${d.name}？`)) deleteDeploy.mutate(d) }}>
+                  <Button variant="ghost" size="sm" className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0" aria-label="删除" onClick={() => { if (confirm(`删除部署 ${d.name}？`)) deleteDeploy.mutate(d) }}>
                     <Trash2 size={13} />
                   </Button>
                 </div>
               )}
             </div>
+            {canManage && d.auto_deploy && <DeployWebhookPanel podName={podName} deployId={id} />}
             {logsFor === id && <DeployLogs podName={podName} deployId={id} />}
           </Card>
         )
@@ -461,6 +532,73 @@ function DeployLogs({ podName, deployId }: { podName: string; deployId: string }
           <span className="text-white/40">暂无日志</span>
         )}
       </div>
+    </div>
+  )
+}
+
+/** Per-deploy webhook credentials: callback URL + this deploy's own secret
+ * (with reveal/copy/rotate).  Only rendered for managers of auto-deploy deployments. */
+function DeployWebhookPanel({ podName, deployId }: { podName: string; deployId: string }) {
+  const toast = useToastStore((s) => s.add)
+  const qc = useQueryClient()
+  const [reveal, setReveal] = useState(false)
+  const { data, isLoading } = useQuery<any>({
+    queryKey: ['deploy-webhook', podName, deployId],
+    queryFn: () => api.get(`/pods/${podName}/deploys/${deployId}/webhook`),
+  })
+  const rotate = useMutation({
+    mutationFn: async () => requireOk(await api.post(`/pods/${podName}/deploys/${deployId}/webhook/rotate`), '轮换失败'),
+    onSuccess: () => { toast({ type: 'success', message: '回调密钥已轮换' }); qc.invalidateQueries({ queryKey: ['deploy-webhook', podName, deployId] }) },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '轮换失败' }),
+  })
+  const copy = (text: string, label: string) => {
+    if (!text) return
+    navigator.clipboard?.writeText(text).then(
+      () => toast({ type: 'success', message: `${label}已复制` }),
+      () => toast({ type: 'error', message: '复制失败，请手动选择' }),
+    )
+  }
+  if (isLoading) return <div className="mt-2 text-xs text-muted">加载回调信息…</div>
+  if (!data) return null
+  const secret: string = data.secret || ''
+  const masked = secret ? `${secret.slice(0, 4)}${'•'.repeat(Math.max(0, secret.length - 8))}${secret.slice(-4)}` : ''
+
+  return (
+    <div className="mt-3 rounded-xl border-[0.5px] border-black/8 bg-black/[0.02] p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <KeyRound size={13} className="text-accent" />
+        <span className="text-xs font-medium text-ink-2">推送自动部署回调</span>
+        {data.source && <Badge variant="muted">{data.source === 'github' ? 'GitHub' : data.source === 'gitee' ? 'Gitee' : data.source}</Badge>}
+      </div>
+      <div className="text-xs text-muted">
+        仓库 <span className="font-mono">{data.repo || '—'}</span>
+        {data.branch ? <> · 分支 <span className="font-mono">{data.branch}</span></> : <> · 分支未设置（不会触发）</>}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-muted w-16 flex-shrink-0">回调地址</span>
+        <span className="flex-1 min-w-0 truncate font-mono text-xs text-ink-2">{data.url}</span>
+        <Button variant="ghost" size="sm" className="min-h-9 min-w-9 sm:min-h-0 sm:min-w-0" aria-label="复制回调地址" title="复制" onClick={() => copy(data.url, '回调地址')}>
+          <Copy size={13} />
+        </Button>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-muted w-16 flex-shrink-0">回调密钥</span>
+        <span className="flex-1 min-w-0 truncate font-mono text-xs text-ink-2">{secret ? (reveal ? secret : masked) : '未设置'}</span>
+        {secret && (
+          <>
+            <Button variant="ghost" size="sm" className="min-h-9 min-w-9 sm:min-h-0 sm:min-w-0" aria-label={reveal ? '隐藏' : '显示'} title={reveal ? '隐藏' : '显示'} onClick={() => setReveal((v) => !v)}>
+              <ScrollText size={13} />
+            </Button>
+            <Button variant="ghost" size="sm" className="min-h-9 min-w-9 sm:min-h-0 sm:min-w-0" aria-label="复制密钥" title="复制" onClick={() => copy(secret, '回调密钥')}>
+              <Copy size={13} />
+            </Button>
+          </>
+        )}
+        <Button variant="ghost" size="sm" className="min-h-9 sm:min-h-0" loading={rotate.isPending} aria-label="轮换密钥" title="轮换密钥" onClick={() => { if (confirm('轮换后将立即失效旧密钥，仓库需同步更新。继续？')) rotate.mutate() }}>
+          <RefreshCw size={13} />
+        </Button>
+      </div>
+      <p className="text-[11px] text-muted/80">在仓库 Webhook 填该地址与密钥（GitHub 用 Secret，Gitee 用 Token）。仅当推送的仓库与非空分支匹配本部署时才会触发。</p>
     </div>
   )
 }

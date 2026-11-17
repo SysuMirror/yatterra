@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, LayoutGrid, Rows3, Box, AlertTriangle, Bot, Power, RotateCw, Trash2, Check } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PodCard } from '@/components/domain/PodCard'
+import { NodeTag } from '@/components/domain/NodeTag'
 import { MetricCard } from '@/components/domain/MetricCard'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -18,9 +19,11 @@ import { Dialog } from '@/components/ui/Dialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { api } from '@/api/client'
+import type { PodLimits } from '@/api/pods'
 import { useToastStore } from '@/stores/toast'
 import { useIsDesktop, useMediaQuery } from '@/hooks/useMediaQuery'
 import { formatSpec, podStatusLabel } from '@/lib/format'
+import { podPiles } from '@/lib/podPiles'
 import { cn } from '@/lib/cn'
 
 interface Pod {
@@ -34,12 +37,19 @@ interface Pod {
   members: string[]
   owner_labels?: string[]
   member_labels?: string[]
+  /** effective role (super/admin are owners everywhere) — for permission gating */
   my_role: string
+  /** explicit owners/members membership only; null when only implicit */
+  my_role_explicit?: string | null
+  /** what to show: explicit role, else 管理员, else 负责人 when sole owner */
+  my_role_for_display?: string | null
   type: string
   reason?: string
+  node?: string
+  node_effective?: string
 }
 
-type ViewMode = 'table' | 'cards'
+type ViewMode = 'table' | 'cards' | 'piles'
 
 const ROLE_LABELS: Record<string, string> = {
   owner: '负责人',
@@ -64,6 +74,7 @@ export default function PodList() {
   const showOwner = useMediaQuery('(min-width: 640px)')
   // Dense table on desktop by default; single-column cards on phones
   const [view, setView] = useState<ViewMode>(isDesktop ? 'table' : 'cards')
+  const [onlyMine, setOnlyMine] = useState(false)
 
   const { data, isLoading } = useQuery<{ pods: Pod[]; total: number }>({
     queryKey: ['pods', { search, status: statusFilter }],
@@ -71,6 +82,9 @@ export default function PodList() {
       const params = new URLSearchParams()
       if (search) params.set('search', search)
       if (statusFilter) params.set('status', statusFilter)
+      // fetch the whole list: the summary strip and 「我的」 count must cover
+      // every pod, not just the first page (admins see all pods)
+      params.set('per_page', '200')
       return api.get(`/pods?${params}`)
     },
     staleTime: 5_000,
@@ -79,6 +93,11 @@ export default function PodList() {
   const pods = (data?.pods ?? []).slice().sort((a, b) =>
     (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9) || a.name.localeCompare(b.name),
   )
+  // 「我的」 = pods this user really participates in.  Admins see every pod but
+  // their implicit ownership isn't a membership, so it must not be counted.
+  const isMine = (p: Pod) =>
+    p.my_role_for_display === 'owner' || p.my_role_for_display === 'member'
+  const visiblePods = onlyMine ? pods.filter(isMine) : pods
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['pods'] })
 
@@ -118,6 +137,13 @@ export default function PodList() {
         <span className="font-mono text-[13px] font-medium text-ink" title={p.name}>{p.name}</span>
       ),
     },
+    {
+      key: 'node',
+      title: '节点',
+      width: '80px',
+      render: (p) => <NodeTag node={p.node_effective ?? p.node} />,
+    },
+
     ...(showSpec ? [{
       key: 'cpu',
       title: '规格',
@@ -143,16 +169,19 @@ export default function PodList() {
       key: 'my_role',
       title: '我的角色',
       width: '80px',
-      render: (p) => (
-        <span className={cn(
-          'inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium',
-          p.my_role === 'owner' ? 'bg-ok/10 text-[#1a7f37]' :
-          p.my_role === 'admin' || p.my_role === 'super' ? 'bg-accent/10 text-accent-dark' :
-          'bg-black/[0.03] text-muted',
-        )}>
-          {ROLE_LABELS[p.my_role] ?? p.my_role ?? '—'}
-        </span>
-      ),
+      render: (p) => {
+        const r = p.my_role_for_display ?? p.my_role
+        return (
+          <span className={cn(
+            'inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium',
+            r === 'owner' ? 'bg-ok/10 text-[#1a7f37]' :
+            r === 'admin' || r === 'super' ? 'bg-accent/10 text-accent-dark' :
+            'bg-black/[0.03] text-muted',
+          )}>
+            {r ? (ROLE_LABELS[r] ?? r) : '—'}
+          </span>
+        )
+      },
     },
     {
       key: '_actions',
@@ -191,6 +220,7 @@ export default function PodList() {
             <div data-onboarding-target="pods-view-toggle" className="flex items-center rounded-lg border-[0.5px] border-black/[0.08] overflow-hidden">
               <ViewBtn active={view === 'table'} onClick={() => setView('table')} label="列表" icon={<Rows3 size={14} />} />
               <ViewBtn active={view === 'cards'} onClick={() => setView('cards')} label="卡片" icon={<LayoutGrid size={14} />} />
+              <ViewBtn active={view === 'piles'} onClick={() => setView('piles')} label="按状态" icon={<Box size={14} />} />
             </div>
           )}
           <PageAiAssistant page="pod" context={pods.length > 0 ? `Pod 总数: ${pods.length}\n${pods.slice(0, 30).map(p => `  ${p.name} [${p.status}] CPU:${p.cpu} Mem:${p.mem}GB GPU:${p.gpus.join(',')} 类型:${p.type}`).join('\n')}` : '暂无 Pod'} />
@@ -217,7 +247,7 @@ export default function PodList() {
           <MetricCard icon={<Box size={15} className="text-ok" />} label="运行" value={pods.filter(p => p.status === 'Running').length} />
           <MetricCard icon={<Box size={15} className="text-muted" />} label="已停止" value={pods.filter(p => p.status === 'Stopped').length} />
           <MetricCard icon={<AlertTriangle size={15} className="text-bad" />} label="失败" value={pods.filter(p => p.status === 'Failed').length} />
-          <MetricCard icon={<Box size={15} className="text-accent" />} label="我的" value={pods.filter(p => p.my_role === 'owner' || p.my_role === 'member').length} />
+          <MetricCard icon={<Box size={15} className="text-accent" />} label="我的" value={pods.filter(isMine).length} />
         </div>
       )}
 
@@ -238,6 +268,12 @@ export default function PodList() {
       {/* Filters — wrap on narrow screens instead of squeezing */}
       <div data-onboarding-target="pods-filters" className="flex items-center gap-3 mb-5 flex-wrap">
         <SearchBar onboardingTarget="pods-search" value={search} onChange={setSearch} placeholder="搜索 Pod 名称..." className="flex-1 min-w-[180px] max-w-xs" />
+        <button type="button" data-ux="ux-pods-mine" aria-pressed={onlyMine} className="rounded-md border border-black/10 px-2 py-1 text-xs" onClick={() => setOnlyMine((v) => !v)}>
+          {onlyMine ? '只看我参与的' : '包含别人的 Pod'}
+        </button>
+        <button type="button" className="rounded-md border border-black/10 px-2 py-1 text-xs" aria-pressed={view === 'piles'} onClick={() => setView(view === 'piles' ? (isDesktop ? 'table' : 'cards') : 'piles')}>
+          {view === 'piles' ? '退出分堆' : '按状态分堆'}
+        </button>
         <Select
           onboardingTarget="pods-status"
           value={statusFilter}
@@ -258,18 +294,36 @@ export default function PodList() {
         <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
           {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
         </div>
-      ) : pods.length === 0 ? (
+      ) : visiblePods.length === 0 ? (
         <EmptyState
           icon={<Plus size={24} />}
           title="暂无 Pod"
-          description={search || statusFilter ? '没有匹配的环境，试试调整筛选条件' : '创建一个 Pod 开始开发'}
+          description={search || statusFilter || onlyMine ? '没有匹配的环境，试试调整筛选条件' : '创建一个 Pod 开始开发'}
           action={<Button onClick={() => setCreateOpen(true)}><Plus size={16} /> 创建 Pod</Button>}
         />
+      ) : view === 'piles' ? (
+        <div data-ux="ux-pods-piles" className="space-y-6">
+          {podPiles(visiblePods).map(({ status, pods: group }) => {
+            return (
+              <section key={status}>
+                <h2 className="mb-2 text-sm font-semibold">{podStatusLabel(status)} · {group.length}</h2>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2">
+                  {group.map((pod) => (
+                    <button key={pod.name} type="button" className="rounded-xl border border-black/10 px-3 py-2 text-left text-sm hover:bg-black/[0.03]" onClick={() => navigate(`/pods/${pod.name}`)}>
+                      <span className="font-mono">{pod.name}</span>
+                      <span className="mt-1 block text-xs text-muted">{pod.node_effective ?? pod.node ?? ''}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )
+          })}
+        </div>
       ) : view === 'table' ? (
         <div data-onboarding-state={pods.length > 0 ? 'pods-created' : undefined} className="glass-card rounded-2xl">
           <DataTable
             columns={columns}
-            data={pods}
+            data={visiblePods}
             keyFn={(p) => p.name}
             onRowClick={(p) => navigate(`/pods/${p.name}`)}
           />
@@ -278,7 +332,7 @@ export default function PodList() {
         /* auto-fill + minmax: cards wrap to a new column instead of being
            crushed — never narrower than 260px, never stretched past 1fr */
         <div data-onboarding-state={pods.length > 0 ? 'pods-created' : undefined} className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
-          {pods.map((pod) => (
+          {visiblePods.map((pod) => (
             <PodCard
               key={pod.name}
               name={pod.name}
@@ -287,9 +341,10 @@ export default function PodList() {
               mem={typeof pod.mem === 'string' ? parseInt(pod.mem) || 0 : pod.mem}
               gpus={pod.gpus?.length ?? 0}
               storage={typeof pod.storage === 'string' ? parseInt(pod.storage) || 0 : pod.storage}
-              owner={(pod.owner_labels ?? pod.owners)?.join('、') || pod.my_role || ''}
+              owner={(pod.owner_labels ?? pod.owners)?.join('、') || ''}
               members={pod.members?.length}
-              role={pod.my_role}
+              role={pod.my_role_for_display ?? pod.my_role ?? undefined}
+              node={pod.node_effective ?? pod.node}
               reason={pod.reason}
               onClick={() => navigate(`/pods/${pod.name}`)}
               onStart={() => act(pod, 'start', '启动中')}
@@ -376,6 +431,8 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
   const [cpu, setCpu] = useState(String(POD_TYPES.cpu.cpu))
   const [mem, setMem] = useState(String(POD_TYPES.cpu.mem))
   const [storage, setStorage] = useState('5')
+  const [node, setNode] = useState('auto')
+  const [tag, setTag] = useState('')
   const [loading, setLoading] = useState(false)
   const toast = useToastStore((s) => s.add)
   const navigate = useNavigate()
@@ -384,17 +441,65 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
   const { data: gpuData } = useQuery<any>({
     queryKey: ['infra-gpu'],
     queryFn: () => api.get('/infra/gpu'),
-    enabled: open && type === 'gpu',
+    enabled: open && type === 'gpu' && node === 'auto',
     staleTime: 10_000,
   })
   const gpuList: any[] = gpuData?.gpus ?? []
 
+  // Cluster nodes for placement (auto / wz8 / spark …). Fetched on open.
+  const { data: nodesData } = useQuery<any>({
+    queryKey: ['infra-nodes'],
+    queryFn: () => api.get('/infra/nodes'),
+    enabled: open,
+    staleTime: 60_000,
+  })
+  const nodeOptions: string[] = nodesData?.placement_options ?? ['auto']
+  const nodeInfos: any[] = nodesData?.nodes ?? []
+  // GPU choices for an explicitly picked node come from the node's labels
+  // (the /infra/gpu list only covers the node the platform runs on).
+  const pickedNode = nodeInfos.find((n) => n.name === node)
+  const nodeGpuList: any[] = node !== 'auto' && pickedNode
+    ? Array.from({ length: +(pickedNode.gpu_count || 0) }, (_, i) => ({
+        index: i,
+        name: (pickedNode.gpu_models || '').replace(/-/g, ' '),
+        groups: [],
+      }))
+    : []
+  const gpuChoices = node === 'auto' ? gpuList : nodeGpuList
+
+  // 活动资源上限（仅 UniSSO 用户受约束）——用它对表单设上限、隐藏 GPU。
+  const { data: limits } = useQuery<PodLimits>({
+    queryKey: ['pod-limits'],
+    queryFn: () => api.get('/pods/limits'),
+    enabled: open,
+    staleTime: 60_000,
+  })
+  const scoped = !!limits?.scoped
+  const caps = limits?.caps
+  const gpuAllowed = !scoped || !!caps?.gpu_allowed
+
+  // 受约束时把已填规格夹到上限、强制回 CPU 类型（默认内存 4GB 也要压到 2Gi）。
+  useEffect(() => {
+    if (!scoped || !caps) return
+    setType('cpu')
+    setSelectedGpus([])
+    setCpu((v) => String(Math.min(+v || caps.cpu, caps.cpu)))
+    setMem((v) => String(Math.min(+v || caps.mem_gib, caps.mem_gib)))
+    setStorage((v) => String(Math.min(+v || caps.storage_gib, caps.storage_gib)))
+  }, [scoped, caps?.cpu, caps?.mem_gib, caps?.storage_gib])  // eslint-disable-line react-hooks/exhaustive-deps
+
   const switchType = (t: PodType) => {
+    if (t === 'gpu' && !gpuAllowed) return
     setType(t)
     // Reset cpu/mem to the preset of the new type (user can still edit after).
     setCpu(String(POD_TYPES[t].cpu))
     setMem(String(POD_TYPES[t].mem))
     if (t === 'cpu') setSelectedGpus([])
+  }
+  const switchNode = (n: string) => {
+    setNode(n)
+    // GPU indices are per-node inventories — drop stale picks on switch.
+    setSelectedGpus([])
   }
   const toggleGpu = (idx: number) =>
     setSelectedGpus((prev) => (prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx].sort((a, b) => a - b)))
@@ -411,6 +516,8 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
         mem: +mem || spec.mem,
         gpus: type === 'gpu' ? selectedGpus.join(',') : 0,
         storage: +storage || 5,
+        node,
+        tag: tag.trim() || undefined,
       }
       const res = await api.post<{ name?: string }>('/pods', payload)
       const finalName = res?.name || name
@@ -427,6 +534,15 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
   return (
     <Dialog open={open} onClose={onClose} title="创建 Pod" description="配置新的容器开发环境" width="max-w-md">
       <div className="space-y-4">
+        {scoped && caps && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-[10px] bg-amber-50 border border-amber-200 text-[12px] text-amber-800">
+            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+            <span>
+              活动资源上限：CPU ≤ {caps.cpu} 核 / 内存 ≤ {caps.mem} / 存储 ≤ {caps.storage}
+              {!caps.gpu_allowed && ' / 禁止 GPU'}。超出会被拒绝或夹取。
+            </span>
+          </div>
+        )}
         <div>
           <Input label="名称" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-pod" hint="小写字母、数字、连字符；大写自动转小写，下划线自动转连字符" />
           <div className="mt-1"><AiFormHelper type="pod" partial={name} onApply={setName} /></div>
@@ -436,7 +552,9 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
         <div>
           <label className="block text-xs font-semibold text-ink-2 mb-1.5">类型</label>
           <div className="grid grid-cols-2 gap-2">
-            {(Object.keys(POD_TYPES) as PodType[]).map((t) => (
+            {(Object.keys(POD_TYPES) as PodType[])
+              .filter((t) => gpuAllowed || t !== 'gpu')
+              .map((t) => (
               <button
                 key={t}
                 type="button"
@@ -455,17 +573,52 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
           </div>
         </div>
 
+        {/* 节点落位：auto = 调度器自选（默认 wz8）；其余为显式指定节点 */}
+        {nodeOptions.length > 1 && (
+          <div>
+            <label className="block text-xs font-semibold text-ink-2 mb-1.5">
+              节点 <span className="font-normal text-muted">（auto = 调度器自选）</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {nodeOptions.map((n) => {
+                const info = nodeInfos.find((x) => x.name === n)
+                return (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => switchNode(n)}
+                    className={cn(
+                      'px-3 py-2 rounded-[10px] text-sm text-left border-[0.5px] transition-all duration-100',
+                      node === n
+                        ? 'border-accent bg-accent-light text-accent-dark font-semibold shadow-[0_0_0_3px_rgba(10,132,255,0.12)]'
+                        : 'border-black/8 bg-white/62 text-ink-2 hover:bg-white/85',
+                    )}
+                  >
+                    <span className="block">{n === 'auto' ? 'auto（自动）' : n}</span>
+                    {info && (
+                      <span className="block text-[11px] font-normal text-muted mt-0.5">
+                        {info.arch} · {info.gpu_models?.replace(/-/g, ' ') || '无 GPU 标签'}
+                        {info.ready === 'True' ? '' : ' · 未就绪'}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {/* GPU 选择（多选） */}
         {type === 'gpu' && (
           <div>
             <label className="block text-xs font-semibold text-ink-2 mb-1.5">
               GPU 选择 <span className="font-normal text-muted">（可多选）</span>
             </label>
-            {gpuList.length === 0 ? (
+            {gpuChoices.length === 0 ? (
               <p className="text-xs text-muted">未检测到可用 GPU</p>
             ) : (
               <div className="grid grid-cols-1 gap-2">
-                {gpuList.map((gpu: any) => {
+                {gpuChoices.map((gpu: any) => {
                   const idx = gpu.index as number
                   const on = selectedGpus.includes(idx)
                   const users: string[] = gpu.groups ?? []
@@ -504,11 +657,23 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
 
         {/* 规格（可编辑，按类型预填）+ 存储 */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Input label="CPU (核)" type="number" value={cpu} onChange={(e) => setCpu(e.target.value)} />
-          <Input label="内存 (GB)" type="number" value={mem} onChange={(e) => setMem(e.target.value)} />
-          <Input label="存储 (GB)" type="number" value={storage} onChange={(e) => setStorage(e.target.value)} />
+          <Input label="CPU (核)" type="number" value={cpu} max={scoped ? caps?.cpu : undefined}
+                 onChange={(e) => setCpu(e.target.value)} />
+          <Input label="内存 (GB)" type="number" value={mem} max={scoped ? caps?.mem_gib : undefined}
+                 onChange={(e) => setMem(e.target.value)} />
+          <Input label="存储 (GB)" type="number" value={storage} max={scoped ? caps?.storage_gib : undefined}
+                 onChange={(e) => setStorage(e.target.value)} />
         </div>
 
+        {/* 活动标签（可选）：管理员可按 tag 批量给这批 Pod 发额度 */}
+        <div>
+          <Input label="标签（可选）" value={tag} onChange={(e) => setTag(e.target.value)}
+                 placeholder="活动X" hint="用于活动分组；可稍后在 Pod 设置里修改。管理员可按标签批量发放额度。" />
+        </div>
+
+        <p data-ux="ux-pods-quota" className="text-xs text-muted">
+          {scoped ? `这次最多 CPU ${caps?.cpu ?? '—'} 核、内存 ${caps?.mem_gib ?? '—'} GB、存储 ${caps?.storage_gib ?? '—'} GB。` : '规格可以按这个环境实际需要填写，创建后仍能在设置里改。'}
+        </p>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button onClick={handleCreate} loading={loading} disabled={!canCreate}>创建</Button>
