@@ -141,3 +141,7 @@ podwatch/
 podwatch/**
 .ide_agent_goals/
 *.tsbuildinfo
+
+# ── 运行时锁（flock 文件，进程用后仍留档）─────────────────────────────────────
+locks/
+*.lock
