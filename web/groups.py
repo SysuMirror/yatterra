@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Core logic for the platform groups: state, manifests, frpc, kubectl."""
 import users
-import json, os, secrets, string, subprocess, textwrap, shutil, time, threading
+import json, os, re, secrets, string, subprocess, textwrap, shutil, time, threading
 import audit
 import req_estimate
 import siteconf
+import nodes
 
 # --- constants ---
 STATE_FILE = siteconf.path("groups.json")
@@ -19,7 +20,10 @@ WEB_NODEPORT_BASE = int(os.environ.get("YATTERRA_WEB_NODEPORT_BASE", "32000"))
 SSH_PUBLIC_BASE = siteconf.SSH_PUBLIC_BASE
 WEB_PUBLIC_BASE = siteconf.WEB_PUBLIC_BASE
 GPU_COUNT = 3
-MAX_GROUPS = 50  # public ports 22001-22050 / 23001-23050
+# Public-port pool.  index i -> ssh 22000+i / web 23000+i / nodePort 31000+i / 32000+i.
+# Freed indexes are reused (alloc_index picks the lowest gap), so a fully deleted
+# group releases its ports for the next create.
+MAX_GROUPS = int(os.environ.get("YATTERRA_MAX_GROUPS", "100"))
 
 FRPC_MARK_BEGIN = "# >>> yatterra managed >>>"
 FRPC_MARK_END = "# <<< yatterra managed <<<"
@@ -40,7 +44,7 @@ NGINX_OFFLINE_INNER = PLATFORM_GUI_PORT - 10000
 NGINX_HTPASSWD = os.environ.get("YATTERRA_NGINX_HTPASSWD",
                                 "/etc/nginx/yatterra-htpasswd")
 # group types whose public web entry gets auth_basic
-AUTH_WEB_TYPES = {"windows"}
+AUTH_WEB_TYPES = {"windows", "android"}
 
 DEFAULT_CPU_CPU = "2"
 DEFAULT_CPU_MEM = "4Gi"
@@ -62,6 +66,35 @@ WINDOWS_DEFAULT_MEM = "10Gi"
 # Windows account dockurr creates (must NOT be a built-in name: Administrator,
 # Guest, DefaultAccount, WDAGUtilityAccount -> dockurr errors out with exit 84).
 WINDOWS_DEFAULT_USER = os.environ.get("YATTERRA_WINDOWS_USER", "winadmin")
+
+# Android VM group (budtmo/docker-android = QEMU Android emulator in a container,
+# noVNC web UI + ADB + Appium). Needs /dev/kvm (privileged) -> distinct type.
+ANDROID_IMAGE = os.environ.get("YATTERRA_ANDROID_IMAGE",
+                               "docker.io/budtmo/docker-android:emulator_14.0")
+ANDROID_ROOT = os.environ.get("YATTERRA_ANDROID_ROOT", "/mnt/sdb/yatterra-android")
+ANDROID_DEFAULT_CPU = "4"
+ANDROID_DEFAULT_MEM = "8Gi"
+# Internal ports exposed via ClusterIP Service for automation tooling.
+ANDROID_ADB_PORT = 5555
+ANDROID_APPIUM_PORT = 4723
+# noVNC (websockify) port. NOT 8080: the image's `docker-android start vnc_web`
+# shells out to /opt/noVNC/utils/novnc_proxy as
+#     novnc_proxy --vnc localhost:5900 localhost:8080
+# but that novnc_proxy only honours the listen port via `--listen`; a bare
+# positional breaks out of its arg loop and is dropped, so it always binds its
+# compiled-in default 6080 and WEB_VNC_PORT is silently ignored. We therefore
+# serve the web UI on 6080 and let the Service redirect 8080 -> 6080 (see
+# _web_target_port); WEB_VNC_PORT is still pinned to 6080 so both code paths
+# land on the same port if the image ever starts honouring it.
+ANDROID_WEB_PORT = 6080
+# The image runs the emulator as the unprivileged `androidusr` account and its
+# code lives *inside* /home/androidusr (docker-android/mixins/scripts/run.sh is
+# the ENTRYPOINT). Persisting that dir means mounting an (initially empty)
+# hostPath over the image's home — which would hide the entrypoint. So the
+# initContainer below re-seeds the mount from the image on first boot (same
+# trick as the /home/cloud re-seed in INIT_SCRIPT) and hands it to this uid.
+ANDROID_UID = 1300
+ANDROID_GID = 1301
 
 # Container init: the hostPath at /home/cloud shadows the image's skel-populated
 # home, so on first boot (empty mount) we re-seed from /etc/skel + chown to cloud,
@@ -111,13 +144,31 @@ if [ "$SUP_RUNNING" = "0" ] && [ -e /home/cloud/deploy/supervisord.conf ] && [ -
 fi
 exec /usr/sbin/sshd -D -e"""
 
+# Appended to the init script for privileged groups only. Privileged groups
+# install host-coupled software (e.g. a VPN client) that lives in the ephemeral
+# container rootfs (/usr/local, /lib, /etc/init.d) and disappears when the Pod is
+# recreated. The durable payload is kept under /home/cloud; this hook re-wires it
+# on every boot. Guarded so a missing/renamed hook is a no-op, and emitted only
+# for privileged groups so ordinary groups' manifests stay byte-for-byte unchanged.
+PRIV_BOOT_HOOK = """# privileged-group boot hook (idempotent): re-wire software that lives outside
+# the persistent /home/cloud after a Pod rebuild. Run in the background so a slow
+# first-boot apt install never delays sshd.
+if [ -x /home/cloud/bin/boot-hook.sh ]; then nohup /home/cloud/bin/boot-hook.sh >/dev/null 2>&1 & fi
+"""
 
-def _cmd_block():
+
+def _cmd_block(g=None):
     """YAML for the pod command (tini -> bash -c INIT_SCRIPT).
 
     Container fields live at 8 spaces; the block-scalar content must be indented
     past the sibling fields (env:/ports: at 8) so the scalar terminates correctly.
+    Privileged groups additionally get the boot hook that restores host-coupled
+    software persisted under /home/cloud.
     """
+    script = INIT_SCRIPT
+    if g is not None and g.get("privileged"):
+        script = script.replace("exec /usr/sbin/sshd -D -e",
+                                PRIV_BOOT_HOOK + "exec /usr/sbin/sshd -D -e")
     return (
         "        command:\n"
         "        - /usr/bin/tini\n"
@@ -125,8 +176,68 @@ def _cmd_block():
         "        - /bin/bash\n"
         "        - -c\n"
         "        - |\n"
-        + textwrap.indent(INIT_SCRIPT, "            ")
+        + textwrap.indent(script, "            ")
     )
+
+
+def _check_image(image):
+    """Validate a per-group custom container image reference."""
+    image = str(image or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", image):
+        raise ValueError("镜像名不合法")
+    return image
+
+
+def _check_mounts(mounts):
+    """Validate a group's extra hostPath mounts.
+
+    Each entry: {"path": <host abs path>, "mountPath": <container abs path>,
+    "readOnly": bool (default True)}. Used to give a service pod access to
+    resources kept on the node outside the standard /shared + /home/cloud pair
+    (e.g. model weights). Platform dirs must not be shadowed.
+    """
+    out = []
+    for m in (mounts or []):
+        if not isinstance(m, dict):
+            raise ValueError("mounts 每一项都必须是对象 {path, mountPath, readOnly}")
+        p = str(m.get("path") or "").strip()
+        mp = str(m.get("mountPath") or m.get("mount") or "").strip()
+        if not p.startswith("/") or not mp.startswith("/"):
+            raise ValueError("mounts 的 path / mountPath 必须是绝对路径")
+        if mp.rstrip("/") in ("", "/shared", "/home/cloud", "/home", "/data"):
+            raise ValueError(f"挂载点 {mp} 不允许覆盖平台目录")
+        out.append({"path": p, "mountPath": mp.rstrip("/"),
+                    "readOnly": bool(m.get("readOnly", True))})
+    return out
+
+
+def _extra_mounts_yaml(g):
+    """Render extra volumeMounts/volumes YAML from g["mounts"].
+
+    Returns (mounts_yaml, volumes_yaml), both "" when the group declares none, so
+    ordinary groups' manifests are byte-for-byte unchanged.
+    """
+    mounts = g.get("mounts") or []
+    if not mounts:
+        return "", ""
+    reserved = {"shared", "group-home", "group-data", "mps-pipe", "mps-log", "host-cuda"}
+    mnt, vol, seen = [], [], set()
+    for m in mounts:
+        mp = str(m.get("mountPath") or "").strip()
+        hp = str(m.get("path") or "").strip()
+        if not mp.startswith("/") or not hp.startswith("/"):
+            continue
+        base = ("extra-" + re.sub(r"[^a-z0-9-]+", "-", mp.strip("/").lower()).strip("-"))[:40] or "extra"
+        name, n = base, 1
+        while name in seen or name in reserved:
+            n += 1
+            name = f"{base}-{n}"
+        seen.add(name)
+        ro = m.get("readOnly", True)
+        mnt.append(f"        - name: {name}\n          mountPath: {mp}"
+                   + ("\n          readOnly: true" if ro else ""))
+        vol.append(f"      - name: {name}\n        hostPath:\n          path: {hp}\n          type: Directory")
+    return "\n".join(mnt), "\n".join(vol)
 
 
 # --- state ---
@@ -157,7 +268,7 @@ def alloc_index(state):
     while i in used:
         i += 1
     if i > MAX_GROUPS:
-        raise ValueError("已达最大组数 10(公网端口只放了10个)")
+        raise ValueError(f"已达最大组数 {MAX_GROUPS}(公网端口 {SSH_PUBLIC_BASE+1}-{SSH_PUBLIC_BASE+MAX_GROUPS} / {WEB_PUBLIC_BASE+1}-{WEB_PUBLIC_BASE+MAX_GROUPS})")
     return i
 
 
@@ -250,10 +361,12 @@ def pod_status(name):
 
 
 # --- manifests ---
-def _all_gpu_ids():
-    """Detect all GPU indices on the node via nvidia-smi. Falls back to [0].
-    Cached after first success. Used so GPU group pods see every card and the
-    per-deploy scheduler (CUDA_VISIBLE_DEVICES) can place work on any of them."""
+def _all_gpu_ids(node=None):
+    """GPU indices visible on a node. Delegates to the node registry
+    (nodes.gpu_ids); nvidia-smi is kept only as a local fallback for the
+    default node so callers that don't know about nodes keep working."""
+    if node is not None:
+        return nodes.gpu_ids(node)
     if _all_gpu_ids._cache is not None:
         return _all_gpu_ids._cache
     ids = []
@@ -394,10 +507,137 @@ spec:
 """
 
 
+def _android_deployment_yaml(g):
+    """Deployment for an Android-VM group: a single privileged budtmo/docker-android
+    container (QEMU/KVM Android emulator) exposing noVNC web UI on the group web
+    port (ANDROID_WEB_PORT=6080, published as 8080 by the Service), ADB on
+    5555, and Appium on 4723. Needs /dev/kvm (=> privileged). Persistent data
+    stored on the hostPath under ANDROID_ROOT."""
+    name = g["name"]
+    req_cpu, req_mem, req_storage = req_estimate.request_for(g)
+    env_lines = [
+        # noVNC web: WEB_VNC=true enables it, and WEB_VNC_PORT is pinned to
+        # ANDROID_WEB_PORT. Do NOT change this to 8080: this image's novnc_proxy
+        # ignores WEB_VNC_PORT and binds 6080 regardless (see ANDROID_WEB_PORT),
+        # so the Service redirects 8080 -> 6080 via _web_target_port.
+        '        - name: WEB_VNC\n          value: "true"',
+        f'        - name: WEB_VNC_PORT\n          value: "{ANDROID_WEB_PORT}"',
+        '        - name: VNC_PORT\n          value: "5900"',
+        # Enable Appium server on its default port (4723).
+        '        - name: APPIUM\n          value: "true"',
+        # Pick a sensible device profile; overridable via group env below.
+        '        - name: EMULATOR_DEVICE\n          value: "Samsung Galaxy S10"',
+        # GPU acceleration: host mode leverages KVM for hardware GL.
+        '        - name: EMULATOR_GPU\n          value: "host"',
+        # Set ADB port explicitly (default 5555).
+        f'        - name: ADB_PORT\n          value: "{ANDROID_ADB_PORT}"',
+    ]
+    # outbound proxy defaults so the image can pull system images;
+    # overridable by the group's custom env below.
+    _custom_keys = {str(k).upper() for k in (g.get("env") or {})}
+    _proxy_env = siteconf.proxy_env_defaults() if siteconf.proxy_auto_enabled(g.get("env")) else {}
+    for k, v in _proxy_env.items():
+        if k.upper() in _custom_keys:
+            continue
+        env_lines.append(f'        - name: {k}\n          value: {json.dumps(v)}')
+    for k, v in sorted((g.get("env") or {}).items()):
+        env_lines.append(f'        - name: {k}\n          value: {json.dumps(str(v))}')
+    env_block = "\n".join(env_lines)
+    return f"""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: group-{name}
+  namespace: {NS}
+  labels:
+    app: group-{name}
+    managed-by: yatterra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: group-{name}
+  template:
+    metadata:
+      labels:
+        app: group-{name}
+    spec:
+      terminationGracePeriodSeconds: 120
+      initContainers:
+      # /home/androidusr is bind-mounted onto an empty hostPath; the image's
+      # entrypoint (docker-android/mixins/scripts/run.sh) lives there, so seed
+      # it from the image on first boot (no-op afterwards). Runs as root only to
+      # write the mount + chown it to the emulator uid.
+      - name: seed-home
+        image: {ANDROID_IMAGE}
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "-lc"]
+        args:
+        - |
+          set -e
+          if [ ! -e /persist/docker-android/mixins/scripts/run.sh ]; then
+            cp -a /home/androidusr/. /persist/
+            chown {ANDROID_UID}:{ANDROID_GID} /persist
+          fi
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        volumeMounts:
+        - name: storage
+          mountPath: /persist
+      containers:
+      - name: android
+        image: {ANDROID_IMAGE}
+        imagePullPolicy: IfNotPresent
+        env:
+{env_block}
+        ports:
+        - containerPort: {ANDROID_WEB_PORT}
+        - containerPort: {ANDROID_ADB_PORT}
+        - containerPort: {ANDROID_APPIUM_PORT}
+        resources:
+          limits:
+            cpu: "{g['cpu']}"
+            memory: "{g['mem']}"
+            ephemeral-storage: "{g['storage']}"
+          requests:
+            cpu: "{req_cpu}"
+            memory: "{req_mem}"
+            ephemeral-storage: "{req_storage}"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
+        volumeMounts:
+        - name: dev-kvm
+          mountPath: /dev/kvm
+        - name: dev-tun
+          mountPath: /dev/net/tun
+        - name: storage
+          mountPath: /home/androidusr
+      volumes:
+      - name: dev-kvm
+        hostPath:
+          path: /dev/kvm
+          type: CharDevice
+      - name: dev-tun
+        hostPath:
+          path: /dev/net/tun
+          type: CharDevice
+      - name: storage
+        hostPath:
+          path: {ANDROID_ROOT}/{name}
+          type: DirectoryOrCreate
+"""
+
+
 def deployment_yaml(g):
     name = g["name"]
     if g.get("type") == "windows":
         return _windows_deployment_yaml(g)
+    if g.get("type") == "android":
+        return _android_deployment_yaml(g)
     is_gpu = g["type"] == "gpu"
     cpu = g["cpu"]; mem = g["mem"]
     # limits = user-set cap; requests = EWMA estimate from actual usage
@@ -416,24 +656,28 @@ def deployment_yaml(g):
     )
     runtime_class = ""
     if is_gpu:
-        # Pod sees only its assigned GPUs (g["gpus"]); falls back to all if
-        # unset. This isolates the group's interactive environment at the CUDA
-        # driver level. The per-deploy scheduler further places supervised
-        # jobs within this visible set (scheduler.place_train respects g["gpus"]).
-        assigned = g.get("gpus") or []
-        vis = ",".join(map(str, assigned)) if assigned else ",".join(map(str, _all_gpu_ids()))
+        # Pod sees only its assigned GPUs (g["gpus"]); falls back to all of the
+        # TARGET NODE's inventory if unset. This isolates the group's interactive
+        # environment at the CUDA driver level. The per-deploy scheduler further
+        # places supervised jobs within this visible set (scheduler.place_train
+        # respects g["gpus"]).
+        node = nodes.node_for(g)
         env_lines.append(
-            f'        - name: NVIDIA_VISIBLE_DEVICES\n          value: "{vis}"'
+            f'        - name: NVIDIA_VISIBLE_DEVICES\n          value: "{nodes.visible_devices(node, g.get("gpus"))}"'
         )
         # MPS (Multi-Process Service): cooperative GPU sharing for co-resident
         # processes. Pipe+log dirs are host-mounted so all GPU pods share the
         # single host MPS daemon. Non-MPS fallback if daemon is down.
-        env_lines.append('        - name: CUDA_MPS_PIPE_DIRECTORY\n          value: "/tmp/nvidia-mps"')
-        env_lines.append('        - name: CUDA_MPS_LOG_DIRECTORY\n          value: "/var/log/nvidia-mps"')
+        # Node-gated: only nodes whose profile runs an MPS daemon get this.
+        if nodes.has_mps(node):
+            env_lines.append('        - name: CUDA_MPS_PIPE_DIRECTORY\n          value: "/tmp/nvidia-mps"')
+            env_lines.append('        - name: CUDA_MPS_LOG_DIRECTORY\n          value: "/var/log/nvidia-mps"')
         # Host CUDA toolkit (nvcc + headers) mounted read-only so JIT-compiled
         # kernels (e.g. deep_gemm used by MoE/FP4 models like Ling-3.0) can
         # build inside the pod. The driver alone (via nvidia runtime) is not enough.
-        env_lines.append('        - name: CUDA_HOME\n          value: "/usr/local/cuda"')
+        # Node-gated: only nodes that expose a host CUDA tree get this.
+        if nodes.cuda_host(node):
+            env_lines.append('        - name: CUDA_HOME\n          value: "/usr/local/cuda"')
         runtime_class = "      runtimeClassName: nvidia\n"
     # outbound proxy defaults (host mihomo core, rule mode routing). Skipped when
     # the group overrides that key in its custom env below, or when the group
@@ -449,18 +693,20 @@ def deployment_yaml(g):
     for k, v in sorted((g.get("env") or {}).items()):
         env_lines.append(f'        - name: {k}\n          value: {json.dumps(str(v))}')
     env_block = "\n".join(env_lines)
-    cmd = _cmd_block()
-    # MPS pipe/log dir mounts (GPU pods only, shared with host daemon)
+    cmd = _cmd_block(g)
+    # explicit node placement ("" for auto groups → manifest unchanged)
+    placement = nodes.placement_yaml(nodes.node_for(g))
+    # MPS pipe/log dir mounts (GPU pods only, shared with host daemon).
+    # Node-gated: a node without an MPS daemon / host CUDA tree (e.g. spark)
+    # must not reference hostPaths that only exist on the MPS node.
+    node = nodes.node_for(g)
     mps_mounts = ""
     mps_volumes = ""
-    if is_gpu:
+    if is_gpu and nodes.has_mps(node):
         mps_mounts = """        - name: mps-pipe
           mountPath: /tmp/nvidia-mps
         - name: mps-log
-          mountPath: /var/log/nvidia-mps
-        - name: host-cuda
-          mountPath: /usr/local/cuda
-          readOnly: true"""
+          mountPath: /var/log/nvidia-mps"""
         mps_volumes = """      - name: mps-pipe
         hostPath:
           path: /tmp/nvidia-mps
@@ -468,11 +714,41 @@ def deployment_yaml(g):
       - name: mps-log
         hostPath:
           path: /var/log/nvidia-mps
-          type: DirectoryOrCreate
+          type: DirectoryOrCreate"""
+    if is_gpu and nodes.cuda_host(node):
+        mps_mounts += """
+        - name: host-cuda
+          mountPath: /usr/local/cuda
+          readOnly: true"""
+        mps_volumes += """
       - name: host-cuda
         hostPath:
           path: /usr/local/cuda
           type: Directory"""
+    # per-group custom image + extra hostPath mounts (service pods that need
+    # resources outside the standard /shared + /home/cloud pair). Absent for
+    # ordinary groups → manifest unchanged.
+    g_image = g.get("image") or IMAGE
+    extra_mounts, extra_volumes = _extra_mounts_yaml(g)
+    if extra_mounts:
+        mps_mounts = (mps_mounts + "\n" + extra_mounts) if mps_mounts else extra_mounts
+    if extra_volumes:
+        mps_volumes = (mps_volumes + "\n" + extra_volumes) if mps_volumes else extra_volumes
+    # Opt-in privileged mode (g["privileged"]): a group whose workload creates a
+    # network tunnel (e.g. a VPN client) needs the host /dev/net/tun device plus
+    # NET_ADMIN to configure the interface. Ordinary groups keep the default
+    # unprivileged container → manifest byte-for-byte unchanged.
+    if g.get("privileged"):
+        security_block = ('          privileged: true\n'
+                          '          capabilities:\n'
+                          '            add: ["NET_ADMIN"]')
+        tun_mounts = "\n        - name: dev-tun\n          mountPath: /dev/net/tun"
+        tun_volumes = ("\n      - name: dev-tun\n        hostPath:\n"
+                       "          path: /dev/net/tun\n          type: CharDevice")
+    else:
+        security_block = "          privileged: false"
+        tun_mounts = ""
+        tun_volumes = ""
     return f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -483,6 +759,8 @@ metadata:
     managed-by: yatterra
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: group-{name}
@@ -491,16 +769,18 @@ spec:
       labels:
         app: group-{name}
     spec:
-{runtime_class}      containers:
+{runtime_class}{placement}      containers:
       - name: ubuntu
-        image: {IMAGE}
+        image: {g_image}
         imagePullPolicy: IfNotPresent
 {cmd}
         env:
 {env_block}
         ports:
+        # The entrypoint is sshd on 22. 8080 is the Service targetPort for a
+        # process the user starts later; it is not a containerPort because
+        # nothing in this command binds it.
         - containerPort: 22
-        - containerPort: 8080
         resources:
           limits:
             cpu: "{cpu}"
@@ -511,14 +791,18 @@ spec:
             memory: "{req_mem}"
             ephemeral-storage: "{req_storage}"
         securityContext:
-          privileged: false
+{security_block}
         volumeMounts:
         - name: shared
           mountPath: /shared
           readOnly: true
         - name: group-home
           mountPath: /home/cloud
-{mps_mounts}
+        - name: group-data
+          mountPath: /data
+        - name: interop
+          mountPath: /interop
+{mps_mounts}{tun_mounts}
       volumes:
       - name: shared
         hostPath:
@@ -528,7 +812,22 @@ spec:
         hostPath:
           path: {GROUP_DATA_ROOT}/{name}/home
           type: DirectoryOrCreate
-{mps_volumes}
+      # Fixed-size ext4 image, loop-mounted on the host before the pod starts.
+      # type Directory (not Create): a missing mount must fail the pod instead
+      # of silently giving it an uncapped directory on the HDD.
+      - name: group-data
+        hostPath:
+          path: {GROUP_DATA_ROOT}/{name}/data
+          type: Directory
+      # cross-node sync disk: same path on every node (local on the platform
+      # node, NFS-mounted on remote ones). type: Directory (NOT Create) so a
+      # missing mount fails the pod loudly instead of silently forking a local
+      # dir per node.
+      - name: interop
+        hostPath:
+          path: {siteconf.INTEROP_ROOT}
+          type: Directory
+{mps_volumes}{tun_volumes}
 """
 
 
@@ -591,6 +890,17 @@ def set_internal_ports(name, ports):
     return clean
 
 
+def _web_target_port(g):
+    """Container port backing a group's web UI.
+
+    Everything serves on 8080 except android, whose image's noVNC binds 6080 and
+    cannot be moved (see ANDROID_WEB_PORT). The Service still advertises port
+    8080 — only the targetPort differs — so the relay/frpc chain (which reaches
+    the Service's nodePort -> port 8080) is unchanged.
+    """
+    return ANDROID_WEB_PORT if g.get("type") == "android" else 8080
+
+
 def service_yaml(g):
     name = g["name"]
     return f"""apiVersion: v1
@@ -612,7 +922,7 @@ spec:
     nodePort: {g["ssh_nodeport"]}
   - name: web
     port: 8080
-    targetPort: 8080
+    targetPort: {_web_target_port(g)}
     nodePort: {g["web_nodeport"]}
 """
 
@@ -682,9 +992,12 @@ def apply_group(g):
 
 
 def delete_group_k8s(name):
-    kubectl("delete", "deployment,service", f"group-{name}", "--ignore-not-found=true", check=False)
+    kubectl("delete", "deployment,service", f"group-{name}",
+            "--ignore-not-found=true", "--wait=true", "--timeout=90s",
+            check=False, timeout=100)
     kubectl("delete", "service", internal_service_name(name),
-            "--ignore-not-found=true", check=False)
+            "--ignore-not-found=true", "--wait=true", "--timeout=30s",
+            check=False, timeout=40)
 
 
 # --- frpc ---
@@ -850,7 +1163,7 @@ def rewrite_nginx_web(state):
     """Sync cloud nginx https-web.conf: rewrite all 23xxx/24000 SSL server blocks
     from state. Reads → strips → inserts → nginx -t → reload, with rollback.
     Returns (ok, msg). Never raises (best-effort)."""
-    import base64, remote_hosts
+    import remote_hosts
     section = build_nginx_web_block(state)
     try:
         ok, out = remote_hosts.run_remote(
@@ -866,12 +1179,9 @@ def rewrite_nginx_web(state):
     try:
         hp = _htpasswd_content(state)
         if hp:
-            b64hp = base64.b64encode(hp.encode("utf-8")).decode("ascii")
-            remote_hosts.run_remote(
-                NGINX_REMOTE_HOST,
-                f"echo {b64hp} | base64 -d | tee {NGINX_HTPASSWD} > /dev/null"
-                f" && chmod 644 {NGINX_HTPASSWD}",
-                sudo=True, timeout=20)
+            remote_hosts.write_remote_file(
+                NGINX_REMOTE_HOST, NGINX_HTPASSWD, hp,
+                sudo=True, mode="644", timeout=20)
     except Exception:
         pass
 
@@ -887,11 +1197,8 @@ def rewrite_nginx_web(state):
         return True, "无变化"
 
     try:
-        b64 = base64.b64encode(new.encode("utf-8")).decode("ascii")
-        ok, out = remote_hosts.run_remote(
-            NGINX_REMOTE_HOST,
-            f"echo {b64} | base64 -d | tee {NGINX_WEB_CONF} > /dev/null",
-            sudo=True, timeout=30)
+        ok, out = remote_hosts.write_remote_file(
+            NGINX_REMOTE_HOST, NGINX_WEB_CONF, new, sudo=True, timeout=30)
         if not ok:
             return False, f"写 {NGINX_WEB_CONF} 失败: {out}"
     except Exception as e:
@@ -903,11 +1210,8 @@ def rewrite_nginx_web(state):
     if not (ok and "test is successful" in out):
         # rollback
         try:
-            b64 = base64.b64encode(old.encode("utf-8")).decode("ascii")
-            remote_hosts.run_remote(
-                NGINX_REMOTE_HOST,
-                f"echo {b64} | base64 -d | tee {NGINX_WEB_CONF} > /dev/null",
-                sudo=True, timeout=30)
+            remote_hosts.write_remote_file(
+                NGINX_REMOTE_HOST, NGINX_WEB_CONF, old, sudo=True, timeout=30)
         except Exception:
             pass
         return False, f"nginx -t 失败已回滚: {out.strip().splitlines()[-1] if out.strip() else '未知'}"
@@ -942,34 +1246,85 @@ def _norm_storage(storage):
     return s
 
 
+def norm_tag(tag):
+    """规范化 Pod 标签：strip、限 64 字符、字符白名单；空 → None。
+
+    标签只作元数据（活动分组/批量充值用），不进 manifest，故允许中文。
+    """
+    if tag is None:
+        return None
+    s = str(tag).strip()
+    if not s:
+        return None
+    if len(s) > 64:
+        raise ValueError("标签最长 64 个字符")
+    if not re.fullmatch(r"[\w \-.一-鿿]+", s):
+        raise ValueError("标签仅支持中英文、数字、空格、- _ .")
+    return s
+
+
+_norm_tag = norm_tag  # 兼容别名
+
+
+def normalize_name(name):
+    """k8s 资源名：小写 RFC 1123。大写转小写，下划线转连字符。"""
+    name = (name or "").strip().lower().replace("_", "-")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name) or len(name) > 57:
+        raise ValueError("组名仅支持小写字母、数字、连字符（大写自动转小写、下划线自动转连字符），且须以字母数字开头结尾")
+    return name
+
+
 def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None,
-                 type=None):
+                 type=None, node="auto", image=None, mounts=None, tag=None,
+                 privileged=False):
     # k8s 资源名必须是小写 RFC 1123（[a-z0-9-]，字母数字开头结尾）。
     # 大写/下划线先规范化，否则 kubectl apply 被拒后留下孤儿 manifest 和 home 目录。
-    import re as _re
-    name = name.strip().lower().replace("_", "-")
-    if not _re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name) or len(name) > 57:
-        raise ValueError("组名仅支持小写字母、数字、连字符（大写自动转小写、下划线自动转连字符），且须以字母数字开头结尾")
+    name = normalize_name(name)
     state = load_state()
     if name in state["groups"]:
         raise ValueError(f"组 {name} 已存在")
     is_windows = (type == "windows")
-    is_gpu = bool(gpus) and not is_windows
+    is_android = (type == "android")
+    # node placement: "auto" (default, no placement fields) or a node name
+    # from nodes.py. VM groups are forced to auto — /dev/kvm and the
+    # VM disk live on the default node only.
+    if is_windows or is_android or not node:
+        node = "auto"
+    node = str(node).strip().lower()
+    if node != "auto" and not nodes.valid(node):
+        raise ValueError(f"未知节点: {node}（可选: auto, {', '.join(nodes.names())}）")
+    _raw_cpu, _raw_mem, _raw_storage = cpu, mem, storage  # 用户显式传入值(校验用)
+    is_gpu = bool(gpus) and not is_windows and not is_android
     if cpu is None:
-        cpu = (WINDOWS_DEFAULT_CPU if is_windows
+        cpu = (ANDROID_DEFAULT_CPU if is_android
+               else WINDOWS_DEFAULT_CPU if is_windows
                else DEFAULT_GPU_CPU if is_gpu else DEFAULT_CPU_CPU)
     if mem is None:
-        mem = (WINDOWS_DEFAULT_MEM if is_windows
+        mem = (ANDROID_DEFAULT_MEM if is_android
+               else WINDOWS_DEFAULT_MEM if is_windows
                else DEFAULT_GPU_MEM if is_gpu else DEFAULT_CPU_MEM)
     mem = _norm_mem(mem)
     if is_windows and storage is None:
         storage = "64Gi"
+    if is_android and storage is None:
+        storage = "64Gi"
     storage = _norm_storage(storage)
+    # 活动资源上限兜底：仅约束 UniSSO 用户(admin/super 豁免)。显式超限→拒绝；
+    # 未显式指定的默认值按上限夹取，保证受约束用户最终规格不越过上限。
+    # (API 主入口已校验；这里防 CLI / 其它入口绕过。)
+    if creator:
+        import quota
+        if quota.scoped(creator):
+            quota.validate_create(creator, cpu=_raw_cpu, mem=_raw_mem,
+                                  storage=_raw_storage, gpus=gpus)
+            cpu, mem, storage, _ = quota.clamp_resize(creator, cpu, mem, storage)
+            if not quota.caps()["gpu_allowed"]:
+                gpus, is_gpu = None, False
     idx = alloc_index(state)
     g = {
         "name": name,
         "index": idx,
-        "type": "windows" if is_windows else ("gpu" if is_gpu else "cpu"),
+        "type": "android" if is_android else ("windows" if is_windows else ("gpu" if is_gpu else "cpu")),
         "gpus": sorted(gpus) if is_gpu else [],
         "ssh_nodeport": SSH_NODEPORT_BASE + idx,
         "web_nodeport": WEB_NODEPORT_BASE + idx,
@@ -985,13 +1340,38 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
         # 平台内部组(运维/被平台自己消费的服务)默认 False = 外部组, 按用量计费。
         # 标记为 True 后结算/提醒都会跳过(见 billing_settle)。
         "internal": False,
+        # 活动/分组标签(元数据, 不进 manifest): 管理员可按 tag 批量给 Pod 发额度。
+        "tag": norm_tag(tag),
+        # 节点落位: "auto" = 不产出任何调度字段(调度器自选); 其余为 nodes.py 里的节点名。
+        "node": node,
     }
+    # Android groups expose ADB and Appium via ClusterIP internal ports.
+    if is_android:
+        g["internal_ports"] = [ANDROID_ADB_PORT, ANDROID_APPIUM_PORT]
+    # optional custom container image + extra hostPath mounts (service pods).
+    # Absent → the group is an ordinary dev box on the platform image.
+    if image is not None:
+        g["image"] = _check_image(image)
+    if mounts is not None:
+        g["mounts"] = _check_mounts(mounts)
+    # opt-in privileged container (host /dev/net/tun + NET_ADMIN): only for
+    # groups that must bring up a network tunnel. Windows groups are always
+    # privileged via their own template, so this flag is for ubuntu groups.
+    if privileged and not is_windows and not is_android:
+        g["privileged"] = True
     # pre-create the persistent dir so it exists with sane perms before the pod
     # mounts it (kubelet DirectoryOrCreate would make it root-only). Windows
     # groups keep their VM disk on the big disk; the container runs as root.
+    # The dir is created ON THE TARGET NODE (remote nodes via nodes.run_on).
     try:
         if is_windows:
             os.makedirs(f"{WINVM_ROOT}/{name}", exist_ok=True)
+        elif is_android:
+            os.makedirs(f"{ANDROID_ROOT}/{name}", exist_ok=True)
+        elif node != "auto":
+            ok, out = nodes.ensure_home(node, name)
+            if not ok:
+                raise OSError(f"远端建目录失败({node}): {out.strip()[:200]}")
         else:
             os.makedirs(f"{GROUP_DATA_ROOT}/{name}/home", exist_ok=True)
             # chown to the container login user's uid/gid (siteconf.CLOUD_UID), NOT a
@@ -1001,6 +1381,11 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
                      siteconf.CLOUD_UID, siteconf.CLOUD_UID)
     except OSError:
         pass
+    if not is_windows and not is_android:
+        import hdd_quota
+        ok, out = hdd_quota.ensure(name, storage, None if node == "auto" else node)
+        if not ok:
+            raise OSError(f"HDD /data 卷创建失败: {(out or '').strip()[:300]}")
     apply_group(g)
     state["groups"][name] = g
     save_state(state)
@@ -1014,11 +1399,52 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
     return g
 
 
+def _disk_nodes():
+    """Machines that can hold a group tree. Placement aliases are skipped."""
+    found = []
+    for node in nodes.names():
+        if nodes.profile(node).get("k8s_node"):
+            continue
+        if node not in found:
+            found.append(node)
+    if nodes.DEFAULT_NODE not in found:
+        found.append(nodes.DEFAULT_NODE)
+    return found
+
+
+def _erase_group_disks(name):
+    """Remove one group's files on every machine. Returns error strings.
+
+    Unmount the loop image everywhere before deleting, so a node that still
+    has ``data.img`` open cannot leave the directory behind. Shared NFS is
+    the same tree; a copy on another machine is a different tree.
+    """
+    import hdd_quota
+    script = hdd_quota.erase_script(name)
+    errors = []
+    for node in _disk_nodes():
+        ok, out = nodes.run_on(node, script, timeout=180)
+        if ok:
+            continue
+        detail = (out or "").strip().replace("\n", " ")[:200]
+        errors.append(f"{node}: {detail or '删除失败'}")
+    for root in (WINVM_ROOT, ANDROID_ROOT):
+        path = os.path.join(root, name)
+        shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(path):
+            errors.append(f"残留 {path}")
+    return errors
+
+
 def remove_group(name):
     state = load_state()
     if name not in state["groups"]:
         raise ValueError(f"组 {name} 不存在")
     delete_group_k8s(name)
+    errors = _erase_group_disks(name)
+    if errors:
+        audit.record("delete_group_leftover", detail=f"{name} " + "; ".join(errors)[:500])
+        raise RuntimeError("Pod 数据没删干净: " + "; ".join(errors))
     del state["groups"][name]
     save_state(state)
     rewrite_frpc(state)
@@ -1027,15 +1453,9 @@ def remove_group(name):
         rewrite_nginx_web(state)
     except Exception as e:
         audit.record("nginx_web_sync_error", detail=str(e))
-    # remove manifest file
     mp = os.path.join(MANIFEST_DIR, f"group-{name}.yaml")
     if os.path.exists(mp):
         os.remove(mp)
-    # drop the persistent home dir (the group's /home/cloud data)
-    shutil.rmtree(f"{GROUP_DATA_ROOT}/{name}", ignore_errors=True)
-    # windows groups keep their VM disk elsewhere; drop it too or orphan 64G
-    shutil.rmtree(f"{WINVM_ROOT}/{name}", ignore_errors=True)
-    # clean up per-group state in other modules so deleted groups don't linger
     _purge_group_artifacts(name)
     audit.record("delete_group", detail=name)
 
@@ -1054,17 +1474,33 @@ def _purge_group_artifacts(name):
             _deploys.save(st)
     except Exception as e:
         logging.getLogger(__name__).warning("purge deploys for %s: %s", name, e)
-    # DB creds (mysql/redis/qdrant) labeled with this group
+    # DB creds labeled with this group. ClickHouse shares the cred file but
+    # its DROP lives in clickhouse_svc. Kafka creds are a separate file.
     try:
         import db_svc as _db
         for c in list(_db.list_creds()):
+            if (c.get("label") or "").lower() != name.lower():
+                continue
+            try:
+                if c.get("service") == "clickhouse":
+                    import clickhouse_svc
+                    clickhouse_svc.remove_cred(c["id"])
+                else:
+                    _db.remove_cred(c["id"])
+            except Exception:
+                pass
+    except Exception as e:
+        logging.getLogger(__name__).warning("purge db_creds for %s: %s", name, e)
+    try:
+        import kafka_svc
+        for c in list(kafka_svc.list_creds()):
             if (c.get("label") or "").lower() == name.lower():
                 try:
-                    _db.remove_cred(c["id"])
+                    kafka_svc.remove_cred(c["id"])
                 except Exception:
                     pass
     except Exception as e:
-        logging.getLogger(__name__).warning("purge db_creds for %s: %s", name, e)
+        logging.getLogger(__name__).warning("purge kafka_creds for %s: %s", name, e)
     # MinIO access keys labeled with this group
     try:
         import minio_svc as _mio
@@ -1076,6 +1512,21 @@ def _purge_group_artifacts(name):
                     pass
     except Exception as e:
         logging.getLogger(__name__).warning("purge minio_keys for %s: %s", name, e)
+    try:
+        import proxy_map
+        for mapping in list(proxy_map.list_mappings()):
+            if mapping.get("pod") == name:
+                try:
+                    proxy_map.remove(mapping["id"])
+                except Exception:
+                    pass
+    except Exception as e:
+        logging.getLogger(__name__).warning("purge proxy for %s: %s", name, e)
+    try:
+        import podcode
+        podcode.forget(name)
+    except Exception as e:
+        logging.getLogger(__name__).warning("purge podcode for %s: %s", name, e)
 
 
 def reset_password(name):
@@ -1113,6 +1564,268 @@ def resize_group(name, cpu, mem, storage=None):
         write_manifest(g)
     save_state(state)
     audit.record("resize_group", detail=f"{name} cpu={g['cpu']} mem={g['mem']} storage={g.get('storage')}")
+    return g
+
+
+# --- rename --------------------------------------------------------------- #
+_PORT_FIELDS = ("index", "ssh_nodeport", "web_nodeport", "ssh_public", "web_public")
+
+
+def _rekey_deploys(old, new):
+    """Move deploys.json's list from old to new. Returns True if a list moved."""
+    import deploys
+    st = deploys.load()
+    bucket = st.setdefault("deploys", {})
+    if old not in bucket:
+        return False
+    bucket[new] = bucket.pop(old)
+    deploys.save(st)
+    return True
+
+
+def _retarget_store_labels(old, new):
+    """Point DB and MinIO cred labels that used the group name at the new name."""
+    try:
+        import db_svc
+        creds = db_svc._creds_load()
+        changed = False
+        for cred in creds:
+            if (cred.get("label") or "").lower() == old.lower():
+                cred["label"] = new
+                changed = True
+        if changed:
+            db_svc._creds_save(creds)
+    except Exception as e:
+        audit.record("rename_label_error", detail=f"db {old}->{new} {e}")
+    try:
+        import minio_svc
+        keys = minio_svc._keys_load()
+        changed = False
+        for key in keys:
+            if (key.get("label") or "").lower() == old.lower():
+                key["label"] = new
+                changed = True
+        if changed:
+            minio_svc._keys_save(keys)
+    except Exception as e:
+        audit.record("rename_label_error", detail=f"minio {old}->{new} {e}")
+
+
+def rename_group(old, new):
+    """Rename a group. Ports and index stay, so the ssemarket entry does not move.
+
+    The directory is renamed on the node that holds it, then the state key,
+    manifests, frpc proxy names and deploy list follow. A failure after the
+    rename puts the directory and the state key back.
+    """
+    new = normalize_name(new)
+    state = load_state()
+    g = state["groups"].get(old)
+    if not g:
+        raise ValueError(f"组 {old} 不存在")
+    if g.get("type") in ("windows", "android"):
+        raise ValueError("VM 组(android/windows)不支持改名")
+    if new == old:
+        return g
+    if new in state["groups"]:
+        raise ValueError(f"组 {new} 已存在")
+    node = nodes.node_for(g)
+    import hdd_quota
+    script = hdd_quota.rename_tree_script(old, new, g.get("storage") or DEFAULT_STORAGE)
+    ok, out = nodes.run_on(node, script, timeout=120)
+    if not ok:
+        raise RuntimeError(f"目录改名失败: {out}")
+    kept = {field: g.get(field) for field in _PORT_FIELDS}
+    g["name"] = new
+    del state["groups"][old]
+    state["groups"][new] = g
+    save_state(state)
+    moved_deploys = False
+    try:
+        apply_group(g)
+        delete_group_k8s(old)
+        rewrite_frpc(state)
+        reload_frpc()
+        try:
+            rewrite_nginx_web(state)
+        except Exception as e:
+            audit.record("nginx_web_sync_error", detail=str(e))
+        moved_deploys = _rekey_deploys(old, new)
+        _retarget_store_labels(old, new)
+        old_manifest = os.path.join(MANIFEST_DIR, f"group-{old}.yaml")
+        if os.path.exists(old_manifest):
+            os.remove(old_manifest)
+    except Exception:
+        back = hdd_quota.rename_tree_script(new, old, g.get("storage") or DEFAULT_STORAGE)
+        nodes.run_on(node, back, timeout=120)
+        g["name"] = old
+        for field, value in kept.items():
+            g[field] = value
+        state["groups"].pop(new, None)
+        state["groups"][old] = g
+        save_state(state)
+        if moved_deploys:
+            try:
+                _rekey_deploys(new, old)
+            except Exception:
+                pass
+        try:
+            apply_group(g)
+            delete_group_k8s(new)
+            rewrite_frpc(state)
+            reload_frpc()
+        except Exception:
+            pass
+        raise
+    audit.record("rename_group", detail=f"{old}->{new} ports={kept['ssh_public']}/{kept['web_public']}")
+    return g
+
+
+# --- cross-node move ------------------------------------------------------- #
+# 大件（模型权重）按约定不跨节点搬：默认排除常见权重扩展名；组里引用
+# /shared 的权重在目标节点各有各的副本，迁移后由组自行补齐。
+WEIGHT_EXCLUDES = ("*.pt", "*.pth", "*.safetensors", "*.bin", "*.gguf",
+                   "*.ckpt", "*.onnx", "*.engine")
+
+
+def _check_move_target(g, new_node):
+    if g.get("type") in ("windows", "android"):
+        raise ValueError("VM 组(android/windows)不支持换节点")
+    new_node = str(new_node or "").strip().lower()
+    if not new_node or new_node == "auto":
+        raise ValueError("换节点须指定具体节点（auto 由调度器决定）")
+    if not nodes.valid(new_node):
+        raise ValueError(f"未知节点: {new_node}（可选: {', '.join(nodes.names())}）")
+    old_node = g.get("node") or "auto"
+    if old_node == new_node:
+        raise ValueError(f"组 {g['name']} 已在节点 {new_node} 上")
+    assigned = g.get("gpus") or []
+    if assigned and not set(assigned) <= set(nodes.gpu_ids(new_node)):
+        raise ValueError(
+            f"组分配的 GPU {assigned} 在节点 {new_node} 上不存在"
+            f"（该节点有 {nodes.gpu_ids(new_node)}），请先调整 GPU 分配")
+    return old_node, new_node
+
+
+def migrate_mode(name, new_node):
+    """``shared`` when the target already has this group's disk, else ``copy``."""
+    state = load_state()
+    g = state["groups"].get(name)
+    if not g:
+        raise ValueError(f"组 {name} 不存在")
+    old_node, new_node = _check_move_target(g, new_node)
+    shared = nodes.shares_group_storage(nodes.node_for(g), new_node)
+    return "shared" if shared else "copy"
+
+
+def _handoff_data_image(name, src, dst, storage):
+    """Move one group's loop image onto ``dst``. Returns True when an image moved.
+
+    A plain directory (no ``data.img``) is already the shared files. Two nodes
+    must not loop-mount the same ext4 image.
+    """
+    import hdd_quota
+    img, _mnt = hdd_quota.paths(name)
+    present, _out = nodes.run_on(src, f"test -f {img}", timeout=30)
+    if not present:
+        return False
+    ok, out = nodes.run_on(src, hdd_quota.unmount_script(name), timeout=120)
+    if not ok:
+        raise RuntimeError(f"源端卸下 data 失败: {out}")
+    ok, out = nodes.run_on(dst, hdd_quota.ensure_script(name, storage), timeout=900)
+    if not ok:
+        nodes.run_on(src, hdd_quota.ensure_script(name, storage), timeout=900)
+        raise RuntimeError(f"目标挂上 data 失败: {out}")
+    return True
+
+
+def _copy_tree(name, src, dst, exclude_weights):
+    """Stream home and data.img from src to dst. No shared staging directory."""
+    import hdd_quota
+    root = GROUP_DATA_ROOT.rstrip("/")
+    excludes = ""
+    if exclude_weights:
+        excludes = " ".join(f"--exclude={pat}" for pat in WEIGHT_EXCLUDES)
+    ok, out = nodes.run_on(src, hdd_quota.unmount_script(name), timeout=120)
+    if not ok:
+        raise RuntimeError(f"源端卸下 data 失败: {out}")
+    src_cmd = (
+        f"set -euo pipefail; cd {root}; args=({name}/home); "
+        f"if [ -f {name}/data.img ]; then args+=({name}/data.img); fi; "
+        f"tar {excludes} -cf - \"${{args[@]}}\""
+    )
+    uid = siteconf.CLOUD_UID
+    dst_cmd = (
+        f"set -euo pipefail; mkdir -p {root}/{name}; "
+        f"tar -C {root} --numeric-owner -pxf -; "
+        f"chown -R {uid}:{uid} {root}/{name}/home; "
+        f"test -d {root}/{name}/home"
+    )
+    ok, out = nodes.pipe_root(src, dst, src_cmd, dst_cmd, timeout=1800)
+    if not ok:
+        raise RuntimeError(f"拷贝失败: {out}")
+    ok, out = nodes.run_on(
+        dst, f"test -d {root}/{name}/home", timeout=30)
+    if not ok:
+        raise RuntimeError(f"目标 home 不存在: {out}")
+
+
+def migrate_group(name, new_node, exclude_weights=True):
+    """Move a group onto another node. Ports stay on the group's index.
+
+    Shared disk: change ``g['node']`` and start there. No copy, no delete.
+    A loop-backed ``data.img`` is unmounted on the source and mounted on the
+    target so only one node has the ext4 image open. Otherwise stream home
+    and data.img over SSH. The source directory is removed only after the
+    group starts on the target. A failure starts the group again on the old
+    node.
+    """
+    state = load_state()
+    g = state["groups"].get(name)
+    if not g:
+        raise ValueError(f"组 {name} 不存在")
+    old_node, new_node = _check_move_target(g, new_node)
+    src = nodes.node_for(g)
+    shared = nodes.shares_group_storage(src, new_node)
+    import lifecycle
+    res = lifecycle.stop_group(name)
+    if not res.get("ok"):
+        raise RuntimeError(f"停止组失败: {res.get('error')}")
+    image_moved = False
+    try:
+        if not shared:
+            _copy_tree(name, src, new_node, exclude_weights)
+            import hdd_quota
+            nodes.run_on(new_node, hdd_quota.ensure_script(name, g.get("storage") or DEFAULT_STORAGE), timeout=900)
+        else:
+            image_moved = _handoff_data_image(name, src, new_node, g.get("storage") or DEFAULT_STORAGE)
+        g["node"] = new_node
+        save_state(state)
+        apply_group(g)
+        started = lifecycle.start_group(name)
+        if not started.get("ok"):
+            raise RuntimeError(f"目标节点启动失败: {started.get('error')}")
+        if not shared:
+            removed, leftover = nodes.run_on(src, f"rm -rf {GROUP_DATA_ROOT.rstrip('/')}/{name}", timeout=120)
+            if not removed:
+                audit.record("migrate_source_leftover", detail=f"{name} {leftover[:300]}")
+    except Exception:
+        rollback_error = None
+        if image_moved:
+            try:
+                _handoff_data_image(name, new_node, src, g.get("storage") or DEFAULT_STORAGE)
+            except Exception as roll:
+                rollback_error = roll
+        g["node"] = old_node
+        save_state(state)
+        if rollback_error is None:
+            try:
+                apply_group(g)
+                lifecycle.start_group(name)
+            except Exception:
+                pass
+        raise
+    audit.record("migrate_group", detail=f"{name} {old_node}->{new_node} mode={'shared' if shared else 'copy'}")
     return g
 
 
@@ -1211,6 +1924,18 @@ def set_internal(name, flag):
     save_state(state)
     audit.record("group_internal_set", detail=f"{name} internal={bool(flag)}")
     return bool(g["internal"])
+
+
+def set_tag(name, tag, actor=""):
+    """设置/清空 Pod 标签(活动分组、按标签批量充值用)。纯元数据, 无需 rollout。"""
+    state = load_state()
+    if name not in state["groups"]:
+        raise ValueError(f"组 {name} 不存在")
+    g = state["groups"][name]
+    g["tag"] = norm_tag(tag)
+    save_state(state)
+    audit.record("group_tag_set", detail=f"{name} tag={g['tag']}", actor=actor or "")
+    return g["tag"]
 
 
 # --- pod ownership / membership management ---

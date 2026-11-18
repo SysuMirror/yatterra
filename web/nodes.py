@@ -242,43 +242,75 @@ def shares_group_storage(src, dst):
     """True when both nodes already see one group disk.
 
     Same machine is shared. Otherwise the UUID of ``GROUP_DATA_ROOT`` must
-    match, or both mounts must be the same NFS source. A missing directory
-    is not shared — the caller copies.
+    match, both mounts must be the same NFS source, or one side is the NFS
+    client of the other side's group directory. A missing directory is not
+    shared — the caller copies.
     """
     if is_local(src) and is_local(dst):
         return True
-    return _mount_signature(src) != "" and _mount_signature(src) == _mount_signature(dst)
+    left = _storage_view(src)
+    right = _storage_view(dst)
+    if not left or not right:
+        return False
+    if left["id"] and left["id"] == right["id"]:
+        return True
+    return _nfs_backs_local(left, right) or _nfs_backs_local(right, left)
 
 
-def _mount_signature(node):
+def _storage_view(node):
+    """Mount identity of ``GROUP_DATA_ROOT`` on one node, or None."""
     root = siteconf.GROUP_DATA_ROOT.rstrip("/")
     parent = os.path.dirname(root)
     cmd = (
-        f"test -d {parent}/shared && test -d {parent}/interop && "
-        f"findmnt -n -P -o UUID,FSTYPE,SOURCE --target {root}"
+        f"if test -d {parent}/shared && test -d {parent}/interop; then "
+        f"findmnt -n -P -o UUID,FSTYPE,SOURCE,TARGET --target {root}; "
+        f"printf 'ADDRS=%s\\n' \"$(hostname -I)\"; "
+        f"else exit 1; fi"
     )
     ok, out = run_on(node, cmd, timeout=20)
     if not ok:
-        return ""
-    line = ""
-    for row in out.splitlines():
-        if "UUID=" in row or "FSTYPE=" in row or "SOURCE=" in row:
-            line = row.strip()
-    if not line:
-        return ""
+        return None
     fields = {}
-    for part in line.split():
-        if "=" in part:
-            key, value = part.split("=", 1)
-            fields[key] = value.strip('"')
+    addrs = []
+    for row in out.splitlines():
+        row = row.strip()
+        if row.startswith("ADDRS="):
+            addrs = row.split("=", 1)[1].split()
+            continue
+        if "UUID=" in row or "FSTYPE=" in row or "SOURCE=" in row:
+            for part in row.split():
+                if "=" in part:
+                    key, value = part.split("=", 1)
+                    fields[key] = value.strip('"')
     uuid = fields.get("UUID") or ""
     fstype = fields.get("FSTYPE") or ""
     source = fields.get("SOURCE") or ""
-    if uuid:
-        return "uuid:" + uuid
-    if fstype.startswith("nfs") and source:
-        return "nfs:" + source
-    return ""
+    nfs = None
+    if fstype.startswith("nfs") and ":" in source:
+        host, path = source.split(":", 1)
+        nfs = (host, path.rstrip("/") or "/")
+        ident = "nfs:" + source
+    elif uuid:
+        ident = "uuid:" + uuid
+    else:
+        return None
+    return {"id": ident, "nfs": nfs, "addrs": addrs, "root": root}
+
+
+def _nfs_backs_local(client, server):
+    """True when ``client`` NFS-mounts ``server``'s group directory."""
+    if not client or not server or not client["nfs"] or server["nfs"]:
+        return False
+    host, path = client["nfs"]
+    if path != server["root"]:
+        return False
+    return host in server["addrs"]
+
+
+def _mount_signature(node):
+    """Stable id string. Empty when the directory is not a shared disk."""
+    view = _storage_view(node)
+    return view["id"] if view else ""
 
 
 def pipe_root(src, dst, src_command, dst_command, timeout=1800):

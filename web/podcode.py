@@ -630,6 +630,24 @@ def _upsert_vecs(pod, rel, e, chunks):
     return len(pts)
 
 
+def forget(pod):
+    """Drop this pod's code index, scan state, and embedded vectors."""
+    for path in (_index_file(pod), _state_file(pod)):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("podcode: remove %s failed: %s", path, e)
+    import kb_service
+    try:
+        kb_service._qdrant("POST", f"/collections/{_coll()}/points/delete?wait=true",
+                           {"filter": {"must": [
+                               {"key": "pod", "match": {"value": pod}}]}})
+    except Exception as e:
+        log.warning("podcode: forget %s failed: %s", pod, e)
+
+
 def _delete_vecs(pod, rels):
     """Drop the vectors of removed files (filter: pod == pod AND rel in rels)."""
     if not rels:
