@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import {
   BookOpen, Terminal, Database, Globe, Bot, Folder, Shield, Code,
@@ -33,9 +33,16 @@ interface DocItem {
 }
 
 const CODE = (s: string) => <code className="px-1.5 py-0.5 rounded bg-black/[0.05] text-[13px] font-mono text-ink">{s}</code>
-const PRE = (s: string) => (
-  <pre className="mb-3 overflow-x-auto rounded-lg bg-black/[0.04] px-4 py-3 text-[12.5px] leading-relaxed font-mono text-ink whitespace-pre">{s}</pre>
-)
+function DocPre({ text }: { text: string }) {
+  const [done, setDone] = useState(false)
+  return (
+    <div className="relative mb-3">
+      <button data-ux="ux-docs-copy" type="button" className="absolute right-2 top-2 px-2 text-[11px] text-accent" onClick={() => { navigator.clipboard.writeText(text).then(() => { setDone(true); window.setTimeout(() => setDone(false), 1200) }) }}>{done ? '已复制' : '复制'}</button>
+      <pre className="overflow-x-auto rounded-lg bg-black/[0.04] px-4 py-3 pr-16 text-[12.5px] leading-relaxed font-mono text-ink whitespace-pre">{text}</pre>
+    </div>
+  )
+}
+const PRE = (s: string) => <DocPre text={s} />
 const LINK = (label: string, href: string) => <a href={href} className="text-accent hover:underline inline-flex items-center gap-1">{label}<ArrowRight size={12} /></a>
 const P = (...children: React.ReactNode[]) => <p className="text-sm text-ink-2 leading-relaxed mb-3">{children}</p>
 const H4 = (s: string) => <h4 className="text-sm font-semibold text-ink mb-2 mt-4">{s}</h4>
@@ -309,6 +316,36 @@ exec python app.py`)}
               <>采样由 {CODE('yatterra-fleet-sampler')} 服务每 15 秒写入 SQLite，保留 7 天</>,
             )}
             {P('页面顶部有「集群健康洞察」AI 摘要，由后台线程预计算并缓存，打开即见。')}
+          </>
+        ),
+      },
+      {
+        title: '新增节点',
+        content: (
+          <>
+            {P('新增一台机器先选定架构，再登记。三种架构是 cpu node、gpu node 和 unified memory。检查命令只打印计划，不打开 SSH，不加入 k3s，也不写 remote_hosts.json。')}
+            {TB({
+              headers: ['架构', 'kind', '结果'],
+              rows: [
+                ['cpu node', 'cpu', '不宣告 NVIDIA GPU，不设置 unified memory'],
+                ['gpu node', 'gpu', '独立加速器，宣告 nvidia.com/gpu，不设置 unified memory，不填写独立显存容量'],
+                ['unified memory', 'unified-memory', '设置 unified memory，独立显存容量留空'],
+              ],
+            })}
+            {H4('操作者要提供')}
+            {UL(
+              <>name：节点名。profile 键、ssh host、remote_hosts.json 的 name 用同一个名字</>,
+              <>SSH 目标：主机名或地址。凭据不要写进命令行</>,
+              <>disk mounts：这台机器自己的挂载，可重复。不会套用别的机器的磁盘列表</>,
+              <>架构：cpu node、gpu node 或 unified memory</>,
+            )}
+            {H4('检查命令')}
+            {PRE(`scripts/install-node.sh --check --kind cpu --name newcpu --ssh newcpu.example --mount / --mount /data
+scripts/install-node.sh --check --kind gpu --name newgpu --ssh newgpu.example --mount /
+scripts/install-node.sh --check --kind unified-memory --name newum --ssh newum.example --mount /`)}
+            {H4('登记与采样')}
+            {P('把计划里的 registry_profile 放进节点 registry（nodes.py 或 YATTERRA_NODES_JSON），并把同名条目放进 remote_hosts.json。采样由 yatterra-fleet-sampler 走 fleet_monitor.collect_host，调用共享探针 fleet_probe.collect。驱动版本、按 Pod 的显存、网络速率和磁盘 IO 都在这支探针里，不为新主机单独写采集脚本。')}
+            {P('NPU 仍是平台节点上的放置别名，不是第四种安装架构。K3s 节点列表、FRP、MinIO、数据库和反向代理是平台服务，不由这个节点脚本安装。说明与脚本放在一起：scripts/INSTALL-NODE.md。')}
           </>
         ),
       },
@@ -1141,6 +1178,7 @@ export default function Docs() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeSection, setActiveSection] = useState<string | null>(null)
   const [activeItem, setActiveItem] = useState<string | null>(null)
+  const [find, setFind] = useState('')
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // 管理员章节（运维知识、知识库与 AI 沉淀）仅对具有
@@ -1151,6 +1189,19 @@ export default function Docs() {
   const visibleSections = sections.filter(
     (s) => !s.staffOnly || canViewStaffDocs,
   )
+  const docHits = useMemo(() => {
+    const q = find.trim().toLowerCase()
+    if (!q) return []
+    const out: { key: string; sectionId: string; itemIdx: number; title: string; section: string }[] = []
+    for (const section of visibleSections) {
+      section.items.forEach((item, itemIdx) => {
+        if (`${section.title} ${item.title}`.toLowerCase().includes(q)) {
+          out.push({ key: `${section.id}-${itemIdx}`, sectionId: section.id, itemIdx, title: item.title, section: section.title })
+        }
+      })
+    }
+    return out
+  }, [find, visibleSections, canViewStaffDocs])
 
   const toggleSection = (id: string) => {
     setActiveSection(prev => prev === id ? null : id)
@@ -1202,9 +1253,25 @@ export default function Docs() {
         <PageHeader title="文档" description="从创建 Pod 到发布应用的学习路径">
           <PageAiAssistant page="docs" context="13 节学习路径；参考文档与管理员导航保留" />
         </PageHeader>
-        <div data-onboarding-target="docs-learning">
-        <LearningPath lessonId={lessonId ?? 'concepts'} canViewStaffDocs={canViewStaffDocs} />
+        <div data-ux="ux-docs-find" className="mb-4">
+          <input value={find} onChange={(e) => setFind(e.target.value)} placeholder="在全部文档里找一节" aria-label="查找文档" className="h-9 w-full max-w-md rounded-md border border-black/10 bg-transparent px-3 text-sm" />
         </div>
+        {find.trim() ? (
+          <ul className="space-y-1">
+            {docHits.map((hit) => (
+              <li key={hit.key}>
+                <button type="button" className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-black/[0.04]" onClick={() => openItem(hit.key, hit.sectionId, hit.itemIdx)}>
+                  <span className="text-muted">{hit.section} / </span>{hit.title}
+                </button>
+              </li>
+            ))}
+            {docHits.length === 0 && <li className="text-sm text-muted">没有匹配的章节</li>}
+          </ul>
+        ) : (
+          <div data-onboarding-target="docs-learning">
+            <LearningPath lessonId={lessonId ?? 'concepts'} canViewStaffDocs={canViewStaffDocs} />
+          </div>
+        )}
       </>
     )
   }

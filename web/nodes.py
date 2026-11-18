@@ -9,6 +9,12 @@ Profiles below describe per-node facts that the manifest generator needs:
 GPU inventory, whether the host runs an MPS daemon, whether a host CUDA
 toolkit exists to mount, and how to run commands on that node (locally or
 via remote_hosts). Overridable via YATTERRA_NODES_JSON for other sites.
+
+Sampling is not a per-node list. Driver version, per-pod VRAM, network
+rates and disk IO rates are collected by fleet_probe.collect for every
+host fleet_monitor inventories. A new machine is a profile here (arch,
+ssh_host, disk_mounts) plus a remote_hosts.json entry of the same name.
+Do not add a collector branch for that machine.
 """
 import json
 import os
@@ -25,6 +31,8 @@ _PROFILES = {
         "mps": True,
         "cuda_host": "/usr/local/cuda",
         "ssh_host": None,          # platform runs on this node
+        # SSD root plus the HDD. Live sampling still follows YATTERRA_DISK_MOUNTS.
+        "disk_mounts": ["/", "/mnt/sdb"],
     },
     "spark": {
         "arch": "arm64",
@@ -33,6 +41,7 @@ _PROFILES = {
         "unified_memory": True,    # GB10 / DGX Spark: system RAM == VRAM (one pool)
         "cuda_host": None,         # GB10: no separate host CUDA mount wired yet
         "ssh_host": "spark",       # remote_hosts.json entry (LAN via relay)
+        "disk_mounts": ["/"],      # NVMe only; do not copy wz8's /mnt/sdb
     },
     # Placement ALIAS, not a machine: "昇腾 NPU" groups are ordinary CPU dev
     # boxes that live on the amd64 platform node (the Ascend cards are on a box
@@ -55,6 +64,7 @@ _PROFILES = {
         "mps": False,
         "cuda_host": None,
         "ssh_host": "xfusion",
+        "disk_mounts": ["/"],
     },
     "egress": {
         "arch": "amd64",
@@ -62,6 +72,7 @@ _PROFILES = {
         "mps": False,
         "cuda_host": None,
         "ssh_host": "egress",
+        "disk_mounts": ["/"],
     },
 }
 
@@ -90,6 +101,32 @@ def profile(node):
     """Profile for a node name; unknown/empty falls back to the default node."""
     profiles = _load()
     return profiles.get(node) or profiles.get(DEFAULT_NODE) or {}
+
+
+def hardware_hint(name, host_id=''):
+    """Registry arch for a fleet host. Never invents GPU readings."""
+    profiles = _load()
+    local_names = {DEFAULT_NODE, 'local', os.environ.get('YATTERRA_LOCAL_HOST_NAME', 'gpu4090')}
+    chosen = None
+    key = None
+    if name in profiles and not profiles[name].get('k8s_node'):
+        chosen, key = profiles[name], name
+    else:
+        for profile_key, prof in profiles.items():
+            if prof.get('k8s_node'):
+                continue
+            if name and name == prof.get('ssh_host'):
+                chosen, key = prof, profile_key
+                break
+        if chosen is None and (host_id == 'local' or name in local_names):
+            chosen, key = profiles.get(DEFAULT_NODE), DEFAULT_NODE
+    if not chosen:
+        return {}
+    return {
+        'profile': key,
+        'arch': chosen.get('arch'),
+        'unified_memory': bool(chosen.get('unified_memory')),
+    }
 
 
 def node_for(g):
@@ -174,6 +211,86 @@ def unified_memory(node):
 
 def cuda_host(node):
     return profile(node).get("cuda_host") or ""
+
+
+def disk_mounts(name):
+    """Mounts configured for this machine, or None when the name is unknown.
+
+    Looks up the profile key, then ``ssh_host``. Unknown names do not fall
+    back to wz8, so a one-disk host never inherits ``/mnt/sdb``. ``npu`` is
+    an alias, not a machine, and has no disk list here. The sampler still
+    runs the shared probe for whatever mounts this returns.
+    """
+    profiles = _load()
+    prof = profiles.get(name)
+    if not isinstance(prof, dict):
+        prof = None
+        for candidate in profiles.values():
+            if not isinstance(candidate, dict) or candidate.get("k8s_node"):
+                continue
+            if name and candidate.get("ssh_host") == name:
+                prof = candidate
+                break
+    prof = prof or {}
+    mounts = prof.get("disk_mounts")
+    if isinstance(mounts, list) and mounts and all(isinstance(m, str) for m in mounts):
+        return list(mounts)
+    return None
+
+
+def shares_group_storage(src, dst):
+    """True when both nodes already see one group disk.
+
+    Same machine is shared. Otherwise the UUID of ``GROUP_DATA_ROOT`` must
+    match, or both mounts must be the same NFS source. A missing directory
+    is not shared — the caller copies.
+    """
+    if is_local(src) and is_local(dst):
+        return True
+    return _mount_signature(src) != "" and _mount_signature(src) == _mount_signature(dst)
+
+
+def _mount_signature(node):
+    root = siteconf.GROUP_DATA_ROOT.rstrip("/")
+    parent = os.path.dirname(root)
+    cmd = (
+        f"test -d {parent}/shared && test -d {parent}/interop && "
+        f"findmnt -n -P -o UUID,FSTYPE,SOURCE --target {root}"
+    )
+    ok, out = run_on(node, cmd, timeout=20)
+    if not ok:
+        return ""
+    line = ""
+    for row in out.splitlines():
+        if "UUID=" in row or "FSTYPE=" in row or "SOURCE=" in row:
+            line = row.strip()
+    if not line:
+        return ""
+    fields = {}
+    for part in line.split():
+        if "=" in part:
+            key, value = part.split("=", 1)
+            fields[key] = value.strip('"')
+    uuid = fields.get("UUID") or ""
+    fstype = fields.get("FSTYPE") or ""
+    source = fields.get("SOURCE") or ""
+    if uuid:
+        return "uuid:" + uuid
+    if fstype.startswith("nfs") and source:
+        return "nfs:" + source
+    return ""
+
+
+def pipe_root(src, dst, src_command, dst_command, timeout=1800):
+    """Pipe a root command on ``src`` into a root command on ``dst``.
+
+    ``None`` and the platform node are local. Other names use their
+    ``ssh_host``. Returns (ok, error tail). The byte stream is not kept.
+    """
+    import remote_hosts
+    src_host = None if is_local(src) else (profile(src).get("ssh_host") or src)
+    dst_host = None if is_local(dst) else (profile(dst).get("ssh_host") or dst)
+    return remote_hosts.pipe_root(src_host, src_command, dst_host, dst_command, timeout=timeout)
 
 
 def run_on(node, command, timeout=30):
