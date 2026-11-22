@@ -216,6 +216,31 @@ _DENY_PATTERNS = [
     r"\biptables\s+(?:-F|-X)\b",
     r"\biptables\s+-P\s+\S+\s+DROP\b",
     r"\bip\s+link\s+set\s+(?!veth|docker|br-|flannel|cni|cali|tun|tap|lo\b)\S+\s+down\b",
+    # --- 宿主机持久化后门: SSH 公钥注入 / 账号提权 / 定时任务 ---
+    # 这些操作本身不是"破坏", 但对 root 等价的 AI run 来说是最典型的后门手法
+    # (注入 authorized_keys → 长期免密登录; 加账号/sudoers → 提权; cron/systemd
+    #  → 持久化)。无论以何种方式出现(写/追加/tee/sed -i/...)一律拦截。
+    # 1) SSH 公钥后门: 任何引用 authorized_keys 的命令(任意用户, 含 ~ 与 /home/*)
+    r"authorized_keys",
+    # 2) 账号创建 / 改密 / 加入特权组
+    r"\b(?:useradd|adduser|usermod|chpasswd|newusers|gpasswd)\b",
+    r"\bpasswd\b",
+    # 3) sudoers 提权(直接落盘 或 visudo)
+    r"/etc/sudoers(?:\.d)?\b",
+    r"\bvisudo\b",
+    # 4) 定时任务持久化
+    r"\bcrontab\b",
+    r"/var/spool/cron\b",
+    r"/etc/cron\.[a-z]+/",
+    r"(?<![0-9&])>\s*/etc/systemd\b",
+    # 5) 直写账号 / 口令库
+    r"(?<![0-9&])>+\s*/etc/(?:passwd|shadow|group|gshadow)\b",
+    # --- 平台自身密钥文件: 禁止经 shell 读取(与 read_file 的 _READ_FILE_DENY 对齐) ---
+    # read_file 早已禁止读这些路径, 但 shell(cat/grep/...) 此前可绕过 → 匿名/低权
+    # 会话一旦拿到宿主 run 工具即可原样外带 SECRET_KEY 与全套生产凭据(finding#9)。
+    r"/opt/yatterra/(?:web/)?\.env\b",
+    r"/opt/yatterra/(?:llm|db|agent)\.conf\b",
+    r"id_rsa\b", r"id_ed25519\b", r"/etc/shadow\b",
 ]
 _DENY_RE = [re.compile(p) for p in _DENY_PATTERNS]
 
@@ -231,7 +256,9 @@ def _ops_denied(cmd):
 # 宿主机(ops, root)的 write_file/edit_file 路径护栏;容器内(pod runner,cloud 自己的
 # /home/cloud)不受此限。read_file 已有 ".." 校验,这里同样禁止相对路径与 ".."。
 _HOST_DENY_DIRS = ("/etc", "/boot", "/proc", "/sys", "/dev",
-                   "/var/lib/rancher", "/root/.ssh")
+                   "/var/lib/rancher", "/root/.ssh",
+                   # 持久化后门面:定时任务目录
+                   "/var/spool/cron", "/var/spool/at")
 # 平台自身代码与配置(位于 /opt/yatterra 下),禁止被 agent 覆写
 _HOST_DENY_BASENAME_RE = re.compile(
     r"^(?:app\.py|agent[^/]*\.py|ai_service\.py|llm[^/]*\.py|users\.py|groups\.py"
@@ -252,8 +279,13 @@ def _host_write_denied(path):
     for d in _HOST_DENY_DIRS:
         if norm == d or norm.startswith(d + "/"):
             return f"安全限制: 禁止在宿主机写入 {d} 下的路径"
+    # SSH 后门: 任何用户的 .ssh 目录(尤其 authorized_keys)一律拒写——/root/.ssh
+    # 已在 _HOST_DENY_DIRS, 这里补上 /home/*/.ssh 等其它用户。
+    base = norm.rsplit("/", 1)[-1]
+    if "/.ssh/" in norm or norm.endswith("/.ssh") \
+            or base in ("authorized_keys", "authorized_keys2"):
+        return "安全限制: 禁止写入 .ssh / authorized_keys(SSH 后门)"
     if norm == "/opt/yatterra" or norm.startswith("/opt/yatterra/"):
-        base = norm.rsplit("/", 1)[-1]
         if _HOST_DENY_BASENAME_RE.match(base):
             return "安全限制: 禁止在宿主机写入平台自身代码/配置"
     return None
@@ -509,9 +541,9 @@ def _runner_for(runner, pod, timeout):
 # read_file 永不返回的路径(即使 admin)——与 ai_service._READ_FILE_DENY 对齐。
 # 对 os.path.realpath(path) 做子串匹配(realpath 解析符号链接,可穿透 /tmp 软链)。
 _HOST_READ_DENY = (
-    "k3s.yaml", "/opt/yatterra/.env", "db.conf", "/etc/shadow",
-    "/etc/rancher/", "id_rsa", "id_ed25519", ".ssh/", ".pem", ".key",
-    "/opt/yatterra/llm.conf",
+    "k3s.yaml", "/opt/yatterra/.env", "/opt/yatterra/web/.env", "db.conf",
+    "/etc/shadow", "/etc/rancher/", "id_rsa", "id_ed25519", ".ssh/", ".pem",
+    ".key", "/opt/yatterra/llm.conf", "authorized_keys",
 )
 
 

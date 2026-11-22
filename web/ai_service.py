@@ -836,9 +836,9 @@ _TOOL_MIN_ROLE = {"shell_exec": 2, "read_file": 2, "get_configmaps": 2,
 # Paths read_file must never return, even for admin: cluster admin kubeconfig,
 # platform secrets, and private keys. Matched as substring on the realpath.
 _READ_FILE_DENY = (
-    "k3s.yaml", "/opt/yatterra/.env", "db.conf", "/etc/shadow",
-    "/etc/rancher/", "id_rsa", "id_ed25519", ".ssh/", ".pem", ".key",
-    "/opt/yatterra/llm.conf", "/opt/yatterra/.env",
+    "k3s.yaml", "/opt/yatterra/.env", "/opt/yatterra/web/.env", "db.conf",
+    "/etc/shadow", "/etc/rancher/", "id_rsa", "id_ed25519", ".ssh/", ".pem",
+    ".key", "/opt/yatterra/llm.conf", "authorized_keys",
 )
 
 

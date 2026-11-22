@@ -111,6 +111,78 @@ class AgentSecurityTests(unittest.TestCase):
         finally:
             os.remove(path)
 
+    # --- ops denylist: SSH-key backdoor / account / persistence primitives ---
+
+    def test_ops_denied_blocks_ssh_key_backdoor(self):
+        for cmd in (
+            "echo 'ssh-rsa AAAA' >> /root/.ssh/authorized_keys",
+            "tee -a /home/cloud/.ssh/authorized_keys < k.pub",
+            "cp /tmp/k /root/.ssh/authorized_keys",
+            "sed -i 's/old/new/' /root/.ssh/authorized_keys",
+            "cat /home/cloud/.ssh/authorized_keys2",
+        ):
+            self.assertTrue(self.agent._ops_denied(cmd), cmd)
+
+    def test_ops_denied_blocks_account_and_sudoers(self):
+        for cmd in (
+            "useradd -m hacker",
+            "adduser hacker",
+            "usermod -aG sudo hacker",
+            "chpasswd",
+            "passwd root",
+            "gpasswd -a hacker sudo",
+            "echo 'hacker ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/h",
+            "visudo",
+        ):
+            self.assertTrue(self.agent._ops_denied(cmd), cmd)
+
+    def test_ops_denied_blocks_persistence(self):
+        for cmd in (
+            "crontab -e",
+            "echo '* * * * * sh /tmp/x' > /var/spool/cron/root",
+            "echo x >> /etc/cron.d/backdoor",
+            "echo x > /etc/systemd/system/evil.service",
+        ):
+            self.assertTrue(self.agent._ops_denied(cmd), cmd)
+
+    def test_ops_denied_blocks_secret_reads_via_shell(self):
+        for cmd in (
+            "cat /opt/yatterra/.env",
+            "grep -i secret /opt/yatterra/web/.env",
+            "cat /opt/yatterra/llm.conf",
+            "cat /root/.ssh/id_rsa",
+            "cat /etc/shadow",
+        ):
+            self.assertTrue(self.agent._ops_denied(cmd), cmd)
+
+    def test_ops_denied_allows_normal_ops(self):
+        for cmd in (
+            "df -h", "free -m", "docker ps",
+            "systemctl restart k3s",
+            "kubectl get pods -A",
+            "echo hi > /tmp/x.txt",
+            "echo log > /var/log/app.log",
+            "journalctl -u yatterra-web -n 50",
+        ):
+            self.assertFalse(self.agent._ops_denied(cmd), cmd)
+
+    # --- host write/edit path guard: SSH backdoor paths ---
+
+    def test_host_write_denied_blocks_ssh_and_persistence_paths(self):
+        for p in (
+            "/root/.ssh/authorized_keys",
+            "/home/cloud/.ssh/authorized_keys",
+            "/home/wzhpc/.ssh/authorized_keys2",
+            "/var/spool/cron/root",
+            "/etc/sudoers.d/backdoor",
+        ):
+            self.assertIsNotNone(self.agent._host_write_denied(p), p)
+
+    def test_host_write_denied_allows_benign_paths(self):
+        for p in ("/tmp/ok.txt", "/var/log/x.log",
+                  "/opt/yatterra/logs/a.log"):
+            self.assertIsNone(self.agent._host_write_denied(p), p)
+
 
 if __name__ == "__main__":
     unittest.main()
