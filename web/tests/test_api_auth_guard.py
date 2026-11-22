@@ -157,5 +157,55 @@ class ApprovalsGuardTests(unittest.TestCase):
             self.client.get("/api/agents/approvals").status_code, 200)
 
 
+class PodExistenceOracleTests(unittest.TestCase):
+    """require_pod must not let a zero-credential guest enumerate pod existence.
+
+    ARTEX finding: GET /api/pods/{name} returned 403 for an existing pod the
+    caller can't access but 404 for a missing one — a cross-tenant existence
+    oracle. A guest (rank 0) must get one uniform response either way.
+    """
+
+    def setUp(self):
+        self.mp = patch.dict(sys.modules)
+        self.mp.start()
+        self.addCleanup(self.mp.stop)
+        gu = fake_users()
+        gu.can_pod.return_value = False      # caller is never a pod member
+        sys.modules["users"] = gu
+        gmod = MagicMock()
+        gmod.load_state.return_value = {"groups": {"real-pod": {"name": "real-pod"}}}
+        sys.modules["groups"] = gmod
+        self.auth = load("auth_under_test_pod", "api/_auth.py")
+
+        from flask import Flask
+        app = Flask(__name__)
+        app.secret_key = "test"
+
+        @app.route("/p/<name>")
+        @self.auth.require_pod("member")
+        def p(name):
+            return "ok"
+
+        self.client = app.test_client()
+
+    def _login(self, who):
+        with self.client.session_transaction() as s:
+            s["logged_in"] = True
+            s["user"] = who
+
+    def test_anonymous_is_uniformly_401(self):
+        for n in ("real-pod", "ghost-pod"):
+            self.assertEqual(self.client.get(f"/p/{n}").status_code, 401, n)
+
+    def test_guest_is_uniform_403(self):
+        self._login("g")
+        real = self.client.get("/p/real-pod").status_code
+        ghost = self.client.get("/p/ghost-pod").status_code
+        self.assertEqual(real, 403)
+        self.assertEqual(ghost, 403)
+        # the whole point: guest cannot distinguish existing from missing
+        self.assertEqual(real, ghost)
+
+
 if __name__ == "__main__":
     unittest.main()

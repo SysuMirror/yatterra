@@ -114,6 +114,13 @@ def require_pod(level="member"):
                 return jsonify({"error": {"code": "UNAUTHORIZED",
                                           "message": "Authentication required"}}), 401
             g.api_user = u
+            # guest(零凭据自助、全局共享的 principal)对 /api/pods/* 没有任何合法
+            # 访问面。这里不进入存在性判断就返回统一的 403——否则「存在的 Pod → 403、
+            # 不存在的 Pod → 404」的差分会被用来枚举全平台 Pod 是否存在
+            # (ARTEX finding: /api/pods/{name} 存在性预言机)。匿名调用仍是 401(统一)。
+            if role_rank(u) < _ROLE_RANK["user"]:
+                return jsonify({"error": {"code": "FORBIDDEN",
+                                          "message": "需要至少 user 角色"}}), 403
             pod = groups_mod.load_state()["groups"].get(name)
             if not pod:
                 return jsonify({"error": {"code": "NOT_FOUND",
