@@ -32,6 +32,7 @@ export const PAGE_PERMS: Record<string, string | null> = {
   harness: 'dev.harness',
   llm: 'dev.llm',
   shared: 'ops.shared.read',
+  scan: 'ops.scan.read',
   terminal: 'group.terminal',
   profile: null,
   docs: null,

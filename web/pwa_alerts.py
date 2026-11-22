@@ -80,6 +80,7 @@ _KIND_LABELS = {
     "daemon-down": "平台服务中断",
     "cert-expiry": "证书到期提醒",
     "attack-surge": "攻击激增提醒",
+    "scan-finding": "安全巡检告警",
     "approval-pending": "审批待审",
     "agent-done": "AI 任务完成",
     "quota-warn": "配额预警",

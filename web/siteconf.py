@@ -67,6 +67,13 @@ QDRANT_SERVICE = _env("YATTERRA_QDRANT_SERVICE",
 MINIO_SERVICE = _env("YATTERRA_MINIO_SERVICE",
                      f"minio.{INFRA_NS}.svc.cluster.local")
 
+# ARTEX 自主渗透平台（group-artex pod 的 Go 单体后端）。安全巡检板通过它的
+# HTTP API 驱动端到端渗透测试：yatterra 侧不需要它的管理员口令——直接读它的
+# HS256 签名密钥(jwt.key)自签一枚 JWT 调用 /api/*（见 artex_svc.py）。
+ARTEX_URL = _env("YATTERRA_ARTEX_URL", "http://127.0.0.1:32038")
+ARTEX_KEY_FILE = _env("YATTERRA_ARTEX_KEY_FILE",
+                      "/mnt/sdb/groups/artex/home/artex/jwt.key")
+
 # --------------------------------------------------------------------------- #
 # Public entry (relay domain + port scheme)
 # --------------------------------------------------------------------------- #

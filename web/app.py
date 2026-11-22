@@ -13,6 +13,7 @@ import groups
 import agent
 import agent_runs
 import cert_alerts  # noqa: F401 模块级 start() 拉起证书到期/攻击激增巡检线程
+import scan_svc  # noqa: F401 模块级 start() 拉起安全巡检(明文密钥/危险代码)线程
 import harness_runs
 import agent_conf
 import users

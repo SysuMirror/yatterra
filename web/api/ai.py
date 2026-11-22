@@ -851,6 +851,7 @@ INSIGHT_PAGE_PERMS = {
     "harness": "dev.harness",
     "llm": "dev.llm",
     "shared": "ops.shared.read",
+    "scan": "ops.scan.read",       # 安全巡检（明文密钥/危险代码 + ARTEX 渗透）
 }
 
 # Minimal per-page throttle for the synchronous insight refresh endpoint:

@@ -82,6 +82,7 @@ export type AiPageType =
   | 'proxy' | 'shared' | 'profile' | 'mcp' | 'harness' | 'docs'
   | 'dev' | 'infra' | 'ops' | 'gpu' | 'host' | 'fleet'
   | 'mybilling' | 'pricing' | 'orders'
+  | 'scan'
   | 'pod_ide'
   | `pod:${string}`
 
