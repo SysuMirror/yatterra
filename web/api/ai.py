@@ -6,6 +6,7 @@ All endpoints support streaming (SSE) for progressive rendering.
 import json
 import os
 import re as _re
+import secrets
 import time
 from flask import Blueprint, request, jsonify, Response, stream_with_context, g
 from middleware.error_handler import bad_request, not_found, forbidden
@@ -58,6 +59,28 @@ def _user():
 
 def _role():
     return (current_user_obj() or {}).get("role")
+
+
+def _chat_owner():
+    """会话/run 的归属身份。普通用户=登录名;guest 用**每浏览器一次性 nonce**
+    隔离(guest principal 是全局共享的单一账号行,若直接用 "guest" 作归属,
+    任意匿名访客都会看到/操作彼此的 AI 会话与 run —— ARTEX finding#138)。
+
+    注意:配额/算力封顶仍按基础身份 "guest" 计(_user() 不变),所以这里只影响
+    会话归属,不影响访客的合计 token 上限。
+    """
+    u = current_user_obj() or {}
+    if (u.get("role") or "").lower() == "guest":
+        from flask import session as _sess
+        n = _sess.get("_guest_nonce")
+        if not n:
+            n = secrets.token_hex(8)
+            try:
+                _sess["_guest_nonce"] = n
+            except Exception:
+                pass
+        return "guest#" + n
+    return current_username() or "anonymous"
 
 
 def _quota_blocked(user, role=None):
@@ -533,7 +556,7 @@ def ai_page():
     context = body.get("context", "")
     images = body.get("images") or []  # base64 strings
     session_id = (body.get("session_id") or "").strip()
-    username = current_username()
+    username = _chat_owner()
 
     # Per-user daily token quota (default large; see llm_usage.check_quota).
     _q = _quota_blocked(_user(), _role())
@@ -607,7 +630,7 @@ def ai_page_run():
     context = body.get("context", "")
     images = body.get("images") or []
     session_id = (body.get("session_id") or "").strip()
-    username = current_username()
+    username = _chat_owner()
     if session_id:
         ai_chat_store.require_session(session_id, username)
         history = ai_chat_store.load_history(session_id, username)
@@ -694,7 +717,7 @@ def ai_page_stream():
         after = int(last) + 1 if last is not None else int(request.args.get("offset", "0"))
     except (TypeError, ValueError):
         after = 0
-    username = current_username()
+    username = _chat_owner()
     if not page_ai_runs.get_run(run_id, username) \
             and not page_ai_runs.owns(run_id, username):
         raise not_found("Page AI run not found")
@@ -720,7 +743,7 @@ def ai_page_runs_list():
     """当前用户的 run 列表; ?active=1 只看进行中的(前端刷新后找回任务)。"""
     import page_ai_runs
     active_only = request.args.get("active") in ("1", "true", "yes")
-    return jsonify({"runs": page_ai_runs.list_runs(current_username(),
+    return jsonify({"runs": page_ai_runs.list_runs(_chat_owner(),
                                                    active_only=active_only)})
 
 
@@ -730,7 +753,7 @@ def ai_page_stop():
     """协作式停止一个进行中的 run。"""
     import page_ai_runs
     body = request.get_json(silent=True) or {}
-    if not page_ai_runs.stop((body.get("run_id") or ""), current_username()):
+    if not page_ai_runs.stop((body.get("run_id") or ""), _chat_owner()):
         raise not_found("Page AI run not found")
     return jsonify({"ok": True})
 
@@ -755,11 +778,11 @@ def ai_page_action_result():
     if not isinstance(results, list):
         raise bad_request("results must be a list")
     # 归属校验: 内存 run 或 index 里都得是本人
-    if not page_ai_runs.get_run(run_id, current_username()) \
-            and not page_ai_runs.owns(run_id, current_username()):
+    if not page_ai_runs.get_run(run_id, _chat_owner()) \
+            and not page_ai_runs.owns(run_id, _chat_owner()):
         raise not_found("Page AI run not found")
     page_ai_runs.submit_action_result(
-        run_id, current_username(), results,
+        run_id, _chat_owner(), results,
         action_id=str(body.get("action_id") or "")[:64])
     return jsonify({"ok": True})
 
@@ -769,7 +792,7 @@ def ai_page_action_result():
 @require_auth()
 def ai_page_sessions():
     """List the current user's page-assistant conversations (newest first)."""
-    return jsonify({"sessions": ai_chat_store.list_sessions(current_username())})
+    return jsonify({"sessions": ai_chat_store.list_sessions(_chat_owner())})
 
 
 @ai_bp.route("/page/session/new", methods=["POST"])
@@ -777,7 +800,7 @@ def ai_page_sessions():
 def ai_page_session_new():
     """Create a new conversation for the current user."""
     body = request.get_json(silent=True) or {}
-    sid = ai_chat_store.create_session(current_username(),
+    sid = ai_chat_store.create_session(_chat_owner(),
                                        page=body.get("page"))
     return jsonify({"session_id": sid}), 201
 
@@ -787,7 +810,7 @@ def ai_page_session_new():
 def ai_page_session_load():
     """Load one conversation's messages (ownership enforced → 404)."""
     sid = request.args.get("id", "")
-    username = current_username()
+    username = _chat_owner()
     s = ai_chat_store.require_session(sid, username)
     return jsonify({
         "session_id": sid,
@@ -804,7 +827,7 @@ def ai_page_session_rename():
     sid = (body.get("id") or "").strip()
     if not sid:
         raise bad_request("id is required")
-    username = current_username()
+    username = _chat_owner()
     ai_chat_store.require_session(sid, username)
     ai_chat_store.rename_session(sid, body.get("title", ""), username)
     return jsonify({"ok": True})
@@ -815,7 +838,7 @@ def ai_page_session_rename():
 def ai_page_session_delete():
     body = request.get_json(silent=True) or {}
     sid = (body.get("id") or "").strip()
-    username = current_username()
+    username = _chat_owner()
     ai_chat_store.require_session(sid, username)
     ai_chat_store.delete_session(sid, username)
     return jsonify({"ok": True})
@@ -827,13 +850,16 @@ def ai_page_session_delete():
 # so access must match the permission guarding the underlying module.
 # Pages not listed here are denied by default.
 INSIGHT_PAGE_PERMS = {
-    "dashboard": "infra.host.view",  # aggregates host/GPU/audit/threat data
+    # 平台级洞察 = admin-only：这些 gatherer 汇总**全平台**数据(pod 列表/主机/k3s
+    # 版本/GPU 明细/审计/蜜罐)，不能给外部租户看。页面本身可能对 user 只读可见
+    # (infra.host.view)，但页内 AI 洞察只对 admin —— 内容按用户作用域收口。
+    "dashboard": "admin.users",  # aggregates host/GPU/audit/threat data
     "pod": "group.view",
     "pod_ide": "group.view",       # Web IDE (/pods/<name>/ide) 页面级 AI 助手
-    "gpu": "infra.host.view",
-    "host": "infra.host.view",
-    "infra": "infra.host.view",    # aggregates host/storage/db/proxy
-    "fleet": "infra.host.view",    # multi-host cluster status (fleet_monitor)
+    "gpu": "admin.users",
+    "host": "admin.users",
+    "infra": "admin.users",        # aggregates host/storage/db/proxy
+    "fleet": "admin.users",        # multi-host cluster status (fleet_monitor)
     "storage": "infra.storage.read",
     "databases": "infra.db.read",
     "db": "infra.db.read",
