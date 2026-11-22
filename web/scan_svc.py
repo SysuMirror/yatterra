@@ -1168,7 +1168,11 @@ def list_findings(severity=None, check=None, q=None, status=None, scope=None,
         where.append("scope=?"); args.append(scope)
     if category:
         where.append("category=?"); args.append(category)
-    if source:
+    if source == "llm":
+        # 被 LLM 处理过的行 source 为 'llm'（L3 新增）或 'static+llm'（L2 复核过），
+        # 两种都要能被「LLM 审查」这个筛选项捞出来。
+        where.append("COALESCE(source,'static') LIKE '%llm%'")
+    elif source:
         where.append("COALESCE(source,'static')=?"); args.append(source)
     if q:
         where.append("(title LIKE ? OR file LIKE ? OR snippet LIKE ? OR scope LIKE ?)")
