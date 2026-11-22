@@ -143,7 +143,9 @@ def require_pod(level="member"):
             # 访问面。这里不进入存在性判断就返回统一的 403——否则「存在的 Pod → 403、
             # 不存在的 Pod → 404」的差分会被用来枚举全平台 Pod 是否存在
             # (ARTEX finding: /api/pods/{name} 存在性预言机)。匿名调用仍是 401(统一)。
-            if role_rank(u) < _ROLE_RANK["user"]:
+            # 只封「明确为 guest 角色」的 principal:不要用角色等级比较——那会把
+            # 任何 role 字段缺省的用户 dict 一律误判成 guest(rank 0)而误杀。
+            if (u.get("role") or "").lower() == "guest":
                 return jsonify({"error": {"code": "FORBIDDEN",
                                           "message": "需要至少 user 角色"}}), 403
             pod = groups_mod.load_state()["groups"].get(name)
