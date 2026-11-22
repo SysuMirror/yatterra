@@ -1247,8 +1247,12 @@ def _execute_tool_inner(name, arguments, user=None):
                         "down、SSH 后门/账号提权/cron 持久化/密钥读取 等)。换一种方式重试")
             if _decision != "allow":
                 # 非只读白名单命令 → 统一走审批队列, 默认拒绝直接以 root 执行。
+                # 审批闸关闭(mode=off)时不再入队, 直接 fail-closed 拒绝。
                 try:
                     import approvals as _approvals
+                    if _approvals.mode() == "off":
+                        return ("安全限制: 该命令不在宿主只读白名单, 且审批闸已关闭"
+                                "(YATTERRA_APPROVAL_MODE=off) → fail-closed 拒绝, 未执行。")
                     return _approvals.submit(
                         "run", {"command": cmd}, "host", None, None, None, user,
                         reason="AI 交互式 shell_exec 非白名单命令")

@@ -153,6 +153,21 @@ class HostCmdAllowlistTests(unittest.TestCase):
             self.assertIsNone(
                 self.approvals.classify("run", {"command": "some-tool x"}, "host"))
 
+    # --- hard floor: when the gate is off, non-allowlisted cmds fail closed ---
+
+    def test_host_cmd_floor_allows_allowlisted(self):
+        self.assertIsNone(self.agent._host_cmd_floor("df -h", "宿主机 root"))
+
+    def test_host_cmd_floor_refuses_denylisted(self):
+        r = self.agent._host_cmd_floor("rm -rf /", "宿主机 root")
+        self.assertIsInstance(r, str)
+        self.assertIn("黑名单", r)
+
+    def test_host_cmd_floor_refuses_unknown(self):
+        r = self.agent._host_cmd_floor("systemctl restart k3s", "宿主机 root")
+        self.assertIsInstance(r, str)
+        self.assertIn("白名单", r)
+
 
 if __name__ == "__main__":
     unittest.main()

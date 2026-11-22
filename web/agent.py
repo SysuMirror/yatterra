@@ -333,6 +333,23 @@ def host_cmd_decision(cmd):
     return "confirm"
 
 
+def _host_cmd_floor(cmd, where):
+    """宿主/远程命令的**硬闸**: 当审批闸未接管(如 YATTERRA_APPROVAL_MODE=off,
+    或分类未命中)时, 非白名单命令一律**拒绝**, 而非放行。返回拒绝文案或 None。
+
+    这保证"没有任何配置能让一条未经人工批准的任意宿主 root 命令跑起来":
+    mode=high/all 时非白名单命令进审批队列(根本到不了这里); 只有审批关闭时才
+    走到本闸, 此时 fail-closed 拒绝。
+    """
+    d = host_cmd_decision(cmd)
+    if d == "allow":
+        return None
+    if d == "deny":
+        return f"【被安全策略拒绝:{where}命令命中危险操作黑名单。换一种只读/安全的方式。】"
+    return (f"【安全限制:{where}命令不在只读白名单, 且审批闸未接管"
+            f"(可能 YATTERRA_APPROVAL_MODE=off)。已 fail-closed 拒绝, 未执行。】")
+
+
 # --- host write/edit path guard ---
 # 宿主机(ops, root)的 write_file/edit_file 路径护栏;容器内(pod runner,cloud 自己的
 # /home/cloud)不受此限。read_file 已有 ".." 校验,这里同样禁止相对路径与 ".."。
@@ -1112,6 +1129,12 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None,
         cmd = args.get("command", "")
         if runner == "pod":
             return _run_in_pod(pod, cmd, cfg["limits"]["cmd_timeout"], out_max)
+        # 硬闸: 审批闸若未接管(mode=off 等), 非白名单命令 fail-closed 拒绝。
+        # _approval_bypass=True(人工批准回调)时跳过, 由审批人负责。
+        if not _approval_bypass:
+            _floor = _host_cmd_floor(cmd, "宿主机 root")
+            if _floor:
+                return False, _floor
         return _run_host(cmd, cfg["limits"]["cmd_timeout"], out_max)
     if tool == "run_remote":
         if runner == "pod":
@@ -1120,8 +1143,10 @@ def _exec_tool(agent_def, pod, tool, args, cfg, run_id=None, user=None,
             return False, "【无 infra.host 权限,不能执行远程命令】"
         rname = args.get("host", "")
         cmd = args.get("command", "")
-        if _ops_denied(cmd):
-            return False, "【被安全策略拒绝:该命令在远程执行下禁用。换一种只读/安全的方式。】"
+        if not _approval_bypass:
+            _floor = _host_cmd_floor(cmd, "远程主机")
+            if _floor:
+                return False, _floor
         ok, out = remote_hosts.run_remote(
             rname, cmd, sudo=bool(args.get("sudo", False)),
             timeout=cfg["limits"]["cmd_timeout"])
