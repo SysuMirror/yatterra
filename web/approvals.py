@@ -61,8 +61,8 @@ def mode():
 
 
 # --- 需确认的写动作分类 ---
-# 高危写命令模式(用于 run / run_remote 的命令串)。只读子命令(status/describe/
-# get/logs/df/du/journalctl/ps/free 等)不匹配这里,保持现有巡检流畅。
+# 高危写命令模式。**注意**: 宿主/远程 runner 已改用白名单(_host_cmd_reason →
+# agent._ops_safe), 此正则仅作参考/兜底(如未来引入其它 runner), 不再决定 host 放行。
 _WRITE_CMD_RE = re.compile(
     r"""(?ix)
     (?:
@@ -100,23 +100,16 @@ def classify(tool, args, runner):
         if tool in _READ_TOOLS:
             return None
         return f"审批模式=all:动作 {tool} 需确认"
-    # --- high:仅高危写动作 ---
+    # --- high:宿主/远程命令改为**白名单默认拒绝**(2026-11 起) ---
+    # 旧逻辑只拦 _WRITE_CMD_RE 里的"已知高危写命令"(黑名单), 等价改写可绕过。
+    # 现策略:只有命中 agent 只读白名单(_ops_safe)的单条命令直接放行, 其余一切
+    # 一律转人工审批(默认拒绝)。命中 denylist 的由 agent 立即拒绝, 不入队。
     if tool == "run":
         if runner == "pod":
-            return None  # 容器内(cloud 自己的环境)不拦
-        cmd = args.get("command", "") or ""
-        if _denied_immediately(cmd):
-            return None  # 已被 denylist 立即拒绝,无需排队
-        if _WRITE_CMD_RE.search(cmd):
-            return "命中高危写命令(宿主机 root):" + _cmd_brief(cmd)
-        return None
+            return None  # 容器内(cloud 自己的环境)不拦——构建/编程 agent 需要自由执行
+        return _host_cmd_reason(args.get("command", "") or "", "宿主机 root")
     if tool == "run_remote":
-        cmd = args.get("command", "") or ""
-        if _denied_immediately(cmd):
-            return None
-        if _WRITE_CMD_RE.search(cmd):
-            return "命中高危写命令(远程主机):" + _cmd_brief(cmd)
-        return None
+        return _host_cmd_reason(args.get("command", "") or "", "远程主机")
     if tool in ("write_file", "edit_file"):
         if runner == "pod":
             return None  # build agent 在容器内改自己的代码,不拦
@@ -127,6 +120,26 @@ def classify(tool, args, runner):
             return f"宿主机覆写非 /tmp 路径({tool}: {path})"
         return None
     return None
+
+
+def _host_cmd_reason(cmd, where):
+    """宿主/远程命令的审批判定(白名单默认拒绝)。
+
+    - 命中 agent denylist → None(已由 agent 立即拒绝, 不入队)。
+    - 命中 agent 只读白名单(_ops_safe, 单条/无元字符/非敏感目标)→ None(直接放行)。
+    - 其余一切 → 返回"需确认"理由(默认拒绝, 转人工审批)。
+
+    agent 不可导入(异常/旧版无 _ops_safe)时**保守拒绝**: 一律转审批。
+    """
+    try:
+        import agent
+        if agent._ops_denied(cmd):
+            return None
+        if agent._ops_safe(cmd):
+            return None
+    except Exception:
+        return f"{where}命令无法完成安全校验(默认拒绝, 需人工确认):" + _cmd_brief(cmd)
+    return f"{where}命令不在只读白名单(默认拒绝, 需人工确认):" + _cmd_brief(cmd)
 
 
 def _denied_immediately(cmd):

@@ -252,6 +252,85 @@ def _ops_denied(cmd):
     return False
 
 
+# --- 宿主机只读命令白名单(默认拒绝的根基) ---
+# _DENY_PATTERNS 是「黑名单」: 只能挡住**已知**的危险写法, 无法穷举等价改写——
+#   python3 -c "open(...)"; echo <b64>|base64 -d|bash; a=authorized_; $a keys;
+#   tee/cp/install/ln 落盘; 写脚本再执行; nft/任意 systemd 服务; /etc/passwd 直写 …
+# 宿主 runner 以 **root** 执行, 是平台最高权限面。因此对「AI 直接提交的宿主命令」
+# 改为**白名单默认拒绝**: 只有"单条命令 + 无 shell 元字符 + 首命令在只读白名单内"
+# 的命令可无条件放行; 其余一律转人工审批(confirm); 命中黑名单则直接拒绝(deny)。
+# pod runner(容器内以 cloud 运行)不受此限, 以免打断构建/编程 agent。
+_SAFE_CMD_ALLOWLIST = [
+    # 系统/资源只读
+    r"(?:df|du|free|uptime|uname|hostname|id|whoami|date|nproc|lscpu|lsblk|lsmem|vmstat|iostat)\b",
+    r"(?:ps|pgrep|pstree|top|htop)\b",
+    # 文件只读(不含 find——-delete/-exec 可写/执行; 不含 sort——-o 可写)
+    r"(?:ls|stat|file|wc|head|tail|cut|tr|uniq|tac|nl|rev)\b",
+    r"(?:cat|less|more|zcat|zless)\b",
+    r"(?:grep|egrep|fgrep|rg)\b",
+    r"(?:which|whereis|type|readlink|realpath|basename|dirname|command)\b",
+    r"(?:echo|printf)\b",
+    # 网络只读诊断(不含 curl/wget/scp/ssh——可下载/上传/建立连接)
+    r"(?:ss|netstat|ip\s+(?:a|addr|address|route|link\s+show|neigh))\b",
+    r"(?:ping|ping6|traceroute|tracepath|dig|host|nslookup|getent)\b",
+    # journald / systemd 只读子命令
+    r"(?:journalctl)\b",
+    r"(?:systemctl\s+(?:status|is-active|is-enabled|is-failed|list-units|list-unit-files|show|cat|list-dependencies|--version|--failed)\b)",
+    r"(?:supervisorctl\s+(?:status|avail|tail)\b)",
+    # 容器/编排只读
+    r"(?:docker(?:\s+compose)?\s+(?:ps|images|logs|inspect|stats|version|info|top|port|history))\b",
+    r"(?:crictl\s+(?:ps|images|inspect|stats|logs|version|info))\b",
+    r"(?:kubectl\s+(?:get|describe|logs|top|explain|api-resources|api-versions|version|cluster-info|config\s+view|auth\s+can-i)\b)",
+    r"(?:kubectl\s+rollout\s+status\b)",
+    r"(?:k3s\s+kubectl\s+(?:get|describe|logs|top|explain)\b)",
+    # GPU
+    r"(?:nvidia-smi)\b",
+]
+_SAFE_CMD_RE = [re.compile(r, re.I) for r in _SAFE_CMD_ALLOWLIST]
+
+# 即使首命令在白名单, 命中这些也绝不放行(等价于"非单条只读命令"或敏感目标)。
+# 1) shell 元字符 → 可能是命令链/管道/重定向/子shell/替换, 单条只读假设失效。
+_SAFE_CMD_METACHAR_RE = re.compile(r"[;&|`$(){}<>\\\n\r\x00]")
+# 2) 敏感路径/凭据目标 → 即便是 cat/grep/ls 也只读不了它。
+_SAFE_CMD_SENSITIVE_RE = re.compile(
+    r"(?:\.env\b|\.ssh\b|authorized_keys|id_rsa|id_ed25519|\.pem\b|\.key\b|"
+    r"k3s\.yaml|/etc/rancher|/etc/shadow|/etc/gshadow|/etc/sudoers|"
+    r"\bdb\.conf\b|\bllm\.conf\b|\b\.netrc\b|/root/\.)",
+    re.I)
+
+
+def _ops_safe(cmd):
+    """是否为可无条件放行的**单条只读**宿主命令(白名单命中且无元字符/敏感目标)。"""
+    c = (cmd or "").strip()
+    if not c:
+        return False
+    # 先排除已知危险(黑名单), 再要求"单条 + 白名单"
+    if _ops_denied(c):
+        return False
+    if _SAFE_CMD_METACHAR_RE.search(c):
+        return False
+    if _SAFE_CMD_SENSITIVE_RE.search(c):
+        return False
+    for rx in _SAFE_CMD_RE:
+        if rx.match(c):
+            return True
+    return False
+
+
+def host_cmd_decision(cmd):
+    """宿主 root 命令面的三态判定(唯一策略源, 供 agent/ai_service/approvals 复用)。
+
+    - "deny"    : 命中黑名单 → 直接拒绝, 不执行。
+    - "allow"   : 命中只读白名单(单条、无元字符、非敏感目标)→ 直接放行。
+    - "confirm" : 其余一切 → **默认拒绝**, 需人工审批后执行。
+    """
+    if _ops_denied(cmd):
+        return "deny"
+    if _ops_safe(cmd):
+        return "allow"
+    return "confirm"
+
+
 # --- host write/edit path guard ---
 # 宿主机(ops, root)的 write_file/edit_file 路径护栏;容器内(pod runner,cloud 自己的
 # /home/cloud)不受此限。read_file 已有 ".." 校验,这里同样禁止相对路径与 ".."。

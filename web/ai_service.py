@@ -1006,6 +1006,10 @@ def _check_pod_access(arguments, user, perms):
 #
 # 注意: shell_exec 以宿主机 root 运行, 属于高权限面; 收紧请改 agent._DENY_PATTERNS。
 def _is_shell_safe(cmd):
+    """[已由 host_cmd_decision 白名单取代, 保留供参考/向后兼容]
+
+    旧语义: 只要不命中 denylist 即视为安全(黑名单)。现 shell_exec 执行前改用
+    agent.host_cmd_decision —— 只有只读白名单命令直接执行, 其余转审批。"""
     if not cmd or not cmd.strip():
         return False
     try:
@@ -1227,13 +1231,31 @@ def _execute_tool_inner(name, arguments, user=None):
             cmd = arguments.get("command", "").strip()
             if not cmd:
                 return "空命令"
-            # Security check: validate each segment of compound commands
-            if not _is_shell_safe(cmd):
-                return ("安全限制: 该命令命中危险操作黑名单(仅拦截极危险且不可逆的命令: "
-                        "rm 根/顶层系统目录、mkfs/dd 擦盘、reboot/shutdown、curl|sh、"
-                        "重定向覆盖系统目录、集群级 kubectl delete、drain、关闭 "
-                        "k3s/frps/frpc/yatterra-web、iptables -F/ip link down 等)。"
-                        "换一种方式重试")
+            # 宿主 root 命令面: 唯一策略源 agent.host_cmd_decision(白名单默认拒绝)。
+            #   deny    → 命中黑名单, 拒绝;
+            #   allow   → 单条只读白名单命令, 直接以 root 执行;
+            #   confirm → 其余一切, 转入审批队列(由 admin 批准后执行), 不直接执行。
+            try:
+                import agent as _agent
+                _decision = _agent.host_cmd_decision(cmd)
+            except Exception:
+                _decision = "confirm"  # 无法完成校验 → 保守拒绝
+            if _decision == "deny":
+                return ("安全限制: 该命令命中危险操作黑名单(rm 根/顶层系统目录、mkfs/dd "
+                        "擦盘、reboot/shutdown、curl|sh、重定向覆盖系统目录、集群级 kubectl "
+                        "delete、drain、关闭 k3s/frps/frpc/yatterra-web、iptables -F/ip link "
+                        "down、SSH 后门/账号提权/cron 持久化/密钥读取 等)。换一种方式重试")
+            if _decision != "allow":
+                # 非只读白名单命令 → 统一走审批队列, 默认拒绝直接以 root 执行。
+                try:
+                    import approvals as _approvals
+                    return _approvals.submit(
+                        "run", {"command": cmd}, "host", None, None, None, user,
+                        reason="AI 交互式 shell_exec 非白名单命令")
+                except Exception:
+                    return ("安全限制: 交互式 shell_exec 仅放行宿主只读白名单命令"
+                            "(如 df/journalctl/systemctl status/kubectl get/nvidia-smi 等)。"
+                            "需要执行其它命令请改用 ops agent(走审批流), 或由管理员在审批页处理。")
             r = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True, timeout=15,
             )
