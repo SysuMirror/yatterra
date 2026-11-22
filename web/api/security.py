@@ -9,6 +9,7 @@
 不通过普通权限位下发。前端相应页面/入口也用 super-only 的 ops.scan.read 作标记。
 """
 import logging
+import threading
 
 from flask import Blueprint, request, jsonify
 
@@ -22,13 +23,17 @@ log = logging.getLogger(__name__)
 
 security_bp = Blueprint("api_security", __name__, url_prefix="/api/security")
 
+# 全量巡检较重，串行化：同一时刻只允许一个手动 L1 巡检在跑。
+_SCAN_LOCK = threading.Lock()
+
 
 # ── 静态巡检 ────────────────────────────────────────────────────────────────
 @security_bp.route("/overview", methods=["GET"])
 @require_auth(min_role="super")
 def scan_overview():
     """巡检总览：按等级计数 + 最近一次运行 + ARTEX 连通性。"""
-    out = {"scan": scan_svc.summary(), "history": scan_svc.history(limit=10)}
+    out = {"scan": scan_svc.summary(), "history": scan_svc.history(limit=10),
+           "running": _SCAN_LOCK.locked()}
     try:
         st = artex_svc.status()
         out["artex"] = {
@@ -56,22 +61,78 @@ def scan_findings():
         check=request.args.get("check") or None,
         q=request.args.get("q") or None,
         status=request.args.get("status") or None,
+        scope=request.args.get("scope") or None,
+        category=request.args.get("category") or None,
+        source=request.args.get("source") or None,
         limit=limit, offset=offset))
+
+
+@security_bp.route("/scopes", methods=["GET"])
+@require_auth(min_role="super")
+def scan_scopes():
+    """按 scope（Pod / platform / host）聚合，供前端「按 Pod 筛选」下拉。"""
+    return jsonify({"scopes": scan_svc.scope_summary(),
+                    "categories": scan_svc.category_summary(),
+                    "labels": scan_svc.CATEGORIES})
+
+
+@security_bp.route("/scans", methods=["GET"])
+@require_auth(min_role="super")
+def scan_kinds():
+    """可跑的巡检层（code/files/k8s/host）。"""
+    return jsonify({"kinds": [{"id": k, "label": v} for k, v in {
+        "code": "代码/配置文本", "files": "文件/权限", "k8s": "集群清单", "host": "主机配置"
+    }.items() if k in scan_svc.SCANS]})
+
+
+@security_bp.route("/review/<pod>", methods=["POST"])
+@require_auth(min_role="super")
+def scan_review_pod(pod):
+    """对单个 Pod 立即跑一次 podwatch 巡检（含 L2/L3 安全审查，force）。"""
+    import re
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,60}", pod or ""):
+        return jsonify({"error": "非法 Pod 名"}), 400
+    import podwatch
+    res = podwatch.scan_one(pod, force=True)
+    if res is None:
+        return jsonify({"error": "该 Pod 无可扫描的 home 目录"}), 404
+    audit.record("api_scan_review", detail=f"pod={pod} sec={bool(res.get('sec'))}",
+                 actor=current_username() or "unknown")
+    return jsonify({"ok": True, "result": res})
 
 
 @security_bp.route("/scan", methods=["POST"])
 @require_auth(min_role="super")
 def scan_run():
-    """立即跑一遍静态巡检。"""
+    """立即跑一遍静态巡检。
+
+    全量 L1 一轮约需数十秒；若**同步**跑，很容易撞上公网入口 nginx 的
+    proxy_read_timeout(默认 60s) 被 504。故改为后台线程执行、接口立即返回
+    `{started:true}`，前端弹提示后再刷新总览看结果。加锁避免并发重复跑。
+    """
+    import threading
     kinds = None
     body = request.get_json(silent=True) or {}
     if isinstance(body.get("kinds"), list):
         kinds = [k for k in body["kinds"] if k in scan_svc.SCANS] or None
-    res = scan_svc.run_scan(kinds=kinds, trigger=f"manual:{current_username() or 'api'}")
-    audit.record("api_scan_run", detail=f"total={res.get('total')} new={res.get('new')}",
-                 actor=current_username() or "unknown")
-    code = 200 if res.get("ok") else 500
-    return jsonify(res), code
+    actor = current_username() or "unknown"
+    if not _SCAN_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "started": False, "error": "已有巡检在跑，请稍候"}), 409
+
+    def _bg():
+        try:
+            res = scan_svc.run_scan(kinds=kinds, trigger=f"manual:{actor}")
+            audit.record("api_scan_run",
+                         detail=f"total={res.get('total')} new={res.get('new')}",
+                         actor=actor)
+        except Exception:
+            log.exception("manual scan failed")
+        finally:
+            _SCAN_LOCK.release()
+
+    threading.Thread(target=_bg, name="scan-manual", daemon=True).start()
+    audit.record("api_scan_start", detail=f"kinds={kinds or 'all'}", actor=actor)
+    return jsonify({"ok": True, "started": True})
 
 
 @security_bp.route("/findings/<fingerprint>/status", methods=["POST"])

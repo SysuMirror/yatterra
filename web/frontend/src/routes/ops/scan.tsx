@@ -43,15 +43,19 @@ function StaticPanel() {
   const [sev, setSev] = useState('')
   const [status, setStatus] = useState('open')
   const [check, setCheck] = useState('')
+  const [scope, setScope] = useState('')
+  const [category, setCategory] = useState('')
+  const [source, setSource] = useState('')
   const [q, setQ] = useState('')
 
   const { data: overview, isLoading } = useQuery<any>({
     queryKey: ['scan-overview'],
     queryFn: () => api.get('/security/overview'),
     staleTime: 10_000,
+    refetchInterval: (data: any) => (data?.running ? 4000 : false),
   })
 
-  const findingsKey = ['scan-findings', sev, status, check, q]
+  const findingsKey = ['scan-findings', sev, status, check, scope, category, source, q]
   const { data: findings, isFetching } = useQuery<any>({
     queryKey: findingsKey,
     queryFn: () => {
@@ -59,6 +63,9 @@ function StaticPanel() {
       if (sev) p.set('severity', sev)
       if (status) p.set('status', status)
       if (check) p.set('check', check)
+      if (scope) p.set('scope', scope)
+      if (category) p.set('category', category)
+      if (source) p.set('source', source)
       if (q) p.set('q', q)
       return api.get(`/security/findings?${p.toString()}`)
     },
@@ -68,8 +75,21 @@ function StaticPanel() {
   const runScan = useMutation({
     mutationFn: () => api.post('/security/scan', {}),
     onSuccess: () => {
+      // 后端已改为后台线程跑，立即返回；稍后刷新总览与结果列表。
       qc.invalidateQueries({ queryKey: ['scan-overview'] })
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['scan-overview'] })
+        qc.invalidateQueries({ queryKey: ['scan-findings'] })
+      }, 12_000)
+    },
+  })
+
+  // 对单个 Pod 立即跑一次 podwatch 巡检（含 L2/L3 LLM 安全审查）。
+  const reviewPod = useMutation({
+    mutationFn: (pod: string) => api.post(`/security/review/${encodeURIComponent(pod)}`, {}),
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scan-findings'] })
+      qc.invalidateQueries({ queryKey: ['scan-overview'] })
     },
   })
 
@@ -85,6 +105,23 @@ function StaticPanel() {
   const checkOptions = [
     { value: '', label: '全部规则' },
     ...((scan.by_check || []) as any[]).map((c) => ({ value: c.check_id, label: `${c.check_id} (${c.n})` })),
+  ]
+  const scopeRows: any[] = (scan.by_scope || []) as any[]
+  const scopeOptions = [
+    { value: '', label: '全部 Pod / 范围' },
+    ...scopeRows.map((s) => ({
+      value: s.scope,
+      label: `${s.scope === 'platform' ? '平台' : s.scope === 'host' ? '主机' : s.scope} (${s.total})`,
+    })),
+  ]
+  const categoryOptions = [
+    { value: '', label: '全部类目' },
+    ...((scan.by_category || []) as any[]).map((c) => ({ value: c.category, label: `${c.label || c.category} (${c.n})` })),
+  ]
+  const sourceOptions = [
+    { value: '', label: '全部来源' },
+    { value: 'static', label: '静态规则' },
+    { value: 'llm', label: 'LLM 审查' },
   ]
 
   return (
@@ -111,13 +148,21 @@ function StaticPanel() {
             )}
           </div>
           {canRun && (
-            <Button
-              onClick={() => runScan.mutate()}
-              loading={runScan.isPending}
-              size="sm"
-            >
-              <RefreshCw size={16} className="mr-1" />立即巡检
-            </Button>
+            <div className="flex items-center gap-2">
+              {overview?.running && (
+                <span className="text-xs text-accent flex items-center gap-1">
+                  <RefreshCw size={13} className="animate-spin" />巡检进行中…
+                </span>
+              )}
+              <Button
+                onClick={() => runScan.mutate()}
+                loading={runScan.isPending || !!overview?.running}
+                disabled={!!overview?.running}
+                size="sm"
+              >
+                <RefreshCw size={16} className="mr-1" />立即巡检
+              </Button>
+            </div>
           )}
         </div>
         {runScan.isError && (
@@ -167,6 +212,35 @@ function StaticPanel() {
             options={checkOptions}
             className="w-56"
           />
+          <Select
+            value={category}
+            onChange={setCategory}
+            options={categoryOptions}
+            className="w-36"
+          />
+          <Select
+            value={scope}
+            onChange={(v) => { setScope(v); setCheck('') }}
+            options={scopeOptions}
+            className="w-52"
+          />
+          <Select
+            value={source}
+            onChange={setSource}
+            options={sourceOptions}
+            className="w-32"
+          />
+          {scope && scope !== 'platform' && scope !== 'host' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!canRun || reviewPod.isPending}
+              onClick={() => reviewPod.mutate(scope)}
+              title="对该 Pod 立即跑一次 podwatch 巡检（含 LLM 安全审查）"
+            >
+              <ShieldAlert size={14} className="mr-1" />LLM 复核该 Pod
+            </Button>
+          )}
           <span className="ml-auto text-sm text-muted tnum">
             {findings?.total ?? 0} 项{isFetching ? ' · 加载中' : ''}
           </span>
@@ -189,6 +263,17 @@ function StaticPanel() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-ink">{f.title}</span>
                     <span className="text-xs text-muted font-mono">{f.check_id}</span>
+                    {f.scope && f.scope !== 'platform' && (
+                      <button
+                        type="button"
+                        className="text-xs text-muted hover:text-ink underline decoration-dotted"
+                        onClick={() => setScope(f.scope)}
+                      >
+                        {f.scope === 'host' ? '主机' : f.scope}
+                      </button>
+                    )}
+                    {f.category && <Badge variant="muted">{f.category}</Badge>}
+                    {f.source === 'llm' && <Badge variant="accent">LLM 审查</Badge>}
                   </div>
                   <div className="text-sm text-muted mt-0.5 break-all font-mono">
                     {f.file}{f.line ? `:${f.line}` : ''}

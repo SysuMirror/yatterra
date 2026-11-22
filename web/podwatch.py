@@ -70,6 +70,26 @@ _RISK_KEYWORDS = (
 _RISK_URL = "/pods/{pod}"        # deep-link target for a risk alert
 _SUGGEST_URL = "/ops/approvals"  # deep-link target once a remedy is queued
 
+# ── 每-Pod LLM 安全审查（L2 复核 + L3 语义）────────────────────
+# podwatch 是平台**唯一的**每-Pod 定时 LLM 引擎，安全审查就搭它的顺风车：
+# 在 profile 分析之后，对「本轮有变更 / 首次 / 被强制 / 距上次安全审查超过
+# _SEC_TTL」的 Pod 发起一次安全审查——拉该 Pod 在 scan_results.db 里的 L1 静态
+# 候选做 L2 复核（判真伪+校准等级→回写），并阅读变更文件做 L3 逻辑级审计
+# （越权/IDOR/认证缺失/注入/SSRF/竞态…→以 llm/* 写入同一库）。这样 /ops/scan
+# 板与 Pod 详情页都能看到 LLM 结论，且静态层无需自建 LLM 线程。
+#   YATTERRA_PODWATCH_SEC=0        关掉安全审查
+#   YATTERRA_PODWATCH_SEC_TTL      无变更时的兜底复查间隔秒（默认 24h）
+#   YATTERRA_PODWATCH_SEC_MAX      每轮自动 sweep 里最多审查的 Pod 数（成本闸）
+SEC_ON = os.environ.get("YATTERRA_PODWATCH_SEC", "1").strip().lower() not in (
+    "0", "false", "no", "off", "")
+_SEC_TTL = float(os.environ.get("YATTERRA_PODWATCH_SEC_TTL", "86400"))
+_SEC_MAX_PER_CYCLE = int(os.environ.get("YATTERRA_PODWATCH_SEC_MAX", "3"))
+_SEC_MAX_CTX = 6000            # 送审文件正文的字符上限
+_SEC_MAX_FILES = 6             # 送审的变更/新增文件数
+_SEC_CAND_LIMIT = 30           # 拉取 L1 候选的上限
+_SEC_MAX_FINDINGS = 8          # LLM 每轮最多回写 8 条语义发现
+_SEC_AUDIT = True
+
 _BOT_USER = "podwatch-bot"       # synthetic actor for LLM usage / audit / perms
 
 # Profile fields that carry no information. Some models answer the profile
@@ -149,6 +169,7 @@ _thread = None
 # an operator-triggered manual scan is never throttled.
 _sweeping = False
 _deep_budget = _DEEP_MAX_PER_CYCLE
+_sec_budget = _SEC_MAX_PER_CYCLE     # 每轮 sweep 的安全审查预算
 
 
 def _pod_lock(pod):
@@ -171,6 +192,18 @@ def _deep_allowed():
     if _deep_budget <= 0:
         return False
     _deep_budget -= 1
+    return True
+
+
+def _sec_allowed():
+    """Consume one unit of security-review budget. Unlimited outside a sweep
+    (an operator-triggered scan is never throttled)."""
+    global _sec_budget
+    if not _sweeping:
+        return True
+    if _sec_budget <= 0:
+        return False
+    _sec_budget -= 1
     return True
 
 
@@ -733,6 +766,10 @@ def _render_md(prof):
         lines.append(f"- **最近变更**: {prof['last_change_summary']}")
     if prof.get("last_scan"):
         lines.append(f"- **画像更新**: {prof['last_scan']}")
+    sec = prof.get("sec") or {}
+    if sec:
+        lines.append(f"- **安全审查**: {sec.get('ts', '')} — L1 候选 {sec.get('candidates', 0)}"
+                     f" / 复核 {sec.get('verified', 0)} / 新发现 {sec.get('new', 0)}")
     hist = prof.get("changes") or []
     if hist:
         lines += ["", "## 最近变更历史", ""]
@@ -765,6 +802,11 @@ def _insight_content(prof):
     recent = prof.get("summary") or prof.get("last_change_summary")
     if _useful(recent):
         out.append(f"【最近变更】{recent}")
+    sec = prof.get("sec") or {}
+    if sec:
+        out.append(f"【安全审查】{sec.get('ts', '')} L1 候选 {sec.get('candidates', 0)} 条，"
+                   f"LLM 复核 {sec.get('verified', 0)} 条，新语义发现 {sec.get('new', 0)} 条"
+                   f"（/ops/scan 查看详情）")
     return "\n".join(out) or (prof.get("last_change_summary") or "暂无信息")
 
 
@@ -862,6 +904,142 @@ def _deep_scan(pod, prev_profile):
     except Exception as e:
         log.warning("podwatch: deep scan failed for %s: %s", pod, e)
     return None
+
+
+# ── per-pod LLM 安全审查（L2 复核 + L3 语义）───────────────────
+_SEC_SYS = (
+    "你是资深应用安全审计员，为一个容器开发环境做安全审查。你会收到："
+    "①该环境最近的代码变更/新增文件（截断的正文）②平台静态规则(L1)已扫出的"
+    "候选问题（每条带 fingerprint 与命中片段）。请分两层处理：\n"
+    "(A) L2 复核：对每条候选判断真实与否，必要时校准严重等级。\n"
+    "(B) L3 语义：通读变更代码，找出静态规则漏掉的**逻辑级漏洞**——越权/IDOR、"
+    "认证或授权缺失、注入(命令/SQL/模板/路径穿越)、SSRF、不安全反序列化、"
+    "硬编码密钥、竞态、敏感信息泄露、危险的业务逻辑等。\n"
+    "只输出一个 JSON 对象（不要代码块围栏、不要多余文字），字段：\n"
+    '{"verdicts": [{"fingerprint": "原样回填", '
+    '"verdict": "true_positive|false_positive|uncertain", '
+    '"severity": "critical|high|medium|low", "reason": "一句话理由"}], '
+    '"findings": [{"severity": "high", "category": "authz|injection|secret|ssrf|'
+    'deserialization|race|logic|...", "title": "简明标题", '
+    '"file": "相对 Pod home 的路径", "line": 123, '
+    '"reason": "为什么是问题", "fix": "如何修", "cwe": "CWE-xxx"}]}\n'
+    "verdicts 只能针对你收到的候选（fingerprint 必须原样回填，不要编造）。"
+    "findings 只报你**有把握**的真实问题，宁缺毋滥，最多 8 条；没有就给空数组。"
+    "若某条候选确实是误报，务必标 false_positive，避免噪声。"
+)
+
+
+def _sec_due(pod, prof, changed, force, first_time):
+    """是否该对本 Pod 做安全审查：跟变更走 + TTL 兜底。"""
+    if not SEC_ON:
+        return False
+    if force or changed or first_time or prof.get("needs_analysis"):
+        return True
+    last = prof.get("sec_ts")
+    try:
+        last = float(last)
+    except (TypeError, ValueError):
+        last = 0.0
+    return (time.time() - last) > _SEC_TTL
+
+
+def _security_context(pod, added, modified, root):
+    """送审正文：变更/新增文件内容（截断）。返回 (text, n_files)。"""
+    parts = [f"Pod {pod} 的变更文件正文（截断）:"]
+    budget = _SEC_MAX_CTX
+    n = 0
+    for rel in (list(added) + list(modified)):
+        if n >= _SEC_MAX_FILES or budget <= 0:
+            break
+        p = os.path.join(root, rel)
+        txt = _read_text(p, 96 * 1024)
+        if txt is None:
+            continue
+        if len(txt) > budget:
+            txt = txt[:budget]
+        parts.append(f"\n----- {rel} -----\n{txt}")
+        budget -= len(txt)
+        n += 1
+    return "\n".join(parts), n
+
+
+def _security_review(pod, added, modified, root, prof):
+    """对单个 Pod 跑一次 LLM 安全审查（L2 复核 + L3 语义），结果回写 scan_results.db。
+
+    返回 {candidates, verified, new, model}；任何失败都返回 None，绝不抛出。
+    """
+    try:
+        import scan_svc
+    except Exception as e:
+        log.warning("podwatch: scan_svc unavailable for security review %s: %s", pod, e)
+        return None
+    cands = []
+    try:
+        cands = scan_svc.candidates_for_scope(pod, limit=_SEC_CAND_LIMIT)
+    except Exception as e:
+        log.warning("podwatch: candidates_for_scope(%s) failed: %s", pod, e)
+    ctx, n_files = _security_context(pod, added, modified, root)
+    if not cands and n_files == 0:
+        return {"candidates": 0, "verified": 0, "new": 0, "model": "", "empty": True}
+
+    lines = [ctx]
+    if cands:
+        lines.append("\nL1 静态候选（请复核，fingerprint 原样回填）:")
+        for c in cands:
+            lines.append(
+                f"- fp={c['fingerprint']} [{c['severity']}] {c['check_id']} "
+                f"{c['title']} @ {os.path.relpath(c['file'], root) if root in c['file'] else c['file']}"
+                f":{c['line']} | {str(c['snippet'])[:160]}")
+    user = "\n".join(lines)
+
+    try:
+        import llm
+        content = llm.chat([{"role": "user", "content": user}],
+                           system=_SEC_SYS, max_tokens=2500,
+                           caller="podwatch", user=_BOT_USER)
+    except Exception as e:
+        log.warning("podwatch: security LLM failed for %s: %s", pod, e)
+        return None
+    if not content:
+        return None
+    data = _parse_json(content)
+    if not isinstance(data, dict):
+        return {"candidates": len(cands), "verified": 0, "new": 0,
+                "model": "", "bad_json": True}
+
+    try:
+        import llm_conf
+        model = (llm_conf.get_active() or {}).get("model", "")
+    except Exception:
+        model = ""
+
+    verified = 0
+    fps = {c["fingerprint"] for c in cands}
+    for v in (data.get("verdicts") or []):
+        if not isinstance(v, dict):
+            continue
+        fp = str(v.get("fingerprint") or "").strip()
+        if fp not in fps:
+            continue
+        sev = str(v.get("severity") or "").strip().lower()
+        if sev not in ("critical", "high", "medium", "low"):
+            sev = None
+        try:
+            if scan_svc.apply_llm_verdict(fp, v.get("verdict"), sev,
+                                          str(v.get("reason") or ""), model):
+                verified += 1
+        except Exception as e:
+            log.warning("podwatch: apply_llm_verdict(%s) failed: %s", fp, e)
+
+    new = 0
+    findings = [f for f in (data.get("findings") or []) if isinstance(f, dict)][:_SEC_MAX_FINDINGS]
+    if findings:
+        try:
+            new = scan_svc.ingest_llm_findings(pod, findings, model)
+        except Exception as e:
+            log.warning("podwatch: ingest_llm_findings(%s) failed: %s", pod, e)
+
+    return {"candidates": len(cands), "verified": verified, "new": new, "model": model}
 
 
 # ── per-pod pipeline ───────────────────────────────────────────
@@ -984,6 +1162,17 @@ def _scan_one_locked(pod, force):
             prof["deep_notes"] = notes
             deep_done = True
 
+    # 安全审查（L2 复核 + L3 语义）：跟变更走 + TTL 兜底，每轮 sweep 有成本闸。
+    # 复用本轮 context；结果写回 scan_results.db（/ops/scan 板与 Pod 详情页都能看）。
+    sec = None
+    if _sec_due(pod, prof, changed, force, first_time) and _sec_allowed():
+        sec = _security_review(pod, added, modified, root, prof)
+        if sec is not None:
+            prof["sec_ts"] = time.time()
+            prof["sec"] = {"ts": now, "candidates": sec.get("candidates", 0),
+                           "verified": sec.get("verified", 0), "new": sec.get("new", 0),
+                           "model": sec.get("model", "")}
+
     _write_json(_state_file(pod), manifest)
     _write_json(_profile_file(pod), prof)
     try:
@@ -1026,6 +1215,11 @@ def _scan_one_locked(pod, force):
     if analysis_ok and risk_high:
         risk_alerted = _notify_risk(pod, risk, summary, proposed)
 
+    sec_note = ""
+    if sec:
+        sec_note = (f" sec(c={sec.get('candidates', 0)},v={sec.get('verified', 0)},"
+                    f"n={sec.get('new', 0)})")
+
     try:
         import audit
         audit.record("podwatch_scan",
@@ -1034,6 +1228,7 @@ def _scan_one_locked(pod, force):
                             f"{' risk-alert' if risk_alerted else ''}"
                             f"{f' propose={proposed}' if proposed else ''}"
                             f"{f' auto={auto_done}' if auto_done else ''}"
+                            f"{sec_note}"
                             f"{'' if analysis_ok else ' (LLM 不可用,待重试)'}",
                      module="podwatch")
     except Exception:
@@ -1043,12 +1238,12 @@ def _scan_one_locked(pod, force):
             "modified": modified, "removed": removed, "summary": summary,
             "deep": deep_done, "pending": not analysis_ok, "risk": risk,
             "risk_level": risk_level, "risk_alert": risk_alerted,
-            "proposed": proposed, "auto": auto_done}
+            "proposed": proposed, "auto": auto_done, "sec": sec}
 
 
 def scan_all():
     """Scan every running pod. Returns the list of result dicts."""
-    global _sweeping, _deep_budget
+    global _sweeping, _deep_budget, _sec_budget
     import groups
     statuses = groups.all_pod_statuses()
     running = [n for n, s in statuses.items() if s == "Running"]
@@ -1057,6 +1252,7 @@ def scan_all():
     running.sort(key=_priority)
     _sweeping = True
     _deep_budget = _DEEP_MAX_PER_CYCLE
+    _sec_budget = _SEC_MAX_PER_CYCLE
     out = []
     t0 = time.time()
     try:
