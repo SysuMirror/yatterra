@@ -31,10 +31,12 @@ Guardrails:
   - stop(run_id) aborts a running loop and its sub-agents
 """
 import base64
+import ipaddress
 import json
 import os
 import queue
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -338,10 +340,13 @@ _HOST_DENY_DIRS = ("/etc", "/boot", "/proc", "/sys", "/dev",
                    "/var/lib/rancher", "/root/.ssh",
                    # 持久化后门面:定时任务目录
                    "/var/spool/cron", "/var/spool/at")
-# 平台自身代码与配置(位于 /opt/yatterra 下),禁止被 agent 覆写
+# 平台自身代码与配置(位于 /opt/yatterra 下),禁止被 agent 覆写。
+# 注意: 必须覆盖**所有 .py**(而不只是 app/agent/ai_service/llm/users/groups)——
+# 否则可覆写 approvals.py(关掉审批闸)、audit.py、cert_alerts.py 等, 反手瓦解
+# 上面整套防线。同理拦截 .json/.conf/.env/.sh/.service 与数据库文件。
 _HOST_DENY_BASENAME_RE = re.compile(
-    r"^(?:app\.py|agent[^/]*\.py|ai_service\.py|llm[^/]*\.py|users\.py|groups\.py"
-    r"|.*\.json|.*\.conf|\.env)$", re.I)
+    r"^(?:.*\.py|.*\.json|.*\.conf|.*\.sh|.*\.service|.*\.sql|"
+    r".*\.db|.*\.sqlite3?|.*\.pem|.*\.key|.*\.crt|.*\.env|\.env)$", re.I)
 
 
 def _host_write_denied(path):
@@ -494,12 +499,67 @@ def _web_search(query, num=5, timeout=12, out_max=OUT_MAX):
 
 # --- fetch_url / edit_file / grep / list_dir ---
 # fetch_url: pull a page, strip HTML -> plain text. Runs on host (pod may lack egress).
+def _ip_blocked(ip):
+    """是否为不可达的内部/保留地址(SSRF 目标)。"""
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _url_host_blocked(url):
+    """URL 主机是否指向内部/环回/保留地址。返回原因串(阻断)或 None(放行)。"""
+    try:
+        m = re.match(r"^https?://([^/?#]+)", url or "", re.I)
+        if not m:
+            return "URL 解析失败"
+        host = m.group(1).rsplit("@", 1)[-1]          # 去掉 user:pass@
+        if host.startswith("["):                       # [IPv6]
+            host = host[1:host.index("]")]
+        else:
+            host = host.split(":")[0]                  # 去掉 :port
+        host = host.strip().strip(".").lower()
+    except Exception:
+        return "URL 解析失败"
+    if not host:
+        return "空主机"
+    if host in ("localhost", "metadata", "metadata.google.internal"):
+        return host
+    for suf in (".local", ".internal", ".svc", ".cluster.local", ".localhost"):
+        if host.endswith(suf):
+            return host
+    try:
+        ip = ipaddress.ip_address(host)
+        return host if _ip_blocked(ip) else None
+    except ValueError:
+        pass
+    # 域名: 解析后任一地址落在内部段即拒绝; 解析失败也保守拒绝。
+    try:
+        infos = socket.getaddrinfo(host, None)
+        ips = [i[4][0] for i in infos if i[4]]
+    except Exception:
+        return f"无法解析 {host}"
+    if not ips:
+        return f"无法解析 {host}"
+    for a in ips:
+        try:
+            if _ip_blocked(ipaddress.ip_address(a)):
+                return f"{host} → {a}"
+        except ValueError:
+            return f"{host} → 非法地址"
+    return None
+
+
 def _fetch_url(url, timeout=12, out_max=OUT_MAX):
     u = (url or "").strip()
     if not u:
         return False, "【空 URL】"
     if not re.match(r"^https?://", u, re.I):
         return False, "【URL 需以 http:// 或 https:// 开头】"
+    # SSRF 护栏: fetch_url 在宿主机侧以 root 发请求。拒绝指向环回/私网/链路本地
+    # (含云元数据 169.254.169.254)/CGNAT/保留地址, 以及内部域名(local/internal/
+    # svc/cluster.local)。否则可借它探/读内部 API、k8s、metadata 服务。
+    blocked = _url_host_blocked(u)
+    if blocked:
+        return False, f"【安全限制: 禁止访问内部/环回/保留地址({blocked})】"
     try:
         req = urllib.request.Request(u, headers={"User-Agent": _BING_UA,
                                                   "Accept-Language": "zh-CN,en;q=0.8"})

@@ -183,6 +183,37 @@ class AgentSecurityTests(unittest.TestCase):
                   "/opt/yatterra/logs/a.log"):
             self.assertIsNone(self.agent._host_write_denied(p), p)
 
+    def test_host_write_denied_blocks_all_platform_code(self):
+        # 不只 app/agent/ai_service: 任何 .py/.json/.conf/.sh/.db 等平台自身
+        # 代码与配置都必须拒写(否则可覆写 approvals.py 关掉审批闸)。
+        for p in ("/opt/yatterra/web/approvals.py",
+                  "/opt/yatterra/web/audit.py",
+                  "/opt/yatterra/web/cert_alerts.py",
+                  "/opt/yatterra/web/new_module.py",
+                  "/opt/yatterra/usage_meter.db",
+                  "/opt/yatterra/web/deploy.sh",
+                  "/opt/yatterra/siteconf.json"):
+            self.assertIsNotNone(self.agent._host_write_denied(p), p)
+
+    # --- fetch_url SSRF guard ---
+
+    def test_url_host_blocked_internal_targets(self):
+        for u in ("http://127.0.0.1:8090/api/x",
+                  "http://localhost/",
+                  "http://169.254.169.254/latest/meta-data/",
+                  "http://10.0.0.5/",
+                  "http://172.16.1.1/",
+                  "http://192.168.1.1/",
+                  "http://[::1]/",
+                  "http://metadata.google.internal/",
+                  "http://foo.svc.cluster.local/",
+                  "http://db.internal/"):
+            self.assertIsNotNone(self.agent._url_host_blocked(u), u)
+
+    def test_url_host_allows_public_ip(self):
+        self.assertIsNone(self.agent._url_host_blocked("http://1.1.1.1/"))
+        self.assertIsNone(self.agent._url_host_blocked("https://8.8.8.8/dns"))
+
 
 if __name__ == "__main__":
     unittest.main()
