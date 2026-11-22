@@ -4,8 +4,9 @@
   * 静态巡检：明文密钥 / 危险代码逻辑 / 集群配置（scan_svc）
   * 端到端渗透：驱动 ARTEX 自主渗透平台建任务、拉结果（artex_svc）
 
-只读端点要求 ops.scan.read；产生副作用的（跑扫描、建任务、控制任务）要求
-ops.scan.run（写隐含读，见 users._WRITE_IMPLIES_READ）。
+本蓝图**仅超级管理员(super)可用**：静态巡检结果含全平台明文密钥/危险代码，
+渗透任务可对目标发起真实攻击，故整板按角色收口（@require_auth(min_role="super")），
+不通过普通权限位下发。前端相应页面/入口也用 super-only 的 ops.scan.read 作标记。
 """
 import logging
 
@@ -24,7 +25,7 @@ security_bp = Blueprint("api_security", __name__, url_prefix="/api/security")
 
 # ── 静态巡检 ────────────────────────────────────────────────────────────────
 @security_bp.route("/overview", methods=["GET"])
-@require_auth("ops.scan.read")
+@require_auth(min_role="super")
 def scan_overview():
     """巡检总览：按等级计数 + 最近一次运行 + ARTEX 连通性。"""
     out = {"scan": scan_svc.summary(), "history": scan_svc.history(limit=10)}
@@ -42,7 +43,7 @@ def scan_overview():
 
 
 @security_bp.route("/findings", methods=["GET"])
-@require_auth("ops.scan.read")
+@require_auth(min_role="super")
 def scan_findings():
     """静态巡检结果（分页 + 过滤）。"""
     try:
@@ -59,7 +60,7 @@ def scan_findings():
 
 
 @security_bp.route("/scan", methods=["POST"])
-@require_auth("ops.scan.run")
+@require_auth(min_role="super")
 def scan_run():
     """立即跑一遍静态巡检。"""
     kinds = None
@@ -74,7 +75,7 @@ def scan_run():
 
 
 @security_bp.route("/findings/<fingerprint>/status", methods=["POST"])
-@require_auth("ops.scan.run")
+@require_auth(min_role="super")
 def scan_finding_status(fingerprint):
     """标记某条巡检结果为 ignored/resolved/open。"""
     body = request.get_json(silent=True) or {}
@@ -98,19 +99,19 @@ def _artex_guard(fn):
 
 
 @security_bp.route("/artex", methods=["GET"])
-@require_auth("ops.scan.read")
+@require_auth(min_role="super")
 def artex_status():
     return _artex_guard(lambda: jsonify(artex_svc.status()))
 
 
 @security_bp.route("/artex/tasks", methods=["GET"])
-@require_auth("ops.scan.read")
+@require_auth(min_role="super")
 def artex_tasks():
     return _artex_guard(lambda: jsonify(artex_svc.list_tasks()))
 
 
 @security_bp.route("/artex/tasks", methods=["POST"])
-@require_auth("ops.scan.run")
+@require_auth(min_role="super")
 def artex_create_task():
     """建一个端到端渗透任务。body: {description, goal?, name?, category_id?}"""
     body = request.get_json(silent=True) or {}
@@ -130,7 +131,7 @@ def artex_create_task():
 
 
 @security_bp.route("/artex/tasks/<task_id>/control", methods=["POST"])
-@require_auth("ops.scan.run")
+@require_auth(min_role="super")
 def artex_control_task(task_id):
     body = request.get_json(silent=True) or {}
     action = str(body.get("action") or "")
@@ -145,7 +146,7 @@ def artex_control_task(task_id):
 
 
 @security_bp.route("/artex/findings", methods=["GET"])
-@require_auth("ops.scan.read")
+@require_auth(min_role="super")
 def artex_findings():
     """代理 ARTEX 漏洞结果（分页 + 按任务/等级/状态过滤）。"""
     try:
@@ -162,12 +163,12 @@ def artex_findings():
 
 
 @security_bp.route("/artex/stats", methods=["GET"])
-@require_auth("ops.scan.read")
+@require_auth(min_role="super")
 def artex_findings_stats():
     return _artex_guard(lambda: jsonify(artex_svc.findings_stats()))
 
 
 @security_bp.route("/artex/findings/<fid>", methods=["GET"])
-@require_auth("ops.scan.read")
+@require_auth(min_role="super")
 def artex_finding_detail(fid):
     return _artex_guard(lambda: jsonify(artex_svc.finding_detail(fid)))

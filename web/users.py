@@ -251,7 +251,6 @@ ROLE_PERMS = {
               "infra.host", "infra.storage", "infra.db", "infra.scheduler", "infra.proxy",
               "dev.harness", "dev.mcp", "dev.agent", "dev.llm",
               "ops.audit", "ops.threat", "ops.shared.read", "ops.shared.write", "ops.deploy",
-              "ops.scan.run",
               "billing.pay", "billing.price", "billing.account", "billing.allocate",
               "admin.users"],
     # `user` = 外部租户/学院成员。只保留「自己的组 + 终端 + 账单」加**只读**的
@@ -296,8 +295,6 @@ PERM_GROUPS = [
         ("ops.shared.read", "共享只读"),
         ("ops.shared.write", "共享读写"),
         ("ops.deploy", "CI/CD 部署"),
-        ("ops.scan.read", "安全巡检只读"),
-        ("ops.scan.run", "安全巡检/渗透执行"),
     ]),
     ("计费", [
         ("billing.pay", "充值 / 查看账单"),
@@ -352,7 +349,6 @@ def expanded_perms(user):
 _WRITE_IMPLIES_READ = {
     "infra.storage": "infra.storage.read",
     "infra.db": "infra.db.read",
-    "ops.scan.run": "ops.scan.read",
     # 持有特权 infra.host(admin/user)自动获得只读查看权限;
     # guest 只拿 infra.host.view,不再持有 infra.host。
     "infra.host": "infra.host.view",

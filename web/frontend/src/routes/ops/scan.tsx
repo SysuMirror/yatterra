@@ -37,8 +37,8 @@ function sevHint(sev: string): string {
 // ── 静态巡检 ────────────────────────────────────────────────────────────────
 function StaticPanel() {
   const qc = useQueryClient()
-  const { hasPerm } = useAuth()
-  const canRun = hasPerm('ops.scan.run')
+  const { role } = useAuth()
+  const canRun = role === 'super'
 
   const [sev, setSev] = useState('')
   const [status, setStatus] = useState('open')
@@ -257,8 +257,8 @@ function StaticPanel() {
 // ── ARTEX 端到端渗透 ────────────────────────────────────────────────────────
 function ArtexPanel() {
   const qc = useQueryClient()
-  const { hasPerm } = useAuth()
-  const canRun = hasPerm('ops.scan.run')
+  const { role } = useAuth()
+  const canRun = role === 'super'
 
   const [sev, setSev] = useState('')
   const [task, setTask] = useState('')
@@ -367,7 +367,7 @@ function ArtexPanel() {
             >
               创建任务
             </Button>
-            {!canRun && <span className="text-xs text-muted">需要 ops.scan.run 权限</span>}
+            {!canRun && <span className="text-xs text-muted">仅超级管理员可执行</span>}
             {createTask.isError && (
               <span className="text-sm text-bad">{(createTask.error as any)?.message || '创建失败'}</span>
             )}
