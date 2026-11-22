@@ -123,7 +123,17 @@ def _set_cache_headers(resp):
     return resp
 
 def login_required():
-    return session.get("logged_in") is True
+    if session.get("logged_in") is not True:
+        return False
+    # 会话绝对生命周期闸(与 API 侧 api._auth 一致): 超期即登出。
+    try:
+        from api._auth import session_age_exceeded
+        if session_age_exceeded():
+            session.clear()
+            return False
+    except Exception:
+        pass
+    return True
 
 # --- multi-user auth helpers ---
 def current_user():
@@ -623,6 +633,7 @@ def oauth_callback_ssemarket():
         session["role"] = existing.get("role", "user") if existing else "user"
         session["_user_obj"] = existing
         session["_user_ts"] = time.time()
+        session["_login_at"] = time.time()   # 会话绝对起点(滑动续期不清零)
         session["oauth_provider"] = "ssemarket"
         session["oauth_name"] = name
         session["oauth_email"] = email
@@ -706,6 +717,7 @@ def oauth_callback_unisso():
         session["role"] = existing.get("role", "user") if existing else "user"
         session["_user_obj"] = existing
         session["_user_ts"] = time.time()
+        session["_login_at"] = time.time()   # 会话绝对起点(滑动续期不清零)
         session["oauth_provider"] = "unisso"
         session["oauth_name"] = name
         session["oauth_email"] = email

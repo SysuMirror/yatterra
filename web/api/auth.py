@@ -76,6 +76,8 @@ def _set_login_session(username: str, user: dict, *, permanent: bool = True):
     session["role"] = user.get("role", "user")
     session["_user_obj"] = user
     session["_user_ts"] = time.time()
+    # 登录绝对起点(不随滑动续期刷新), 见 api._auth.session_age_exceeded。
+    session["_login_at"] = time.time()
     session.permanent = permanent
 
 

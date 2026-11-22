@@ -7,6 +7,7 @@ no app.py.
 """
 import importlib.util
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -108,6 +109,45 @@ class ApiAuthGuardTests(unittest.TestCase):
     def test_guard_allows_user(self):
         self._login("u")
         self.assertEqual(self.client.get("/bp/x").status_code, 200)
+
+    # --- session absolute lifetime (sliding-renewal cap) ---
+
+    def test_fresh_session_is_ok(self):
+        with self.client.session_transaction() as s:
+            s["logged_in"] = True
+            s["user"] = "u"
+            s["_login_at"] = time.time()
+        self.assertEqual(self.client.get("/plain").status_code, 200)
+
+    def test_stale_session_is_expired(self):
+        with self.client.session_transaction() as s:
+            s["logged_in"] = True
+            s["user"] = "u"
+            s["_login_at"] = time.time() - (self.auth.SESSION_MAX_AGE_S + 10)
+        self.assertEqual(self.client.get("/plain").status_code, 401)
+
+
+class SessionAbsoluteLifetimeTests(unittest.TestCase):
+    def setUp(self):
+        self.mp = patch.dict(sys.modules)
+        self.mp.start()
+        self.addCleanup(self.mp.stop)
+        sys.modules["users"] = fake_users()
+        self.auth = load("auth_under_test_sess", "api/_auth.py")
+
+    def test_legacy_session_without_stamp_never_expires(self):
+        self.assertFalse(self.auth.session_age_exceeded({}))
+
+    def test_recent_session_ok(self):
+        self.assertFalse(
+            self.auth.session_age_exceeded({"_login_at": time.time()}))
+
+    def test_over_cap_expires(self):
+        old = time.time() - (self.auth.SESSION_MAX_AGE_S + 60)
+        self.assertTrue(self.auth.session_age_exceeded({"_login_at": old}))
+
+    def test_garbage_stamp_is_treated_as_absent(self):
+        self.assertFalse(self.auth.session_age_exceeded({"_login_at": "n/a"}))
 
 
 class ApprovalsGuardTests(unittest.TestCase):

@@ -3,6 +3,8 @@
 Supports both Bearer token (API clients) and session (browser AJAX) auth.
 """
 import functools
+import os
+import time
 from importlib import import_module
 from flask import request, jsonify, g, session
 users = import_module("users")
@@ -10,6 +12,24 @@ users = import_module("users")
 
 # 角色等级:用于"最低角色"闸(与 ai_service._ROLE_RANK 同构)。
 _ROLE_RANK = {"guest": 0, "user": 1, "admin": 2, "super": 3}
+
+# 会话绝对最大生命周期。Flask 的永久会话是"滑动续期"的——每次请求都会带着
+# 新的 7 天有效期重签 Set-Cookie, 因此被盗 cookie 等于永久凭据(ARTEX finding:
+# 会话无限滑动续期)。这里额外记录一个不随请求续期的登录起点 _login_at, 超过
+# 绝对上限即强制失效(需重新登录), 与滑动窗口无关。
+# 环境变量 YATTERRA_SESSION_MAX_AGE_S 可调, 默认 7 天。
+SESSION_MAX_AGE_S = int(os.environ.get("YATTERRA_SESSION_MAX_AGE_S",
+                                       str(7 * 24 * 3600)))
+
+
+def session_age_exceeded(sess=None):
+    """会话是否已超过绝对最大生命周期。无 _login_at 的旧会话 → 不判过期。"""
+    s = session if sess is None else sess
+    try:
+        ts = float(s.get("_login_at"))
+    except (TypeError, ValueError):
+        return False
+    return (time.time() - ts) > SESSION_MAX_AGE_S
 
 
 def role_rank(user):
@@ -53,6 +73,11 @@ def _resolve_user():
             return info
     # Fall back to session
     if session.get("logged_in"):
+        # 绝对生命周期闸: 超期即清会话 → 走 401, 杜绝滑动续期造成的永久凭据。
+        if session_age_exceeded():
+            session.clear()
+            g._api_user_cache = None
+            return None
         username = session.get("user")
         if username:
             try:
