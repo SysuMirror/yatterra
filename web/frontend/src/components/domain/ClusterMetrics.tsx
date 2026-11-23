@@ -3,7 +3,8 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, AreaChart, Area,
 } from 'recharts'
 import { Card } from '@/components/ui/Card'
-import { Cpu, HardDrive, Sparkles, Loader2, Network } from 'lucide-react'
+import { Cpu, HardDrive, MemoryStick, Sparkles, Loader2, Network } from 'lucide-react'
+import { hostChartMarks, type MarkIcon } from '@/lib/hostCharts'
 import { aiApi } from '@/api/ai'
 import { MarkdownContent } from '@/components/ai'
 import { useThemeStore } from '@/stores/theme'
@@ -76,6 +77,7 @@ interface Props {
 
 export function ClusterMetrics({ data }: Props) {
   const { gpus, groups, host_cpu, host_mem, network, disk } = data
+  const hostMarks = hostChartMarks(host_cpu ?? [], host_mem ?? [])
   const dark = useThemeStore((s) => s.resolved) === 'dark'
   const [aiAnalysis, setAiAnalysis] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
@@ -122,17 +124,17 @@ export function ClusterMetrics({ data }: Props) {
       {(host_cpu?.length ?? 0) > 1 && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <TimeSeriesCard
-            title="主机 CPU"
-            icon={<Cpu size={14} className="text-accent" />}
-            series={host_cpu!}
+            title={hostMarks.cpu.label}
+            icon={markIcon(hostMarks.cpu.icon, 'text-accent')}
+            series={hostMarks.cpu.series}
             color={seriesColor(dark, 0)}
             unit="%"
-            yDomain={[0, Math.max(100, ...host_cpu!) * 1.2]}
+            yDomain={[0, Math.max(100, ...hostMarks.cpu.series, 0) * 1.2]}
           />
           <TimeSeriesCard
-            title="主机内存"
-            icon={<HardDrive size={14} className="text-ok" />}
-            series={host_mem!}
+            title={hostMarks.memory.label}
+            icon={markIcon(hostMarks.memory.icon, 'text-ok')}
+            series={hostMarks.memory.series}
             color={seriesColor(dark, 1)}
             unit="%"
             yDomain={[0, 100]}
@@ -214,6 +216,12 @@ export function ClusterMetrics({ data }: Props) {
 
     </div>
   )
+}
+
+function markIcon(name: MarkIcon, className: string) {
+  if (name === 'cpu') return <Cpu size={14} className={className} />
+  if (name === 'memory') return <MemoryStick size={14} className={className} />
+  return <HardDrive size={14} className={className} />
 }
 
 function formatNumber(value: number): string {

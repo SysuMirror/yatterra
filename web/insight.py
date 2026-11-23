@@ -219,8 +219,8 @@ def _g_gpu():
         return None
     total = len(gpus)
     avg_util = sum(g.get("util", 0) for g in gpus) / total
-    mem_used = sum(g.get("mem_used", 0) for g in gpus)
-    mem_total = sum(g.get("mem_total", 0) for g in gpus)
+    mem_used = sum(g.get("mem_used") or 0 for g in gpus)
+    mem_total = sum(g.get("mem_total") or 0 for g in gpus)
     max_temp = max((g.get("temp", 0) for g in gpus), default=0)
     lines = [f"GPU 总数: {total}, 平均利用率: {avg_util:.1f}%, 显存: {mem_used:.0f}/{mem_total:.0f} MiB, 最高温度: {max_temp}°C"]
     for g in gpus:
@@ -574,6 +574,13 @@ def _compute_one(page):
 
     Returns the result dict {content, ts} on success, None on failure.
     Never raises.
+
+    Cache-key contract: the key is ``insight:<page>`` — **not per user** — so a
+    gatherer may only be exposed to pages whose viewers all see the same data.
+    Platform-wide pages (dashboard/host/gpu/infra/fleet) are therefore gated to
+    admin in ``api/ai.py`` INSIGHT_PAGE_PERMS; pod pages are keyed per pod. Any
+    future gatherer readable by non-admin must fold the requesting user into the
+    cache key (or be scoped in the gatherer itself).
     """
     gatherer = _resolve_gatherer(page)
     if not gatherer:

@@ -17,6 +17,8 @@ import kvcache
 import gpu_stats
 import minio_svc as minio_mod
 import db_svc as db_mod
+import clickhouse_svc as ch_mod
+import kafka_svc as kafka_mod
 import proxy_map
 users = import_module("users")
 import audit
@@ -66,6 +68,34 @@ def infra_fleet_history(host_id):
 def infra_host():
     """Host health data."""
     return jsonify(host_health.host_health())
+
+
+@infra_bp.route("/nodes", methods=["GET"])
+@require_auth("group.view")
+def infra_nodes():
+    """Cluster nodes for the pod-placement picker: name, arch, GPU inventory,
+    taints — from live k8s labels (source of truth) merged with the static
+    node registry in nodes.py (placement options)."""
+    import nodes as nodes_mod
+    out = []
+    try:
+        r = _sp.run(["kubectl", "get", "nodes", "-o", "json"],
+                    capture_output=True, text=True, timeout=15)
+        items = _json.loads(r.stdout).get("items", []) if r.returncode == 0 else []
+    except Exception:
+        items = []
+    for n in items:
+        labels = n.get("metadata", {}).get("labels", {}) or {}
+        out.append({
+            "name": n.get("metadata", {}).get("name"),
+            "arch": labels.get("yatterra/arch"),
+            "gpu_count": labels.get("yatterra/gpu.count"),
+            "gpu_models": labels.get("yatterra/gpu.models"),
+            "ready": next((c.get("status") for c in n.get("status", {}).get("conditions", [])
+                           if c.get("type") == "Ready"), None),
+            "tainted": bool(n.get("spec", {}).get("taints")),
+        })
+    return jsonify({"nodes": out, "placement_options": ["auto"] + nodes_mod.names()})
 
 
 @infra_bp.route("/gpu", methods=["GET"])
@@ -463,6 +493,112 @@ def infra_databases_cred_delete(kid):
     try:
         db_mod.remove_cred(kid)
         audit.record("api_db_cred_delete", detail=kid, actor=current_username() or "unknown")
+        return jsonify({"ok": True})
+    except Exception as e:
+        raise bad_request(str(e))
+
+
+# ── clickhouse ───────────────────────────────────────────────
+
+@infra_bp.route("/clickhouse", methods=["GET"])
+@require_auth("infra.db.read")
+def infra_clickhouse():
+    """ClickHouse status and credentials.
+
+    Root password and per-cred secrets only for infra.db holders.
+    """
+    _uo = current_user_obj() or {}
+    _can_manage = users.has_perm(_uo, "infra.db")
+    out = {"status": ch_mod.status(), "creds": ch_mod.list_creds()}
+    if _can_manage:
+        out["conf"] = ch_mod.conf()
+    else:
+        out["creds"] = [{k: v for k, v in c.items() if k != "secret"}
+                        for c in out["creds"]]
+    return jsonify(out)
+
+
+@infra_bp.route("/clickhouse/ensure", methods=["POST"])
+@require_auth("infra.db")
+def infra_clickhouse_ensure():
+    """Ensure ClickHouse is running (uses existing langfuse-clickhouse pod)."""
+    ok, msg = ch_mod.ensure()
+    audit.record("api_ch_ensure", detail=f"ok={ok}", actor=current_username() or "unknown")
+    if not ok:
+        return jsonify({"ok": False, "message": msg}), 500
+    return jsonify({"ok": True, "message": msg})
+
+
+@infra_bp.route("/clickhouse/creds", methods=["POST"])
+@require_auth("infra.db")
+def infra_clickhouse_cred_create():
+    """Issue a ClickHouse credential."""
+    body = request.get_json(silent=True) or {}
+    label = (body.get("label") or body.get("group") or "").strip()
+    try:
+        rec = ch_mod.add_cred("clickhouse", label)
+        audit.record("api_ch_cred_add", detail=f"clickhouse {rec.get('label', '')}",
+                     actor=current_username() or "unknown")
+        return jsonify({"ok": True, "cred": rec}), 201
+    except Exception as e:
+        raise bad_request(str(e))
+
+
+@infra_bp.route("/clickhouse/creds/<kid>", methods=["DELETE"])
+@require_auth("infra.db")
+def infra_clickhouse_cred_delete(kid):
+    """Revoke a ClickHouse credential."""
+    try:
+        ch_mod.remove_cred(kid)
+        audit.record("api_ch_cred_delete", detail=kid, actor=current_username() or "unknown")
+        return jsonify({"ok": True})
+    except Exception as e:
+        raise bad_request(str(e))
+
+
+# ── kafka ─────────────────────────────────────────────────────
+
+@infra_bp.route("/kafka", methods=["GET"])
+@require_auth("infra.db.read")
+def infra_kafka():
+    """Kafka status and credentials (topic-prefix convention, no secrets)."""
+    out = {"status": kafka_mod.status(), "creds": kafka_mod.list_creds()}
+    return jsonify(out)
+
+
+@infra_bp.route("/kafka/ensure", methods=["POST"])
+@require_auth("infra.db")
+def infra_kafka_ensure():
+    """Ensure Kafka is running."""
+    ok, msg = kafka_mod.ensure()
+    audit.record("api_kafka_ensure", detail=f"ok={ok}", actor=current_username() or "unknown")
+    if not ok:
+        return jsonify({"ok": False, "message": msg}), 500
+    return jsonify({"ok": True, "message": msg})
+
+
+@infra_bp.route("/kafka/creds", methods=["POST"])
+@require_auth("infra.db")
+def infra_kafka_cred_create():
+    """Issue a Kafka topic-prefix credential."""
+    body = request.get_json(silent=True) or {}
+    label = (body.get("label") or body.get("group") or "").strip()
+    try:
+        rec = kafka_mod.add_cred("kafka", label)
+        audit.record("api_kafka_cred_add", detail=f"kafka {rec.get('label', '')}",
+                     actor=current_username() or "unknown")
+        return jsonify({"ok": True, "cred": rec}), 201
+    except Exception as e:
+        raise bad_request(str(e))
+
+
+@infra_bp.route("/kafka/creds/<kid>", methods=["DELETE"])
+@require_auth("infra.db")
+def infra_kafka_cred_delete(kid):
+    """Revoke a Kafka topic-prefix credential."""
+    try:
+        kafka_mod.remove_cred(kid)
+        audit.record("api_kafka_cred_delete", detail=kid, actor=current_username() or "unknown")
         return jsonify({"ok": True})
     except Exception as e:
         raise bad_request(str(e))
