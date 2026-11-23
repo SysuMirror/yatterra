@@ -43,10 +43,25 @@ GUIDE = '''# YatTerra 容器（Pod）内编程规范
   **内部端口不对外**，公网只放 8080。不要试图把其它端口暴露到公网。
 - 公网地址别硬编码，用 `$PUBLIC_URL` / `$PUBLIC_HOST` / `$PUBLIC_PORT`。
 
-## 2. 数据持久化：只有 /home/cloud 会留下，其它都会丢
-- **`/home/cloud`** 是持久化盘（hostPath），Pod 重建/重启后还在 —— 代码、配置、需要保留的产物放这里。
-- **容器内其它路径（`/`、`/tmp`、`/var`…）都是临时的**，Pod 一重建就没了；别把重要数据只放这些地方。
-- 受管部署（supervisor）的约定目录：
+## 2. 哪块盘：SSD 和 HDD 不要混
+
+这台机器有两块盘。容器里的路径对应关系是固定的，按这个放文件：
+
+| 容器里的路径 | 介质 | Pod 重建后 | 写满了会怎样 |
+|---|---|---|---|
+| `/home/cloud` | **HDD**（机械盘 `/mnt/sdb`） | 还在 | 工作目录：代码、配置、`~/deploy`、日志。**不在 SSD 上。** 这块目录目前没有内核硬上限，不要把数据集堆进来。 |
+| `/data` | **HDD**，单独一块固定大小的盘 | 还在 | **硬上限 = 本组的 storage 配额**（默认 10Gi，以平台上该组的设置为准）。写超过这个大小会得到 `No space left on device`，不会继续占用宿主机。 |
+| `/shared` | **HDD，只读** | 还在 | 权重和公共数据。你写不进去，也不占本组配额。 |
+| `/`、`/tmp`、`/var`、`/usr` | 容器可写层，在系统盘 **SSD**（`/dev/sda`） | **丢** | 临时。安装的系统包、放在这些路径的文件，Pod 一重建就没了。镜像和这个可写层在 SSD 上，重建之后不保留。 |
+
+平台节点 wz8 的系统盘是一块约 447G 的 SSD，组的 `/home/cloud` 加起来已经大约 789G，比这块 SSD 的剩余空间大，所以工作目录留在 HDD，没有把 home 挪到 SSD。分到 `spark` 的组落在一台只有 NVMe 固态盘的机器上：那里的 `/home/cloud` 和 `/data` 都在那块固态盘上，`/data` 的硬上限一样生效。
+
+- 代码和配置放 **`/home/cloud`**。
+- 数据集、检查点、导出的大文件放 **`/data`**。先看剩余空间：`df -h /data`。
+- 大家共用的模型权重放 **`/shared`**（只读），不要复制进 `/home/cloud` 或 `/data`。
+- 要跨重建、又比 `/data` 配额更大的结果，写进 MinIO（§5）。
+
+受管部署（supervisor）的约定目录：
   - `~/deploy/<name>/`：代码 / 工作目录
   - `~/deploy/supervisord.conf`：进程守护配置（**平台维护，别手改**）
   - `~/deploy/<name>/logs/`、`~/logs/`：日志
@@ -58,7 +73,7 @@ GUIDE = '''# YatTerra 容器（Pod）内编程规范
   内容由老师/管理员通过平台界面上传管理。
 - 典型内容：`/shared/weights`、`/shared/datasets` …
 - **约定：模型权重、公共数据集等大文件放 `/shared` 里**，代码按路径读取（如 `$SHARED_DIR/weights/xxx`）。
-  **不要**把权重塞进自己的 home、也不要每次重新下载 —— home 是给每个组的小盘，共享盘才是放权重的地方。
+  **不要**把权重复制进 `/home/cloud` 或 `/data`，也不要每次重新下载。
 - 需要往共享盘写东西 → 走平台界面，别在容器里改。
 
 ## 4. 环境变量（注入给受管部署进程）
@@ -200,7 +215,7 @@ mem_share = mem_b / (p["host_mem_gib"] * 1024**3)
 ## 9. 其它约定与坑
 - 受管部署用 **supervisor** 拉起：入口写成前台进程，日志写到 `$LOG_DIR` / `~/deploy/<name>/logs/`。
 - `pip` 要加 `--break-system-packages`；公网 PyPI 不通，用 `-i https://mirrors.aliyun.com/pypi/simple`。
-- 别依赖容器本地文件做持久化（见 §2）；要紧的东西进 `/home/cloud` 或 MinIO（§5）。
+- 别依赖容器本地文件做持久化（见 §2）。代码进 `/home/cloud`，大文件进 `/data`（有硬上限），再大的进 MinIO（§5）。
 - 不要把密钥写进代码 / 提交进 git；它们在环境变量里（§4）。
 - 需要新的对外端口 / 更大配额 / 往共享盘写 → 找管理员，别改集群 manifest。
 
@@ -216,6 +231,12 @@ def publish():
     The shared root is root-owned, so this must run as root — the platform's
     root systemd helpers, or an interactive admin via ``sudo``. Idempotent.
     Raises on failure (callers decide whether it should abort a deploy).
+
+    Also copies the guide to the LAN interop dir (``/mnt/sdb/interop``) when
+    it exists, so remote nodes (spark) can sync it into their local /shared
+    via their yatterra-guide-sync timer — every node's pods then see the
+    same /shared/README.md. Interop copy failure is non-fatal (single-node
+    sites don't have it).
     """
     os.makedirs(siteconf.SHARED_ROOT, exist_ok=True)
     tmp = GUIDE_PATH + ".tmp"
@@ -224,6 +245,16 @@ def publish():
     os.chmod(tmp, 0o644)
     os.replace(tmp, GUIDE_PATH)
     audit.record("pod_guide_publish", detail=GUIDE_PATH, module="pod_guide")
+    interop = os.path.join(os.path.dirname(siteconf.SHARED_ROOT.rstrip("/")), "interop", GUIDE_REL)
+    try:
+        if os.path.isdir(os.path.dirname(interop)):
+            itmp = interop + ".tmp"
+            with open(itmp, "w") as f:
+                f.write(GUIDE)
+            os.chmod(itmp, 0o644)
+            os.replace(itmp, interop)
+    except OSError:
+        pass
     return GUIDE_PATH
 
 

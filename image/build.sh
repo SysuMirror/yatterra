@@ -2,23 +2,35 @@
 # Build sse/cloud-ubuntu:24.04 without docker hub: debootstrap rootfs -> docker import
 set -e
 ROOTFS=/tmp/cloud-rootfs
-MIRROR=http://archive.ubuntu.com/ubuntu
 IMG=sse/cloud-ubuntu:24.04
+
+# Ubuntu ports the same suite to a different archive per architecture: x86_64
+# lives on archive.ubuntu.com, every other arch (arm64, ...) on ports.ubuntu.com.
+# Build natively on the target arch so the imported layer matches the node.
+case "$(dpkg --print-architecture)" in
+  amd64) MIRROR=http://archive.ubuntu.com/ubuntu
+         URIS=http://archive.ubuntu.com/ubuntu/
+         SEC=http://security.ubuntu.com/ubuntu/ ;;
+  *)     MIRROR=http://ports.ubuntu.com/ubuntu-ports
+         URIS=http://ports.ubuntu.com/ubuntu-ports/
+         SEC=http://ports.ubuntu.com/ubuntu-ports/ ;;
+esac
+echo "==> arch=$(dpkg --print-architecture) mirror=$MIRROR"
 
 echo "==> debootstrap noble"
 sudo rm -rf "$ROOTFS"
 sudo debootstrap --variant=minbase --include=apt,apt-utils,ca-certificates,gnupg,locales noble "$ROOTFS" "$MIRROR"
 
 echo "==> configure apt sources inside rootfs"
-sudo tee "$ROOTFS/etc/apt/sources.list.d/ubuntu.sources" >/dev/null <<'SRC'
+sudo tee "$ROOTFS/etc/apt/sources.list.d/ubuntu.sources" >/dev/null <<SRC
 Types: deb
-URIs: http://archive.ubuntu.com/ubuntu/
+URIs: $URIS
 Suites: noble noble-updates noble-backports
 Components: main universe restricted multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
 Types: deb
-URIs: http://security.ubuntu.com/ubuntu/
+URIs: $SEC
 Suites: noble-security
 Components: main universe restricted multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg

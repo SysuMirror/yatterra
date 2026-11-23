@@ -10,7 +10,7 @@ Flask Blueprint 集合，按资源分文件。全部由 `api/__init__.py` 的
 | `__init__.py` | `/api/v1` | 注册入口 + v1 兼容端点 + 旧版 `/api/*` 路由 |
 | `_auth.py` | — | `require_auth(perm)` / `require_pod(level)` 装饰器（**所有鉴权的唯一来源**） |
 | `auth.py` | `/api/auth` | 登录/登出/游客/OAuth/`me`/`csrf` |
-| `pods.py` | `/api/pods` | Pod CRUD、生命周期、指标、日志、文件、凭证、成员、部署 |
+| `pods.py` | `/api/pods` | Pod CRUD、生命周期、改名、换节点、指标、日志、文件、凭证、成员、部署 |
 | `infra.py` | `/api/infra` | 主机/GPU/指标/存储/数据库/反代；含 **Pod 级子域名自助** 路由 |
 | `agents.py` | `/api/agents` | Agent 列表/更新/运行/SSE 流/会话 |
 | `ai.py` | `/api/ai` | 对话、分析、视觉、洞察、知识库 |
@@ -54,3 +54,13 @@ def y(name): ...
 3. 前端在 `frontend/src/api/<resource>.ts` 加封装。
 
 细节与坑见 [SKILL.md](SKILL.md)。
+
+## Pod 改名与换节点
+
+负责人才可调用（`@api_pod("owner")`）。android / windows 拒绝。公网 ssh / web 端口跟 Pod 的 `index` 走，这两类操作都不改端口号。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/pods/<name>/rename` | body `{"name":"<new>"}`。命名规则与创建相同。成功后页面地址是 `/pods/<new>` |
+| GET | `/api/pods/<name>/migrate-mode?node=` | 返回 `{ok, mode}`。`shared`：目标已有同一份目录，只改调度。`copy`：需要停机并拷贝 home |
+| POST | `/api/pods/<name>/migrate` | body `{"node":"<节点名>","exclude_weights":true}`。`auto` 不是合法目标。已分配 GPU 时，目标节点的卡必须覆盖这些编号，否则先改 GPU 分配。`exclude_weights` 默认 true，不传常见权重扩展名。这不是部署页里训练任务换 GPU 卡 |

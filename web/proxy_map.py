@@ -11,7 +11,6 @@ import json
 import os
 import re
 import time
-import base64
 import secrets
 from datetime import datetime
 
@@ -210,9 +209,14 @@ def _run(cmd, sudo=True, timeout=30):
 
 
 def _write_path(path, text, timeout=30):
-    """把 text 原样写到远端的 path(经 base64 传输,避免引号/换行问题)。"""
-    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    ok, out = _run(f"echo {b64} | base64 -d | tee {path} > /dev/null", timeout=timeout)
+    """把 text 原样写到远端的 path。
+
+    走 remote_hosts.write_remote_file(SSH stdin 传输 + 短命令安装),**不是**
+    把 base64 塞进 echo 参数:配置会随子域/组数增长,一旦单参数超过内核
+    MAX_ARG_STRLEN(128KiB)/ARG_MAX,exec 直接 OSError(7) "Argument list too long"。
+    """
+    ok, out = remote_hosts.write_remote_file(REMOTE_HOST, path, text,
+                                             sudo=True, timeout=timeout)
     if not ok:
         raise RuntimeError(out)
 
