@@ -63,6 +63,28 @@ class NodeRegistry(unittest.TestCase):
         self.assertEqual(self.n.profile("spark")["ssh_host"], "spark")
         self.assertEqual(self.n.gpu_ids("npu"), [])
 
+    def test_overlay_node_mounts_follow_its_profile(self):
+        import json
+        import os
+        raw = json.dumps({"futurebox": {
+            "arch": "amd64", "gpu_ids": [], "ssh_host": "future-alias",
+            "disk_mounts": ["/", "/data"],
+        }})
+        old = os.environ.get("YATTERRA_NODES_JSON")
+        os.environ["YATTERRA_NODES_JSON"] = raw
+        try:
+            node = load()
+            self.assertEqual(node.disk_mounts("futurebox"), ["/", "/data"])
+            self.assertEqual(node.disk_mounts("future-alias"), ["/", "/data"])
+            self.assertIsNone(node.disk_mounts("no-such-node"))
+            self.assertEqual(node.disk_mounts("spark"), ["/"])
+            self.assertIsNone(node.disk_mounts("npu"))
+        finally:
+            if old is None:
+                os.environ.pop("YATTERRA_NODES_JSON", None)
+            else:
+                os.environ["YATTERRA_NODES_JSON"] = old
+
 
 if __name__ == "__main__":
     unittest.main()

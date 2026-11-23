@@ -16,6 +16,7 @@ SSH yields a dict with an ``error`` key, never raises.
 """
 import base64
 import json
+import os
 import subprocess
 
 import siteconf
@@ -248,7 +249,12 @@ def collect(cfg, timeout=20):
         script_b64 = _b64(_COLLECT)
         sudo_b64 = _b64(cfg.get("sudo_password", ""))
         vllm_b64 = _b64(json.dumps(cfg.get("vllm", {})))
-        mounts_b64 = _b64(json.dumps(cfg.get("mounts", ["/"])))
+        try:
+            import fleet_monitor
+            mounts = fleet_monitor.mounts_of(cfg)
+        except Exception:
+            mounts = cfg.get("mounts") or ["/"]
+        mounts_b64 = _b64(json.dumps(mounts))
         remote_cmd = (
             'python3 -c "import base64,sys;'
             "exec(base64.b64decode(sys.argv[1]).decode())"
@@ -290,12 +296,106 @@ def _find(name):
     return None
 
 
-def run_remote(name, command, sudo=False, timeout=30):
+def _ssh_argv(cfg, remote_cmd):
+    return [
+        "sshpass", "-p", cfg.get("password", ""),
+        "ssh", "-o", "ConnectTimeout=8",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-p", str(cfg.get("port", 22)),
+        f"{cfg.get('user','')}@{cfg.get('host','')}",
+        remote_cmd,
+    ]
+
+
+def pipe_root(src_host, src_command, dst_host, dst_command, timeout=1800):
+    """Pipe one root shell's stdout into another root shell's stdin.
+
+    ``None`` means this machine. Remote commands run as root via sudo.
+    The byte stream is not returned. Returns (ok, error tail).
+    """
+    procs = []
+    try:
+        src = _popen_root(src_host, src_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        procs.append(src)
+        dst, password = _popen_root_stdin(dst_host, dst_command)
+        procs.append(dst)
+        if password:
+            dst.stdin.write((password + "\n").encode())
+        while True:
+            chunk = src.stdout.read(1024 * 1024)
+            if not chunk:
+                break
+            dst.stdin.write(chunk)
+        dst.stdin.close()
+        src_rc = src.wait(timeout=timeout)
+        dst_rc = dst.wait(timeout=timeout)
+        err = ((src.stderr.read() or b"") + (dst.stderr.read() or b""))[-800:].decode("utf-8", "replace")
+        if src_rc != 0 or dst_rc != 0:
+            return False, err or f"src={src_rc} dst={dst_rc}"
+        return True, ""
+    except Exception as e:
+        for proc in procs:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return False, str(e)
+    finally:
+        for proc in procs:
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
+                if stream is None:
+                    continue
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+
+def _popen_root(host, command, **kwargs):
+    if host is None:
+        argv = ["bash", "-c", command] if os.geteuid() == 0 else ["sudo", "-n", "bash", "-c", command]
+        return subprocess.Popen(argv, **kwargs)
+    cfg = _find(host)
+    if cfg is None:
+        raise RuntimeError(f"未知远程主机: {host}")
+    import shlex
+    remote = "echo %s | sudo -S -p '' bash -lc %s" % (
+        shlex.quote(cfg.get("sudo_password", "")), shlex.quote(command))
+    return subprocess.Popen(_ssh_argv(cfg, remote), **kwargs)
+
+
+def _popen_root_stdin(host, command):
+    """Return (proc, password_or_empty). Password is written by the caller
+    before the byte stream, because sudo -S consumes the first line."""
+    if host is None:
+        argv = ["bash", "-c", command] if os.geteuid() == 0 else ["sudo", "-n", "bash", "-c", command]
+        return subprocess.Popen(argv, stdin=subprocess.PIPE, stderr=subprocess.PIPE), ""
+    cfg = _find(host)
+    if cfg is None:
+        raise RuntimeError(f"未知远程主机: {host}")
+    import shlex
+    remote = "sudo -S -p '' bash -lc %s" % shlex.quote(command)
+    return subprocess.Popen(_ssh_argv(cfg, remote), stdin=subprocess.PIPE, stderr=subprocess.PIPE), cfg.get("sudo_password", "")
+
+
+def run_remote(name, command, sudo=False, timeout=30, stdin_data=None):
     """Run a command on a configured remote host over SSH.
 
     Host must be registered in remote_hosts.json (allowlist). When
     ``sudo`` is true, the command is wrapped with ``sudo -S`` fed by the
     host's ``sudo_password`` (the caller never sees the password).
+
+    ``stdin_data`` (str) is streamed to the remote command's stdin — use it for
+    large payloads (nginx configs, htpasswd files …) instead of embedding them
+    in ``command``: a base64 blob passed as an argument eventually exceeds the
+    kernel's per-arg limit (MAX_ARG_STRLEN = 128 KiB, total ARG_MAX ~2 MiB) and
+    exec() dies with OSError(7, 'Argument list too long'). The blob grows with
+    every new group, so a busy site *will* hit it.
+
+    ``stdin_data`` may only be combined with ``sudo=False``: with sudo the
+    password is fed on stdin (see below), which would corrupt the payload.
+    Use :func:`write_remote_file` for "large data + root" — it transfers the
+    data unprivileged, then installs it with a short sudo command.
 
     Returns (ok: bool, output: str). Never raises.
     """
@@ -303,6 +403,8 @@ def run_remote(name, command, sudo=False, timeout=30):
     cfg = _find(name)
     if cfg is None:
         return False, f"【未知远程主机: {name}。可用: {', '.join(c.get('name','?') for c in load())}】"
+    if sudo and stdin_data is not None:
+        return False, "【run_remote: stdin_data 不能与 sudo 同时使用(密码占用了 stdin),请用 write_remote_file】"
     try:
         if sudo:
             spw = cfg.get("sudo_password", "")
@@ -320,7 +422,9 @@ def run_remote(name, command, sudo=False, timeout=30):
             f"{cfg.get('user','')}@{cfg.get('host','')}",
             remote_cmd,
         ]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        kwargs = {} if stdin_data is None else {"input": stdin_data}
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           **kwargs)
         out = (r.stdout or "") + (r.stderr or "")
         if r.returncode != 0:
             # 远端命令失败 = 整体失败。附上退出码方便排错,但 ok 必须是 False,
@@ -333,3 +437,35 @@ def run_remote(name, command, sudo=False, timeout=30):
         return False, f"[远程命令超时 {timeout}s]"
     except Exception as e:
         return False, f"[远程执行异常: {e!r}]"
+
+
+def write_remote_file(name, path, data, sudo=True, mode=None, timeout=30):
+    """Write text ``data`` to ``path`` on host ``name`` — safe for large files.
+
+    Two-phase, so the payload never becomes a command-line argument (which is
+    what breaks at ~128 KiB with ``Argument list too long``):
+
+      1. unprivileged: stream ``data`` over stdin into a private temp file
+         (``/tmp/.yatterra-w-*``, mode 600);
+      2. short command: install the temp file into ``path`` (root via sudo when
+         requested) and delete the temp file.
+
+    Step 2 uses ``cat tmp > path``, which truncates the destination in place —
+    the file keeps its **inode**. The relay binds single files into the nginx
+    container, so a fresh inode would silently not take effect until a restart.
+
+    Returns (ok: bool, output: str). Never raises.
+    """
+    import secrets
+    tmp = "/tmp/.yatterra-w-%s" % secrets.token_hex(8)
+    ok, out = run_remote(name, "umask 077; cat > %s" % tmp, sudo=False,
+                         timeout=timeout, stdin_data=data)
+    if not ok:
+        run_remote(name, "rm -f %s" % tmp, sudo=False, timeout=10)
+        return False, f"[传输到临时文件失败: {out}]"
+    chmod = " && chmod %s %s" % (mode, path) if mode else ""
+    cmd = "cat %s > %s%s; rc=$?; rm -f %s; exit $rc" % (tmp, path, chmod, tmp)
+    ok, out = run_remote(name, cmd, sudo=sudo, timeout=timeout)
+    if not ok:
+        return False, f"[安装到 {path} 失败: {out}]"
+    return True, out

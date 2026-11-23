@@ -319,10 +319,16 @@ def gpu_frac():
             p = [x.strip() for x in line.split(",")]
             if len(p) < 3:
                 continue
-            utils.append(int(p[0]) / 100.0)
-            mt = int(p[2])
-            if mt > 0:
-                mems.append(int(p[1]) / mt)
+            # Unified-memory nodes (GB10 / DGX Spark) report '[N/A]' for
+            # memory.used/total while utilisation still works; parse tolerantly
+            # so one N/A cell can't blank the whole GPU signal (int('N/A') used
+            # to raise → (None, None), losing level.gpu on those nodes).
+            u = _num(p[0])
+            if u is not None:
+                utils.append(u / 100.0)
+            mu, mt = _num(p[1]), _num(p[2])
+            if mu is not None and mt:
+                mems.append(mu / mt)
         if not utils:
             return (None, None)
         return (round(sum(utils) / len(utils), 3),
@@ -652,6 +658,14 @@ def collect():
     # per-card max vram fraction: level.gpu_mem basis (mirrors gpu_max).
     mems = [c["mem"] for c in cards if c.get("mem") is not None]
     g_mem_max = round(max(mems), 3) if mems else g_mem
+    # Unified-memory nodes (GB10 / DGX Spark): the GPU has NO separate VRAM
+    # budget — system RAM and VRAM are one pool, and nvidia-smi reports '[N/A]'
+    # for memory.*. There is nothing for level.gpu_mem to measure beyond the
+    # system pool, so report the same fraction instead of None. Gated on "GPUs
+    # present but no per-card memory reading", which is exactly that signature
+    # (a normal GPU always yields a mem value; a GPU-less host has no cards).
+    if cards and not mems and mem is not None:
+        g_mem = g_mem_max = mem
     # gpu_temp_max powers the thermal alert (host_alerts); null when no sensor.
     temps = [c["temp"] for c in cards if c.get("temp") is not None]
     g_temp = max(temps) if temps else None

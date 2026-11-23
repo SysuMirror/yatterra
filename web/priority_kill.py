@@ -21,6 +21,12 @@ low-priority work to relieve the host. This loop does that, by priority:
     single-card hog and could evict a neighbour sitting on an idle card.
   - Resource shares (cpu/mem) come from cgroup v2 (cgroup_stats.sample_live)
     with `kubectl top` as fallback — instantaneous, not a 1-minute lag.
+  - Node-aware: pressure is a per-node signal (every node runs its own writer
+    at PRESSURE_FILE). The loop reads each node's pressure.json — locally for
+    the platform's own node, over ``nodes.run_on`` for a remote node (spark) —
+    and evicts only deploys placed on THAT node, scored against that node's own
+    cpu/mem denominators. A node whose file is missing/stale is skipped
+    (fail-safe), so a single-node site behaves exactly as before.
   - Victims are scored by priority_weight * (0.1 + resource_share): a
     low-priority high-mem program is evicted before a low-priority low-mem one.
   - When all metrics return to low and stay there RECOVER_S seconds, stopped
@@ -57,6 +63,7 @@ import deploys      # noqa: E402
 import scheduler    # noqa: E402
 import groups       # noqa: E402
 import logutil      # noqa: E402
+import nodes        # noqa: E402
 
 POLL_S = float(os.environ.get("PRIORITY_KILL_POLL_S", "5"))
 THRESH_HIGH = float(os.environ.get("PRIORITY_KILL_HIGH", "0.80"))
@@ -117,7 +124,30 @@ def save_state(st):
 
 # --- host / pod resource views ------------------------------------------------
 
-def host_total_mem_mib():
+def _nodes():
+    """Nodes to police (registry order). Falls back to the default node so a
+    single-node site is unchanged."""
+    try:
+        ns = nodes.names()
+        if ns:
+            return ns
+    except Exception:
+        pass
+    return [scheduler.DEFAULT_NODE]
+
+
+def host_total_mem_mib(node=None):
+    if node and node != scheduler.DEFAULT_NODE:
+        try:
+            ok, out = nodes.run_on(
+                node, "free -m | awk '/^Mem:/{print $2}'", timeout=15)
+            if ok:
+                n = int((out or "").strip().split()[-1])
+                if n > 0:
+                    return n
+        except Exception:
+            pass
+        return 1
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -129,7 +159,17 @@ def host_total_mem_mib():
     return 1
 
 
-def host_total_cores():
+def host_total_cores(node=None):
+    if node and node != scheduler.DEFAULT_NODE:
+        try:
+            ok, out = nodes.run_on(node, "nproc", timeout=15)
+            if ok:
+                n = int((out or "").strip().split()[-1])
+                if n > 0:
+                    return n
+        except Exception:
+            pass
+        return 1
     n = os.cpu_count() or 1
     return n
 
@@ -168,7 +208,7 @@ def _parse_mem_mib(s):
         return 0.0
 
 
-def pod_usage_by_group():
+def pod_usage_by_group(node=None):
     """{group: {"cpu": cores, "mem": mib}} — cgroup v2 first, kubectl top as fallback.
 
     ``kubectl top pod`` reports a 1-minute rate from metrics-server, so a burst
@@ -177,7 +217,15 @@ def pod_usage_by_group():
     giving a real current rate. sample_live blocks ~1s (it takes two readings);
     that is fine at POLL_S=5 and keeps its own snapshot local, so the req_loop's
     sampling window is not perturbed. Any failure falls back to kubectl top.
+
+    ``node`` selects the node whose cgroup to read: the default node reads the
+    platform host's own cgroup v2; a remote node (spark) can't be read from here
+    (cgroup_stats is local-only) so it falls back to the cluster-wide
+    ``kubectl top`` — which already covers spark pods — and build_candidates
+    filters the result down to that node.
     """
+    if node and node != scheduler.DEFAULT_NODE:
+        return pod_top_by_group()
     try:
         import cgroup_stats
         live = cgroup_stats.sample_live()
@@ -224,21 +272,42 @@ def pod_top_by_group():
     return out
 
 
-def gpu_total_mem():
-    """Return {gpu_index: total_vram_mib} from scheduler.sample()."""
+def gpu_total_mem(node=None):
+    """Return {gpu_index: total_vram_mib} from scheduler.sample(node)."""
     out = {}
-    for g in scheduler.sample():
+    for g in scheduler.sample(node):
         out[g["index"]] = g["vram_used"] + g["vram_free"]
     return out
 
 
 # --- pressure -----------------------------------------------------------------
 
-def read_pressure():
-    """Return pressure dict or None if missing/stale."""
+def read_pressure(node=None):
+    """Return a node's pressure dict, or None if missing/stale.
+
+    Pressure is per-node (each node runs its own writer at PRESSURE_FILE): the
+    platform's own node reads the local file, a remote node (spark) is read over
+    ``nodes.run_on`` at the same path. Any parse failure / staleness → None
+    (fail-safe: that node is simply skipped this cycle).
+    """
+    raw = None
     try:
-        with open(PRESSURE_FILE) as f:
-            p = json.load(f)
+        if node and node != scheduler.DEFAULT_NODE:
+            ok, out = nodes.run_on(node, f"cat {PRESSURE_FILE}", timeout=15)
+            raw = out if ok else None
+        else:
+            with open(PRESSURE_FILE) as f:
+                raw = f.read()
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    # the remote command may interleave a banner/warning; take the JSON object.
+    i, j = raw.find("{"), raw.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        p = json.loads(raw[i:j + 1])
     except Exception:
         return None
     ts = p.get("ts")
@@ -322,14 +391,21 @@ def pressure_value(metric, p, rec=None):
 
 # --- one cycle ----------------------------------------------------------------
 
-def build_candidates(p, top, gpu_tot, st):
-    """Return list of candidate dicts for running deploys with their pressure
-    tier and score. Only non-critical, currently-running, not-in-cooldown."""
-    host_mem = host_total_mem_mib() or 1
-    host_cores = host_total_cores() or 1
+def build_candidates(p, top, gpu_tot, st, node=None):
+    """Return list of candidate dicts for running deploys on ``node`` with their
+    pressure tier and score. Only non-critical, currently-running, not-in-cooldown.
+
+    ``p``/``top``/``gpu_tot`` must describe the SAME node (its own pressure
+    file, its own resource denominators). The node scoping is enforced by
+    ``scheduler.all_deploys(node)`` so a host-local pressure signal can never
+    evict a deploy placed on a different node.
+    """
+    node = node or scheduler.DEFAULT_NODE
+    host_mem = host_total_mem_mib(node) or 1
+    host_cores = host_total_cores(node) or 1
     now = time.time()
     cands = []
-    for did, rec in scheduler.all_deploys().items():
+    for did, rec in scheduler.all_deploys(node).items():
         try:
             if rec.get("status") != "running":
                 continue
@@ -384,7 +460,7 @@ def build_candidates(p, top, gpu_tot, st):
                 "tier": tier, "score": round(score, 4),
                 "maxval": round(maxval, 3), "hit": hit,
                 "kind": rec.get("kind"), "gpu": rec.get("gpu"),
-                "vram": rec.get("vram"),
+                "vram": rec.get("vram"), "node": node,
             })
         except Exception as e:
             log(f"candidate skip {did}: {e!r}")
@@ -476,6 +552,7 @@ def do_evict(cands, st, dry):
             "name": c.get("kind", ""), "ts": time.time(),
             "score": c["score"], "metrics": c["hit"],
             "tier": c["tier"], "gpu": c.get("gpu"),
+            "node": c.get("node") or scheduler.DEFAULT_NODE,
         })
     return len(stopped_now)
 
@@ -521,18 +598,22 @@ def all_metrics_low(p):
     return all(metric_low(p, m) for m in ("cpu", "gpu", "mem", "bw"))
 
 
-def do_recover(p, st, dry):
-    """Restart stopped programs once the metrics *they were evicted for* are
-    relaxed and have stayed relaxed for RECOVER_S.
+def do_recover(p, st, dry, node=None):
+    """Restart this node's stopped programs once the metrics *they were evicted
+    for* are relaxed and have stayed relaxed for RECOVER_S.
 
     Per-victim hysteresis (low_since stored on each entry) rather than a single
     host-wide gate: a victim stopped for 'bw' must not be held hostage by
-    unrelated gpu/mem pressure, and vice versa.
+    unrelated gpu/mem pressure, and vice versa. ``p`` is this node's pressure
+    file and only victims recorded on the same node are considered (entries
+    written before the node field existed count as the default node).
     """
+    node = node or scheduler.DEFAULT_NODE
     now = time.time()
     stopped = st.get("stopped", [])
-    if not stopped:
-        st["low_since"] = None
+    mine = [e for e in stopped
+            if (e.get("node") or scheduler.DEFAULT_NODE) == node]
+    if not mine:
         return 0
 
     # host-wide view, for the log line only
@@ -541,7 +622,7 @@ def do_recover(p, st, dry):
         st["low_since"] = None
 
     recovered = 0
-    for entry in reversed(list(stopped)):
+    for entry in reversed(mine):
         group, did = entry["group"], entry["deploy_id"]
         try:
             if not victim_metrics_low(p, entry):
@@ -599,23 +680,26 @@ def do_recover(p, st, dry):
 
 
 def cycle(dry=False):
-    p = read_pressure()
-    if p is None:
-        return  # no signal, fail-safe
     st = load_state()
-    top = pod_usage_by_group()
-    gpu_tot = gpu_total_mem()
-    cands = build_candidates(p, top, gpu_tot, st)
-    if cands:
-        tiers = sorted(set(c["tier"] for c in cands), reverse=True)
-        log(f"pressure pressured candidates: {len(cands)} tiers={tiers} "
-            f"top={top}")
-    n_evict = do_evict(cands, st, dry)
-    n_recov = do_recover(p, st, dry)
+    dirty = False
+    for node in _nodes():
+        p = read_pressure(node)
+        if p is None:
+            continue  # no signal for this node, fail-safe
+        top = pod_usage_by_group(node)
+        gpu_tot = gpu_total_mem(node)
+        cands = build_candidates(p, top, gpu_tot, st, node)
+        if cands:
+            tiers = sorted(set(c["tier"] for c in cands), reverse=True)
+            log(f"[{node}] pressured candidates: {len(cands)} tiers={tiers}")
+        n_evict = do_evict(cands, st, dry)
+        n_recov = do_recover(p, st, dry, node)
+        if n_evict or n_recov or cands:
+            dirty = True
     # Persist whenever there is pending recovery bookkeeping: do_recover updates
     # per-entry low_since every cycle, and those timestamps must survive the
     # reload in the next cycle or the hysteresis timer never advances.
-    if n_evict or n_recov or cands or st.get("stopped"):
+    if dirty or st.get("stopped"):
         save_state(st)
 
 

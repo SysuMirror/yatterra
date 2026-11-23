@@ -7,6 +7,7 @@ from pathlib import Path
 import shlex
 import sqlite3
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
@@ -20,9 +21,31 @@ CONFIG_PATH = os.environ.get('YATTERRA_FLEET_CONFIG', siteconf.path('remote_host
 RETENTION = 7 * 86400
 
 
+def _check_mounts(mounts):
+    if (not isinstance(mounts, list) or not mounts or len(mounts) > 32 or
+            any(not isinstance(m, str) or not m.startswith('/') or '\x00' in m for m in mounts)):
+        raise ValueError('Invalid fleet mounts')
+    return list(mounts)
+
+
+def mounts_of(cfg):
+    """Per-host mount list. Explicit config wins; local uses the site list.
+
+    A remote with no ``mounts`` key takes its own node profile. An unknown
+    host stays on ``['/']`` and never receives another machine's disks.
+    """
+    if isinstance(cfg, dict) and 'mounts' in cfg and cfg.get('mounts') is not None:
+        return _check_mounts(cfg.get('mounts'))
+    if cfg.get('kind') == 'local' or cfg.get('id') == 'local':
+        return _check_mounts(list(siteconf.DISK_MOUNTS))
+    import nodes
+    named = nodes.disk_mounts(cfg.get('name') or cfg.get('id') or '')
+    return _check_mounts(named or ['/'])
+
+
 def inventory():
     hosts = [{'id': 'local', 'name': os.environ.get('YATTERRA_LOCAL_HOST_NAME', 'gpu4090'),
-              'kind': 'local', 'mounts': siteconf.DISK_MOUNTS}]
+              'kind': 'local', 'mounts': mounts_of({'id': 'local', 'kind': 'local'})}]
     try:
         with open(CONFIG_PATH) as stream:
             configs = json.load(stream)
@@ -45,11 +68,9 @@ def inventory():
             raise ValueError('Invalid fleet SSH user')
         if not 1 <= int(cfg.get('port', 22)) <= 65535:
             raise ValueError('Invalid fleet SSH port')
-        mounts = cfg.get('mounts', ['/'])
-        if not isinstance(mounts, list) or len(mounts) > 32 or any(not isinstance(m, str) or not m.startswith('/') or '\x00' in m for m in mounts):
-            raise ValueError('Invalid fleet mounts')
+        mounts = mounts_of(cfg)
         seen.add(name)
-        hosts.append(dict(cfg, id=name, kind='remote'))
+        hosts.append(dict(cfg, id=name, kind='remote', mounts=mounts))
     return hosts
 
 
@@ -57,10 +78,83 @@ def public_host(cfg):
     return {key: cfg.get(key, '') for key in ('id', 'name', 'kind', 'desc')}
 
 
+_pod_lock = threading.Lock()
+_pod_cache = {'ts': 0.0, 'map': None}
+
+
+def _kubectl_pod_names():
+    """Cluster uid → pod name. Empty when kubectl is unavailable."""
+    try:
+        result = subprocess.run(
+            ['kubectl', 'get', 'pods', '-A', '--no-headers',
+             '-o', 'custom-columns=UID:.metadata.uid,NAME:.metadata.name'],
+            capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode:
+        return {}
+    mapping = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            mapping[parts[0]] = parts[1]
+    return mapping
+
+
+def pod_name_map():
+    """Cached pod names. One lookup serves every host in a sampling cycle."""
+    now = time.time()
+    with _pod_lock:
+        cached = _pod_cache['map']
+        if isinstance(cached, dict) and now - _pod_cache['ts'] < 30:
+            return dict(cached)
+        mapping = _kubectl_pod_names()
+        if mapping or cached is None:
+            _pod_cache['map'] = mapping
+            _pod_cache['ts'] = time.time()
+        return dict(_pod_cache['map'] or {})
+
+
+def label_probe_pods(data):
+    """Fill pod names from the cluster for whichever host produced ``data``.
+
+    The probe only sees this machine's cgroups. Names come from one cluster
+    lookup, not from another machine's process list. A missing name becomes
+    ``pod-<uid prefix>`` and is never copied from a different host.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get('gpus'), list):
+        return data
+    needs = any(
+        isinstance(pod, dict) and pod.get('uid') and not pod.get('name')
+        for gpu in data['gpus'] if isinstance(gpu, dict)
+        for pod in (gpu.get('pods') or []))
+    mapping = pod_name_map() if needs else {}
+    for gpu in data['gpus']:
+        if not isinstance(gpu, dict) or not isinstance(gpu.get('pods'), list):
+            continue
+        for pod in gpu['pods']:
+            if not isinstance(pod, dict):
+                continue
+            uid = str(pod.get('uid') or '')
+            name = pod.get('name') or mapping.get(uid)
+            if not name and uid:
+                name = 'pod-' + uid.split('-')[0]
+            if name:
+                pod['name'] = name
+            pod.setdefault('util', None)
+    return data
+
+
 def collect_host(cfg):
+    """Sample one inventoried host with the shared probe.
+
+    A host added later (remote_hosts.json name plus a nodes profile) lands
+    here with no extra field list. Mounts come from that profile; driver,
+    pods, network and disk IO come from fleet_probe.collect.
+    """
     started = time.time()
     try:
-        mounts = cfg.get('mounts', ['/'])
+        mounts = mounts_of(cfg)
         if cfg['kind'] == 'local':
             data = fleet_probe.collect(mounts)
         else:
@@ -88,6 +182,7 @@ def collect_host(cfg):
                     any(not isinstance(data.get(k), dict) for k in ('cpu', 'memory', 'swap', 'errors')) or
                     any(not isinstance(data.get(k), list) for k in ('disks', 'gpus'))):
                 raise ValueError('Invalid probe response')
+        label_probe_pods(data)
         json.dumps(data, allow_nan=False)
         return dict(public_host(cfg), timestamp=started, status='partial' if data.get('errors') else 'online', data=data)
     except Exception as exc:
@@ -140,6 +235,27 @@ class Store:
             ORDER BY rn''', (host, since, until, limit, limit, limit))
 
 
+def annotate_hardware(row):
+    """Attach probed identity, falling back to the node registry for arch only."""
+    import nodes
+    hint = nodes.hardware_hint(row.get('name') or '', row.get('id') or '')
+    probed = (row.get('data') or {}).get('machine') if isinstance(row.get('data'), dict) else None
+    if not isinstance(probed, dict):
+        probed = {}
+    arch = probed.get('arch') or hint.get('arch')
+    gpus = (row.get('data') or {}).get('gpus') if isinstance(row.get('data'), dict) else None
+    row['hardware'] = {
+        'arch': arch or None,
+        'arch_source': 'probe' if probed.get('arch') else ('registry' if hint.get('arch') else None),
+        'cpu_model': probed.get('cpu_model') or None,
+        'product': probed.get('product') or None,
+        'unified_memory': bool(hint.get('unified_memory')),
+        'profile': hint.get('profile'),
+    }
+    row['accelerator_count'] = len(gpus) if isinstance(gpus, list) else 0
+    return row
+
+
 def snapshot(store=None):
     store = store or Store()
     now = time.time()
@@ -149,7 +265,7 @@ def snapshot(store=None):
         row = sample or dict(public_host(cfg), timestamp=None, status='unknown', data=None)
         row['stale'] = sample is None or now - sample['timestamp'] > 120
         row['age_seconds'] = max(0, now - sample['timestamp']) if sample else None
-        rows.append(row)
+        rows.append(annotate_hardware(row))
     return {'schema_version': 1, 'timestamp': now, 'hosts': rows}
 
 

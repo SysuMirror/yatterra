@@ -35,8 +35,22 @@ _NVIDIA_SMI = (
 )
 
 
+def _num(cell):
+    """Parse a nvidia-smi numeric cell; unsupported cells ('N/A', '[N/A]',
+    '[Not Supported]' — GB10 reports these for memory/power) become None."""
+    try:
+        return int(cell)
+    except ValueError:
+        pass
+    try:
+        return float(cell)
+    except ValueError:
+        return None
+
+
 def _query_gpus():
-    """Return a list of raw per-GPU dicts, or raise on failure."""
+    """Return a list of raw per-GPU dicts, or raise on failure.
+    N/A-prone fields (mem_total/power on GB10) may be None."""
     out = subprocess.run(
         _NVIDIA_SMI, capture_output=True, text=True, timeout=10
     )
@@ -54,12 +68,12 @@ def _query_gpus():
             raise ValueError(f"unexpected nvidia-smi line: {line!r}")
         idx = int(parts[0])
         name = parts[1]
-        util = int(parts[2])
-        mem_used = int(parts[3])
-        mem_total = int(parts[4])
-        temp = int(parts[5])
-        power = float(parts[6])
-        power_limit = float(parts[7])
+        util = _num(parts[2]) or 0
+        mem_used = _num(parts[3])
+        mem_total = _num(parts[4])
+        temp = _num(parts[5])
+        power = _num(parts[6])
+        power_limit = _num(parts[7])
         gpus.append(
             {
                 "index": idx,

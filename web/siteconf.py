@@ -66,6 +66,10 @@ QDRANT_SERVICE = _env("YATTERRA_QDRANT_SERVICE",
                       f"qdrant.{INFRA_NS}.svc.cluster.local")
 MINIO_SERVICE = _env("YATTERRA_MINIO_SERVICE",
                      f"minio.{INFRA_NS}.svc.cluster.local")
+CLICKHOUSE_SERVICE = _env("YATTERRA_CLICKHOUSE_SERVICE",
+                          f"langfuse-clickhouse.{INFRA_NS}.svc.cluster.local")
+KAFKA_SERVICE = _env("YATTERRA_KAFKA_SERVICE",
+                     f"kafka.{INFRA_NS}.svc.cluster.local")
 
 # ARTEX 自主渗透平台（group-artex pod 的 Go 单体后端）。安全巡检板通过它的
 # HTTP API 驱动端到端渗透测试：yatterra 侧不需要它的管理员口令——直接读它的
@@ -110,6 +114,10 @@ PLATFORM_CONSOLE_URL = _env("YATTERRA_PLATFORM_CONSOLE_URL",
 # Host data roots (hostPath volumes)
 # --------------------------------------------------------------------------- #
 GROUP_DATA_ROOT = _env("YATTERRA_GROUP_DATA_ROOT", "/srv/data/groups")
+# Cross-node read-write sync disk. Same path on every node: local dir on the
+# platform node, NFS mount (from the platform node) on remote nodes. Mounted
+# into every group pod at /interop.
+INTEROP_ROOT = _env("YATTERRA_INTEROP_ROOT", "/mnt/sdb/interop")
 SHARED_ROOT = _env("YATTERRA_SHARED_ROOT", "/srv/data/shared")
 DB_DATA_ROOT = _env("YATTERRA_DB_DATA_ROOT", "/srv/data/db")
 MINIO_DATA_ROOT = _env("YATTERRA_MINIO_DATA_ROOT", "/srv/data/minio")

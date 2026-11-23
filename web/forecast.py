@@ -457,10 +457,16 @@ def capacity(now=None):
     except Exception:
         alloc = {}
     committed = {}
+    dn = getattr(scheduler, "DEFAULT_NODE", None)
     for rec in alloc.values():
         gpu = rec.get("gpu")
         if gpu is None or (rec.get("status") or "") not in (
                 "running", "queued", "deferred"):
+            continue
+        # capacity is sampled on the platform's own node — don't fold remote
+        # nodes' (e.g. spark) committed VRAM into the same index space.
+        rn = rec.get("node")
+        if rn and dn and rn != dn:
             continue
         try:
             committed[gpu] = committed.get(gpu, 0) + int(rec.get("vram") or 0)

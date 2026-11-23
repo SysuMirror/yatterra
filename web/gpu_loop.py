@@ -4,12 +4,15 @@ deploys + re-queue of parked trains when a GPU frees.
 
 Runs as a systemd service (root, so it can kubectl exec into pods). Polls every
 POLL_S seconds. Per-deploy exceptions are caught so one bad deploy can't kill
-the loop.
+the loop. Node-aware: every action is scoped to a single node (the group's
+placement), so a train on spark is only ever migrated/parked against spark's own
+GPUs.
 
-Actions:
+Actions (per node):
   - pressured serve GPU + train co-located on it -> migrate to a cooler GPU
     (checkpoint + RESUME=true) if one fits; else park (evict to queued).
   - queued train + a GPU now fits -> re-place and resume.
+  - dynamic MPS rebalance only on nodes that run an MPS daemon.
 
 Logs to /opt/yatterra/gpu_loop.log.
 """
@@ -33,18 +36,37 @@ LOG = siteconf.path("gpu_loop.log")
 # hysteresis: target MPS % must be stable for this many consecutive polls
 # before we restart a co-located train to avoid thrash at band boundaries.
 MPS_STABLE_POLLS = 2
-_mps_pending = {}   # deploy_id -> (target_pct, consecutive_count)
+_mps_pending = {}   # (node, deploy_id) -> (target_pct, consecutive_count)
 
 
 def log(msg):
     logutil.write(LOG, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
 
 
-def handle_pressure():
-    targets = scheduler.pressure_targets()
+def _scan_nodes():
+    """Nodes with any alloc state, plus the nodes of every queued train's group.
+    Falls back to the default node so a single-node site is unchanged."""
+    seen = set()
+    try:
+        for r in scheduler.all_deploys().values():
+            seen.add(scheduler._rec_node(r))
+    except Exception:
+        pass
+    try:
+        for q in scheduler.queued_trains():
+            seen.add(q.get("node") or scheduler.group_node(q.get("group")))
+    except Exception:
+        pass
+    if not seen:
+        seen.add(scheduler.DEFAULT_NODE)
+    return sorted(seen)
+
+
+def handle_pressure(node):
+    targets = scheduler.pressure_targets(node)
     if not targets:
         return
-    log(f"pressure targets: {json.dumps(targets, ensure_ascii=False)}")
+    log(f"[{node}] pressure targets: {json.dumps(targets, ensure_ascii=False)}")
     for t in targets:
         tid, group, from_gpu, vram = t["train_id"], t["group"], t["from_gpu"], t["vram"]
         try:
@@ -52,25 +74,26 @@ def handle_pressure():
             if not dep:
                 scheduler.release(tid)
                 continue
-            target = scheduler.relocate(tid, group, vram, exclude_gpu=from_gpu)
+            target = scheduler.relocate(tid, group, vram, exclude_gpu=from_gpu,
+                                        node=node)
             if target is not None:
                 ok, msg = deploys.migrate(group, dep, target)
-                log(f"migrate {group}/{dep['name']} gpu{from_gpu}->gpu{target} ok={ok}")
+                log(f"[{node}] migrate {group}/{dep['name']} gpu{from_gpu}->gpu{target} ok={ok}")
             else:
                 # P1-c: honour the flexibility contract — a train that is not
                 # preemptable (e.g. critical, or explicit PREEMPT_OK=false) is
                 # never parked.  Default preempt_ok for a train is True, so this
                 # is a no-op until a group opts out.
                 if not contract.preemptable(group, dep):
-                    log(f"skip park {group}/{dep['name']}: preempt_ok=false")
+                    log(f"[{node}] skip park {group}/{dep['name']}: preempt_ok=false")
                     continue
                 deploys.park(group, dep)
-                log(f"park {group}/{dep['name']} (no migration target)")
+                log(f"[{node}] park {group}/{dep['name']} (no migration target)")
         except Exception as e:
-            log(f"pressure handle error {group}/{tid}: {e!r}\n{traceback.format_exc()}")
+            log(f"[{node}] pressure handle error {group}/{tid}: {e!r}\n{traceback.format_exc()}")
 
 
-def handle_queued():
+def handle_queued(node):
     # P1-c: let the defer queue release the delayable trains whose valley (or
     # deadline) has arrived, then place exactly those.  Non-deferrable trains
     # (the default) are handled below exactly as before.
@@ -79,7 +102,7 @@ def handle_queued():
     except Exception as e:
         log(f"admit error: {e!r}")
         admitted = set()
-    queued = scheduler.queued_trains()
+    queued = scheduler.queued_trains(node)
     if not queued:
         return
     for q in queued:
@@ -97,7 +120,7 @@ def handle_queued():
                     continue
             except Exception:
                 pass
-            gpu = scheduler.place_train(tid, group, vram)
+            gpu = scheduler.place_train(tid, group, vram, node=node)
             if gpu is None:
                 continue  # still no room
             ok, msg = deploys.migrate(group, dep, gpu)
@@ -106,44 +129,47 @@ def handle_queued():
                     defer_queue.mark_running(tid, gpu)
                 except Exception:
                     pass
-            log(f"requeue {group}/{dep['name']} -> gpu{gpu} ok={ok}")
+            log(f"[{node}] requeue {group}/{dep['name']} -> gpu{gpu} ok={ok}")
         except Exception as e:
-            log(f"requeue handle error {group}/{tid}: {e!r}")
+            log(f"[{node}] requeue handle error {group}/{tid}: {e!r}")
 
 
-def handle_mps_rebalance():
+def handle_mps_rebalance(node):
     """Dynamic MPS: adjust co-located training compute cap to fill idle inference
     compute (打满算力) or squeeze it when inference gets busy. Only restarts the
-    train when the target band has been stable for MPS_STABLE_POLLS polls."""
-    trains = scheduler.colocated_trains()
+    train when the target band has been stable for MPS_STABLE_POLLS polls.
+    Skipped entirely on nodes without an MPS daemon (e.g. spark)."""
+    if not scheduler.has_mps(node):
+        return
+    trains = scheduler.colocated_trains(node)
     if not trains:
         _mps_pending.clear()
         return
     for t in trains:
         tid = t["train_id"]
-        target = scheduler.mps_target_percent(t["gpu"])
+        target = scheduler.mps_target_percent(t["gpu"], node)
         current = t["mps_pct"]
         if current == target:
-            _mps_pending.pop(tid, None)
+            _mps_pending.pop((node, tid), None)
             continue
         # accumulate consecutive stability for this target
-        prev = _mps_pending.get(tid)
+        prev = _mps_pending.get((node, tid))
         if prev and prev[0] == target:
-            _mps_pending[tid] = (target, prev[1] + 1)
+            _mps_pending[(node, tid)] = (target, prev[1] + 1)
         else:
-            _mps_pending[tid] = (target, 1)
-        if _mps_pending[tid][1] < MPS_STABLE_POLLS:
+            _mps_pending[(node, tid)] = (target, 1)
+        if _mps_pending[(node, tid)][1] < MPS_STABLE_POLLS:
             continue
-        _mps_pending.pop(tid, None)
+        _mps_pending.pop((node, tid), None)
         try:
             dep = deploys.get(t["group"], tid)
             if not dep:
                 continue
             ok, msg = deploys.restart_with_mps(t["group"], dep, t["gpu"], target)
-            log(f"mps rebalance {t['group']}/{dep['name']} gpu{t['gpu']} "
+            log(f"[{node}] mps rebalance {t['group']}/{dep['name']} gpu{t['gpu']} "
                 f"{current}->{target}% (serve SM={t['serve_sm']}%) ok={ok}")
         except Exception as e:
-            log(f"mps rebalance error {t['group']}/{tid}: {e!r}\n{traceback.format_exc()}")
+            log(f"[{node}] mps rebalance error {t['group']}/{tid}: {e!r}\n{traceback.format_exc()}")
 
 
 def main():
@@ -151,9 +177,10 @@ def main():
         f"sustained={scheduler.PRESSURE_SUSTAINED_S}s, mps_bands={scheduler.MPS_BANDS})")
     while True:
         try:
-            handle_pressure()
-            handle_mps_rebalance()
-            handle_queued()
+            for node in _scan_nodes():
+                handle_pressure(node)
+                handle_mps_rebalance(node)
+                handle_queued(node)
             try:
                 defer_queue.reconcile()   # P1-c: close queue items gone from alloc
             except Exception as e:

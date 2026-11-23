@@ -80,6 +80,7 @@ _KIND_LABELS = {
     "daemon-down": "平台服务中断",
     "cert-expiry": "证书到期提醒",
     "attack-surge": "攻击激增提醒",
+    "lab-link": "实验室链路中断",
     "scan-finding": "安全巡检告警",
     "approval-pending": "审批待审",
     "agent-done": "AI 任务完成",
@@ -526,6 +527,14 @@ def monitor_once():
         count += int(host_alerts.run_checks() or 0)
     except Exception:
         log.exception("host checks failed")
+    # Ascend-lab tunnel liveness: the uvpn session inside group-ascend910b has no
+    # self-heal (the lab gateway forces a human SMS code every login), so a dead
+    # session stays dead until someone notices. Probe it and alert (kind=lab-link).
+    try:
+        import ascend_alerts
+        count += int(ascend_alerts.run_checks() or 0)
+    except Exception:
+        log.exception("ascend lab checks failed")
     return count
 
 
