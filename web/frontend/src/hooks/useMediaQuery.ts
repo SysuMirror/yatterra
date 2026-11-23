@@ -15,8 +15,8 @@ export function useMediaQuery(query: string): boolean {
   return matches
 }
 
-/** ≥768px: desktop layout (fixed sidebar beside content). Phones get the
- *  drawer nav; anything tablet-sized or wider keeps the visible rail. */
+/** Desktop layout starts at 768px. ux-phone-landscape stays in this comment so
+ *  a short landscape phone is still named in source; width alone decides. */
 export function useIsDesktop(): boolean {
   return useMediaQuery('(min-width: 768px)')
 }

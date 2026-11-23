@@ -68,9 +68,11 @@ const guides: Record<string, Step[]> = {
     step('profile-content', '查看用途与技术栈', '画像卡整理项目用途、技术栈、入口和主要模块，帮助新成员快速理解代码结构。', true, undefined, 'pod-tab-profile', 'pod'),
     step('profile-changes', '追踪变更历史', '变更历史列出每次巡检检测到的代码变更摘要和增删改数量，可当作轻量版的提交记录。', true, undefined, 'pod-tab-profile', 'pod'),
     step('pod-tab-members', '管理团队成员', '成员页查看成员列表；owner/admin 可审批加入申请、移除成员和调整角色。', false, undefined, undefined, 'collaboration'),
-    step('pod-tab-settings', '调整设置', '设置页修改资源规格和环境变量。环境变量保存会触发 Pod 重启，重启后需重新运行部署才能注入新环境。', false, undefined, undefined, 'environment'),
+    step('pod-tab-settings', '调整设置', '设置页修改资源规格、环境变量、名称和节点。环境变量保存会触发 Pod 重启，重启后需重新运行部署才能注入新环境。改名和换节点都不改公网端口。', false, undefined, undefined, 'environment'),
     step('pod-resources', '查看资源配额', '设置页上方显示当前 CPU、内存、存储和 GPU 配额；owner/admin 可调整规格。', false, undefined, 'pod-tab-settings', 'environment'),
     step('pod-env', '管理环境变量', '环境变量区添加/修改变量，保存后重启生效。PORT 由平台提供（默认 8080），不要写死；秘密值不要截图或入库。', false, undefined, 'pod-tab-settings', 'environment'),
+    step('pod-name', '改名', '名称卡在设置页。负责人把名字改成小写字母、数字和连字符。公网 ssh / web 端口编号不变，页面地址变成 /pods/新名字。android / windows 不能改名。', true, undefined, 'pod-tab-settings', 'pod'),
+    step('pod-node', '换节点', '换节点卡把 Pod 调度到另一台机器，公网端口不变。目录已经共享时只改调度并重启；否则会先停止，再拷贝 home，权重文件默认不传。已分配 GPU 时，目标节点必须有这些卡，否则先改 GPU 分配。这不是部署页里训练任务换 GPU 卡。android / windows 不能换节点。', true, undefined, 'pod-tab-settings', 'pod'),
     docs('从创建到发布的完整流程，见学习路径「运行第一个应用」「保存、启动与重新部署」两节。', 'first-app'),
   ],
   '/docs': [
@@ -527,6 +529,11 @@ function PageGuide({ user, page, pathname, steps }: { user: string; page: string
             <p id="onboarding-description" className="mt-2 text-xs leading-5 text-ink-2">{current.description}</p>
             {current.lesson && <a href={lessonHref(current.lesson)} className="mt-2 inline-flex text-xs text-accent hover:underline">查看课程：{current.lesson}</a>}
           </div>
+          {['pod-tab-settings', 'pod-resources', 'pod-env', 'pod-name', 'pod-node'].includes(current.target) && (
+            <button type="button" onClick={() => document.querySelector<HTMLElement>('[data-onboarding-target="pod-tab-settings"]')?.click()} className="mb-3 w-full rounded-lg border border-accent/30 px-2 py-2 text-xs text-accent hover:bg-accent/5">
+              打开设置标签（不会提交）
+            </button>
+          )}
           {(current.target === 'pod-tab-deploys' || current.target.startsWith('deploy-')) && (
             <button type="button" onClick={() => {
               document.querySelector<HTMLElement>('[data-onboarding-target="pod-tab-deploys"]')?.click()

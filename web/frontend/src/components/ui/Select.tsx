@@ -52,17 +52,24 @@ export function Select({ value, onChange, options, placeholder = '选择...', la
       if (!ref.current?.contains(t) && !listboxRef.current?.contains(t)) close()
     }
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); close() } }
-    // 浮层是 fixed,不跟随滚动 —— 滚动/resize 时直接收起,避免错位
-    const onScroll = () => setOpen(false)
+    // 浮层是 fixed,不跟随滚动 —— 页面滚动/resize 时直接收起,避免错位。
+    // 注意:capture 阶段会收到浮层自身的 scroll(选项多时 listbox 可滚动),
+    // 必须放行来自触发器/浮层内部的滚动,否则一拖动就收起。
+    const onScroll = (e: Event) => {
+      const t = e.target as Node | null
+      if (t && (ref.current?.contains(t) || listboxRef.current?.contains(t))) return
+      setOpen(false)
+    }
+    const onResize = () => setOpen(false)
     document.addEventListener('mousedown', onClick)
     document.addEventListener('keydown', onKeyDown)
     window.addEventListener('scroll', onScroll, true)
-    window.addEventListener('resize', onScroll)
+    window.addEventListener('resize', onResize)
     return () => {
       document.removeEventListener('mousedown', onClick)
       document.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('scroll', onScroll, true)
-      window.removeEventListener('resize', onScroll)
+      window.removeEventListener('resize', onResize)
     }
   }, [open, place])
 

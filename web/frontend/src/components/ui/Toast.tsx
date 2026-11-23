@@ -89,8 +89,9 @@ export function ToastContainer() {
   const [isMobile, setIsMobile] = useState(false)
 
   useEffect(() => {
-    setIsMobile(window.matchMedia('(max-width: 767px)').matches)
-    const mql = window.matchMedia('(max-width: 767px)')
+    const query = '(max-width: 767px)'
+    setIsMobile(window.matchMedia(query).matches)
+    const mql = window.matchMedia(query)
     const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches)
     mql.addEventListener('change', onChange)
     return () => mql.removeEventListener('change', onChange)
@@ -98,10 +99,10 @@ export function ToastContainer() {
 
   return (
     <div
-      className="fixed right-4 z-[var(--z-toast)] flex flex-col gap-2"
+      data-ux="ux-toast-phone"
+      className="fixed right-4 z-[var(--z-toast)] flex max-w-[calc(100vw-2rem)] flex-col gap-2"
       style={{
         top: isMobile ? 'calc(var(--topbar-h) + 0.5rem)' : '1rem',
-        left: isMobile ? '1rem' : undefined,
       }}
     >
       <AnimatePresence mode="popLayout">

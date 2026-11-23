@@ -1,0 +1,653 @@
+[
+  {
+    "page": "/login",
+    "inconvenience": "账号和密码挤在同一步，输错用户名也要重填密码。",
+    "kind": "radical",
+    "source": "frontend/src/routes/login.tsx",
+    "marker": "ux-login-steps"
+  },
+  {
+    "page": "/login",
+    "inconvenience": "密码框不能临时显示，核对长密码只能靠盲打。",
+    "kind": "fix",
+    "source": "frontend/src/routes/login.tsx",
+    "marker": "ux-login-reveal"
+  },
+  {
+    "page": "/",
+    "inconvenience": "落地页很长，想跳到某一段只能自己滚动。",
+    "kind": "fix",
+    "source": "frontend/src/routes/landing.tsx",
+    "marker": "ux-landing-jumps"
+  },
+  {
+    "page": "/",
+    "inconvenience": "营销页上进入登录要在页头里找，没有就近入口。",
+    "kind": "fix",
+    "source": "frontend/src/routes/landing.tsx",
+    "marker": "ux-landing-login"
+  },
+  {
+    "page": "*",
+    "inconvenience": "未知地址只给返回和首页，不知道站内还有哪些页面。",
+    "kind": "radical",
+    "source": "frontend/src/routes/not-found.tsx",
+    "marker": "ux-notfound-recover"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "失败和已停止的 Pod 混在总表里，进控制台看不出先处理谁。",
+    "kind": "fix",
+    "source": "frontend/src/routes/index.tsx",
+    "marker": "ux-console-attention"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "运行中的 Pod 占满总表，想只看需要处理的环境时没有开关。",
+    "kind": "fix",
+    "source": "frontend/src/routes/index.tsx",
+    "marker": "ux-console-quiet"
+  },
+  {
+    "page": "/pods",
+    "inconvenience": "表格和卡片都不按状态分堆，失败的环境要自己在长列表里挑。",
+    "kind": "radical",
+    "source": "frontend/src/routes/pods/index.tsx",
+    "marker": "ux-pods-piles"
+  },
+  {
+    "page": "/pods",
+    "inconvenience": "「我的」只是一个数字，列表仍把别人的 Pod 混在一起。",
+    "kind": "fix",
+    "source": "frontend/src/routes/pods/index.tsx",
+    "marker": "ux-pods-mine"
+  },
+  {
+    "page": "/pods/:name",
+    "inconvenience": "十三个标签平铺，看状态、干活、发布、管理混在一条上。",
+    "kind": "radical",
+    "source": "frontend/src/routes/pods/$name.tsx",
+    "marker": "ux-pod-stages"
+  },
+  {
+    "page": "/pods/:name",
+    "inconvenience": "离开详情再回来总是回到监控，上次打开的标签记不住。",
+    "kind": "fix",
+    "source": "frontend/src/routes/pods/$name.tsx",
+    "marker": "ux-pod-tab-memory"
+  },
+  {
+    "page": "/pods/:name/ide",
+    "inconvenience": "编辑器铺满全屏，要换一个 Pod 得先退出再从列表进去。",
+    "kind": "radical",
+    "source": "frontend/src/routes/pods/ide.tsx",
+    "marker": "ux-pod-ide-switch"
+  },
+  {
+    "page": "/ide",
+    "inconvenience": "打开 IDE 会直接替换到上次的 Pod，列表被跳过。",
+    "kind": "radical",
+    "source": "frontend/src/routes/ide.tsx",
+    "marker": "ux-ide-chooser"
+  },
+  {
+    "page": "/ide",
+    "inconvenience": "停止的环境排在运行中前面，选一个能连上的要自己翻。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ide.tsx",
+    "marker": "ux-ide-running-first"
+  },
+  {
+    "page": "/infra",
+    "inconvenience": "就绪的服务把真正有问题的服务淹没。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/index.tsx",
+    "marker": "ux-infra-problems"
+  },
+  {
+    "page": "/infra",
+    "inconvenience": "磁盘按挂载顺序排，最满的盘不在前面。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/index.tsx",
+    "marker": "ux-infra-disk-full"
+  },
+  {
+    "page": "/infra/host",
+    "inconvenience": "磁盘、K3s 和远程主机分成很长的一页，没有段内跳转。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/host.tsx",
+    "marker": "ux-host-jumps"
+  },
+  {
+    "page": "/infra/host",
+    "inconvenience": "本机磁盘不按占用排序，先看到的不一定是最满的。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/host.tsx",
+    "marker": "ux-host-disk-sort"
+  },
+  {
+    "page": "/infra/fleet",
+    "inconvenience": "所有主机卡片铺满，选中一台之后图表仍和卡片抢同一层。",
+    "kind": "radical",
+    "source": "frontend/src/routes/infra/fleet.tsx",
+    "marker": "ux-fleet-rail"
+  },
+  {
+    "page": "/infra/fleet",
+    "inconvenience": "主机按目录顺序排，磁盘最满的节点不会排到前面。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/fleet.tsx",
+    "marker": "ux-fleet-disk-sort"
+  },
+  {
+    "page": "/infra/gpu",
+    "inconvenience": "每块 GPU 都展开成大卡片，想盯住一块时其余卡片仍占满视野。",
+    "kind": "radical",
+    "source": "frontend/src/routes/infra/gpu.tsx",
+    "marker": "ux-gpu-focus"
+  },
+  {
+    "page": "/infra/gpu",
+    "inconvenience": "GPU 按序号排，利用率最高的不一定先出现。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/gpu.tsx",
+    "marker": "ux-gpu-hot-sort"
+  },
+  {
+    "page": "/infra/storage",
+    "inconvenience": "桶很多时只能滚动找名字。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/storage.tsx",
+    "marker": "ux-storage-buckets"
+  },
+  {
+    "page": "/infra/storage",
+    "inconvenience": "空桶和有对象的桶混在一起。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/storage.tsx",
+    "marker": "ux-storage-hide-empty"
+  },
+  {
+    "page": "/infra/databases",
+    "inconvenience": "数据库服务按名字不好定位。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/databases.tsx",
+    "marker": "ux-db-find"
+  },
+  {
+    "page": "/infra/databases",
+    "inconvenience": "健康服务和异常服务排在同一列表里。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/databases.tsx",
+    "marker": "ux-db-unhealthy"
+  },
+  {
+    "page": "/infra/proxy",
+    "inconvenience": "子域名映射只能整表滚动，不能按主机或 Pod 收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/proxy.tsx",
+    "marker": "ux-proxy-find"
+  },
+  {
+    "page": "/infra/proxy",
+    "inconvenience": "停用的映射混在启用映射里。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/proxy.tsx",
+    "marker": "ux-proxy-disabled"
+  },
+  {
+    "page": "/dev",
+    "inconvenience": "会话、MCP、代理和编排四块列表不能用同一个词一起收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/index.tsx",
+    "marker": "ux-dev-find"
+  },
+  {
+    "page": "/dev",
+    "inconvenience": "失败或已停止的会话仍和正常会话排在一起。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/index.tsx",
+    "marker": "ux-dev-failing"
+  },
+  {
+    "page": "/dev/harness",
+    "inconvenience": "编排条目只能整表浏览。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/harness.tsx",
+    "marker": "ux-harness-find"
+  },
+  {
+    "page": "/dev/harness",
+    "inconvenience": "最近更新的编排没有排到前面的开关。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/harness.tsx",
+    "marker": "ux-harness-newest"
+  },
+  {
+    "page": "/dev/mcp",
+    "inconvenience": "目录按全量展示，不能按名称收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/mcp.tsx",
+    "marker": "ux-mcp-find"
+  },
+  {
+    "page": "/dev/mcp",
+    "inconvenience": "已停用的 MCP 服务混在启用服务里。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/mcp.tsx",
+    "marker": "ux-mcp-disabled"
+  },
+  {
+    "page": "/dev/llm",
+    "inconvenience": "模型提供方列表不能按名字收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/llm.tsx",
+    "marker": "ux-llm-providers"
+  },
+  {
+    "page": "/dev/llm",
+    "inconvenience": "零调用的提供方或用户仍占着列表。",
+    "kind": "fix",
+    "source": "frontend/src/routes/dev/llm.tsx",
+    "marker": "ux-llm-hide-zero"
+  },
+  {
+    "page": "/ops",
+    "inconvenience": "总览里的最近审计不能按操作者或动作收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/index.tsx",
+    "marker": "ux-ops-audit-find"
+  },
+  {
+    "page": "/ops",
+    "inconvenience": "总览磁盘不按占用排序。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/index.tsx",
+    "marker": "ux-ops-disk-hot"
+  },
+  {
+    "page": "/ops/audit",
+    "inconvenience": "分布图和热力图一直占着版面，失败记录没有单独的队列。",
+    "kind": "radical",
+    "source": "frontend/src/routes/ops/audit.tsx",
+    "marker": "ux-audit-failure-lane"
+  },
+  {
+    "page": "/ops/audit",
+    "inconvenience": "模块名和真人操作者混在同一列，不能先藏起模块。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/audit.tsx",
+    "marker": "ux-audit-hide-modules"
+  },
+  {
+    "page": "/ops/billing",
+    "inconvenience": "用量曲线把零点也画进去，空隙把真实用量压扁。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/billing.tsx",
+    "marker": "ux-billing-hide-gaps"
+  },
+  {
+    "page": "/ops/billing",
+    "inconvenience": "每次打开计费都回到默认时间范围，上次选的范围留不住。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/billing.tsx",
+    "marker": "ux-billing-range-memory"
+  },
+  {
+    "page": "/ops/pricing",
+    "inconvenience": "价格键是一长串，不能按键名收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/pricing.tsx",
+    "marker": "ux-pricing-find"
+  },
+  {
+    "page": "/ops/pricing",
+    "inconvenience": "价格为 0 的键和有效价格混在一起。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/pricing.tsx",
+    "marker": "ux-pricing-nonzero"
+  },
+  {
+    "page": "/ops/orders",
+    "inconvenience": "订单没有按状态分开看。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/orders.tsx",
+    "marker": "ux-orders-status"
+  },
+  {
+    "page": "/ops/orders",
+    "inconvenience": "不能按用户或订单号收窄订单。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/orders.tsx",
+    "marker": "ux-orders-find"
+  },
+  {
+    "page": "/billing",
+    "inconvenience": "充值金额只能手打，常用面额没有一键填入。",
+    "kind": "fix",
+    "source": "frontend/src/routes/billing.tsx",
+    "marker": "ux-billing-presets"
+  },
+  {
+    "page": "/billing",
+    "inconvenience": "向导步骤只能往后走，回到已完成的一步要点很多次上一步。",
+    "kind": "fix",
+    "source": "frontend/src/routes/billing.tsx",
+    "marker": "ux-billing-step-jump"
+  },
+  {
+    "page": "/billing/overview",
+    "inconvenience": "账户列表不能按组名或 ID 收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/billingOverview.tsx",
+    "marker": "ux-billov-find"
+  },
+  {
+    "page": "/billing/overview",
+    "inconvenience": "余额高低不决定顺序，余额最多的组要自己找。",
+    "kind": "fix",
+    "source": "frontend/src/routes/billingOverview.tsx",
+    "marker": "ux-billov-sort"
+  },
+  {
+    "page": "/ops/approvals",
+    "inconvenience": "审批是一条平铺列表，点开一条没有旁边的审阅区。",
+    "kind": "radical",
+    "source": "frontend/src/routes/ops/approvals.tsx",
+    "marker": "ux-approvals-desk"
+  },
+  {
+    "page": "/ops/approvals",
+    "inconvenience": "已有状态和意图筛选，仍不能按申请人、Pod 或摘要里的词收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/approvals.tsx",
+    "marker": "ux-approvals-query"
+  },
+  {
+    "page": "/ops/shared",
+    "inconvenience": "共享文件树不能按文件名收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/shared.tsx",
+    "marker": "ux-shared-find"
+  },
+  {
+    "page": "/ops/shared",
+    "inconvenience": "文件和目录交错，目录不会先排。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/shared.tsx",
+    "marker": "ux-shared-dirs-first"
+  },
+  {
+    "page": "/threat-map",
+    "inconvenience": "已有模式和状态筛选，仍不能按 IP 或事件文本收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/threat-map.tsx",
+    "marker": "ux-threat-query"
+  },
+  {
+    "page": "/threat-map",
+    "inconvenience": "低危、信息和正常事件把需要看的攻击挤下去。",
+    "kind": "fix",
+    "source": "frontend/src/routes/threat-map.tsx",
+    "marker": "ux-threat-hide-benign"
+  },
+  {
+    "page": "/users",
+    "inconvenience": "用户表没有选中后的处理台，重置和删除只能在行内小按钮里找。",
+    "kind": "radical",
+    "source": "frontend/src/routes/users.tsx",
+    "marker": "ux-users-desk"
+  },
+  {
+    "page": "/users",
+    "inconvenience": "角色筛选要靠搜索框碰运气，不能按角色芯片收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/users.tsx",
+    "marker": "ux-users-role-chip"
+  },
+  {
+    "page": "/profile",
+    "inconvenience": "账户、安全和本机应用设置叠成一长页，改密码要滚过主题和安装。",
+    "kind": "radical",
+    "source": "frontend/src/routes/profile.tsx",
+    "marker": "ux-profile-panes"
+  },
+  {
+    "page": "/docs",
+    "inconvenience": "默认只给学习路径，知道标题时仍要顺着章节点开。",
+    "kind": "radical",
+    "source": "frontend/src/routes/docs.tsx",
+    "marker": "ux-docs-find"
+  },
+  {
+    "page": "/reports",
+    "inconvenience": "报告章节很长，不能按标题收窄。",
+    "kind": "fix",
+    "source": "frontend/src/routes/reports.tsx",
+    "marker": "ux-reports-find"
+  },
+  {
+    "page": "/reports",
+    "inconvenience": "要么全文铺开，要么没有章节索引可点进去。",
+    "kind": "fix",
+    "source": "frontend/src/routes/reports.tsx",
+    "marker": "ux-reports-expand"
+  },
+  {
+    "page": "shell",
+    "inconvenience": "侧栏分组一长串，找一个页面要顺着分组扫。",
+    "kind": "fix",
+    "source": "frontend/src/components/layout/Sidebar.tsx",
+    "marker": "ux-nav-filter"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "手机横过来宽度过了 768，底栏被收成侧栏，一手握着点不到常用页。",
+    "kind": "fix",
+    "source": "frontend/src/hooks/useMediaQuery.ts",
+    "marker": "ux-phone-landscape"
+  },
+  {
+    "page": "/users",
+    "inconvenience": "手机上宽表要横滑，左缘滑动又会拉开侧栏，行里的字被裁掉。",
+    "kind": "radical",
+    "source": "frontend/src/components/ui/DataTable.tsx",
+    "marker": "ux-table-cards"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "切到别的标签再回来，系统只显示 YatTerra，分不清停在哪一页。",
+    "kind": "fix",
+    "source": "frontend/src/routes/_layout.tsx",
+    "marker": "ux-page-title"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "系统开了减少动态效果，换页仍然左右滑，会晕。",
+    "kind": "fix",
+    "source": "frontend/src/routes/_layout.tsx",
+    "marker": "ux-reduced-motion"
+  },
+  {
+    "page": "/infra",
+    "inconvenience": "基础设施页很长，要换机器、加速器或存储时得先滚回顶部。",
+    "kind": "fix",
+    "source": "frontend/src/components/infra/InfraNav.tsx",
+    "marker": "ux-infra-sticky"
+  },
+  {
+    "page": "/infra",
+    "inconvenience": "手机打开总览先被本机四张饼图占满，集群机器要滑很久才看见。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/index.tsx",
+    "marker": "ux-infra-local-fold"
+  },
+  {
+    "page": "/profile",
+    "inconvenience": "改密码、填密钥时密码框不能临时显示，长串只能盲打。",
+    "kind": "fix",
+    "source": "frontend/src/components/ui/Input.tsx",
+    "marker": "ux-password-reveal"
+  },
+  {
+    "page": "/infra/gpu",
+    "inconvenience": "手机上每张卡一个小标签，卡一多就换行挤成一团，不好点中某一张。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/gpu.tsx",
+    "marker": "ux-gpu-phone-pick"
+  },
+  {
+    "page": "/infra/gpu",
+    "inconvenience": "一台机器没有加速器时只说没有，看不出是哪几台没上报。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/gpu.tsx",
+    "marker": "ux-gpu-empty-who"
+  },
+  {
+    "page": "/infra/host",
+    "inconvenience": "手机上每台机器一颗芯片，五台横着排，切换要点得很准。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/host.tsx",
+    "marker": "ux-host-phone-pick"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "总览上的显卡卡片不能点进那台机器的加速器页。",
+    "kind": "fix",
+    "source": "frontend/src/routes/index.tsx",
+    "marker": "ux-dash-gpu-open"
+  },
+  {
+    "page": "/pods/:name",
+    "inconvenience": "文件路径面包屑太矮，手指容易点到旁边的文件名。",
+    "kind": "fix",
+    "source": "frontend/src/components/pod/FilesTab.tsx",
+    "marker": "ux-files-crumb"
+  },
+  {
+    "page": "/pods/:name",
+    "inconvenience": "成员和所有者的移除按钮只在鼠标悬停时出现，触摸屏上找不到。",
+    "kind": "fix",
+    "source": "frontend/src/components/pod/MembersTab.tsx",
+    "marker": "ux-members-touch"
+  },
+  {
+    "page": "/pods/:name",
+    "inconvenience": "端口和环境变量的删除按钮同样只在悬停时出现，手机上删不掉。",
+    "kind": "fix",
+    "source": "frontend/src/components/pod/SettingsTab.tsx",
+    "marker": "ux-settings-touch"
+  },
+  {
+    "page": "/pods/:name",
+    "inconvenience": "部署的启动、停止、日志和删除跟标题挤在一行，手机上按钮不到一个指头高。",
+    "kind": "fix",
+    "source": "frontend/src/components/pod/DeploysTab.tsx",
+    "marker": "ux-deploy-touch"
+  },
+  {
+    "page": "/pods/:name",
+    "inconvenience": "复制 SSH 配置后没有成功提示，不知道剪贴板里有没有写上。",
+    "kind": "fix",
+    "source": "frontend/src/routes/pods/$name.tsx",
+    "marker": "ux-ssh-copied"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "侧栏筛选框在手机上不到一行高，点进去经常点到下面的菜单。",
+    "kind": "fix",
+    "source": "frontend/src/components/layout/Sidebar.tsx",
+    "marker": "ux-nav-filter-tap"
+  },
+  {
+    "page": "/infra/fleet",
+    "inconvenience": "机器对比加载失败只剩一句错误，没有就地重试。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/fleet.tsx",
+    "marker": "ux-fleet-retry"
+  },
+  {
+    "page": "/infra/fleet",
+    "inconvenience": "图表和表格的切换按钮在手机上太矮。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/fleet.tsx",
+    "marker": "ux-fleet-view-tap"
+  },
+  {
+    "page": "/docs",
+    "inconvenience": "文档里的命令块不能一键复制，要自己长按选择。",
+    "kind": "fix",
+    "source": "frontend/src/routes/docs.tsx",
+    "marker": "ux-docs-copy"
+  },
+  {
+    "page": "/pods",
+    "inconvenience": "创建 Pod 时看不出这次额度上限，超了才在提交后失败。",
+    "kind": "fix",
+    "source": "frontend/src/routes/pods/index.tsx",
+    "marker": "ux-pods-quota"
+  },
+  {
+    "page": "/profile",
+    "inconvenience": "通知被系统拒绝后只写被拒绝，不知道要去网站设置里重新允许。",
+    "kind": "fix",
+    "source": "frontend/src/routes/profile.tsx",
+    "marker": "ux-profile-push-why"
+  },
+  {
+    "page": "/ops/approvals",
+    "inconvenience": "待审批的通过和拒绝按钮在手机上挤在一行，容易误点。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/approvals.tsx",
+    "marker": "ux-approvals-tap"
+  },
+  {
+    "page": "/billing",
+    "inconvenience": "充值卡片上的大号金额分不清是支付额还是到账额。",
+    "kind": "fix",
+    "source": "frontend/src/routes/billing.tsx",
+    "marker": "ux-billing-amount"
+  },
+  {
+    "page": "/infra/storage",
+    "inconvenience": "对象存储地址的复制按钮在手机上不到一个指头宽。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/storage.tsx",
+    "marker": "ux-storage-copy-tap"
+  },
+  {
+    "page": "/console",
+    "inconvenience": "手机横屏时提示条仍按宽屏贴在右上角，容易被刘海挡住。",
+    "kind": "fix",
+    "source": "frontend/src/components/ui/Toast.tsx",
+    "marker": "ux-toast-phone"
+  },
+  {
+    "page": "/infra/databases",
+    "inconvenience": "复制数据库连接串的按钮在手机上太矮。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/databases.tsx",
+    "marker": "ux-db-copy-tap"
+  },
+  {
+    "page": "/ops",
+    "inconvenience": "运维首页看到本机异常后，没有直接入口去看这台机器的磁盘和负载。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/index.tsx",
+    "marker": "ux-ops-host-link"
+  },
+  {
+    "page": "/ops/audit",
+    "inconvenience": "审计导出按钮在没有记录时也能点，点了才知道是空的。",
+    "kind": "fix",
+    "source": "frontend/src/routes/ops/audit.tsx",
+    "marker": "ux-audit-export-why"
+  },
+  {
+    "page": "/infra/proxy",
+    "inconvenience": "反代端口框不说明要填 Pod 内端口，容易填成公网端口。",
+    "kind": "fix",
+    "source": "frontend/src/routes/infra/proxy.tsx",
+    "marker": "ux-proxy-port"
+  }
+]
