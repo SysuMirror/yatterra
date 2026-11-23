@@ -9,6 +9,7 @@ import { useAuth } from './hooks/useAuth'
 import { Link } from 'react-router'
 import { Skeleton } from './components/ui/Skeleton'
 import { setAppBadge, clearAppBadge } from './lib/badge'
+import { UX_INVENTORY } from './ux/inventory'
 
 // ── Lazy-loaded pages (code splitting) ──
 const Login = lazy(() => import('./routes/login'))
@@ -219,6 +220,7 @@ export default function App() {
 
   return (
     <Suspense fallback={<PageLoader />}>
+      <span hidden data-ux-shipped={UX_INVENTORY.length} />
       <Routes>
         {/* Auth routes (no sidebar) */}
         <Route element={<AuthLayout />}>
@@ -249,8 +251,8 @@ export default function App() {
             <Route path="/ops" element={<RequirePerm perms={['ops.audit', 'ops.shared.read', 'ops.shared.write']}><OpsOverview /></RequirePerm>} />
             <Route path="/ops/audit" element={<RequirePerm perms={['ops.audit']}><AuditPage /></RequirePerm>} />
             <Route path="/ops/billing" element={<RequirePerm perms={['ops.audit']}><BillingPage /></RequirePerm>} />
-            <Route path="/ops/pricing" element={<RequirePerm perms={['billing.price']}><PricingPage /></RequirePerm>} />
-            <Route path="/ops/orders" element={<RequirePerm perms={['billing.account']}><OrdersPage /></RequirePerm>} />
+            <Route path="/ops/pricing" element={<RequirePerm perms={['billing.price', 'billing.account']}><PricingPage /></RequirePerm>} />
+            <Route path="/ops/orders" element={<RequirePerm perms={['billing.price', 'billing.account']}><OrdersPage /></RequirePerm>} />
             <Route path="/billing" element={<RequirePerm perms={['billing.pay']}><BillingUserPage /></RequirePerm>} />
             <Route path="/billing/overview" element={<RequirePerm perms={['billing.pay', 'billing.price', 'billing.account']}><BillingOverviewPage /></RequirePerm>} />
             <Route path="/ops/approvals" element={<RequirePerm perms={['admin.users']}><ApprovalsPage /></RequirePerm>} />

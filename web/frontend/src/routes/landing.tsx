@@ -702,7 +702,8 @@ export default function Landing() {
         </div>
       </header>
       <main id="terra-main" className="terra-main">
-        <section ref={heroRef} className="terra-hero" onPointerMove={onHeroMove} onPointerLeave={onHeroLeave}>
+
+        <section id="hero" ref={heroRef} className="terra-hero" style={{ scrollMarginTop: 96 }} onPointerMove={onHeroMove} onPointerLeave={onHeroLeave}>
           <div className="terra-hero-grid" aria-hidden="true" />
           <div className="terra-container terra-hero-layout">
             <div className="terra-hero-copy">
@@ -729,7 +730,7 @@ export default function Landing() {
           </div>
         </section>
 
-        <section className="terra-section terra-explorer-section">
+        <section id="explorer" className="terra-section terra-explorer-section">
           <div className="terra-container">
             <Reveal><StartingPointExplorer /></Reveal>
           </div>
@@ -773,7 +774,7 @@ export default function Landing() {
           </div>
         </section>
 
-        <section className="terra-section terra-section-tinted">
+        <section id="path" className="terra-section terra-section-tinted">
           <div className="terra-container">
             <SectionIntro
               eyebrow={c.thirdPath.eyebrow}
@@ -845,7 +846,7 @@ export default function Landing() {
           </div>
         </section>
 
-        <section className="terra-closing">
+        <section id="closing" className="terra-closing" style={{ scrollMarginTop: 96 }}>
           <div className="terra-container">
             <Reveal><div className="terra-closing-symbol" aria-hidden="true"><span /><span /><Orbit size={40} /></div></Reveal>
             <Reveal delay={.06}><RootsIllustration /></Reveal>

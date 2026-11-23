@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Link, useLocation } from 'react-router'
 import { motion, AnimatePresence, useMotionValue, animate } from 'framer-motion'
 import { useDrag } from '@use-gesture/react'
@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Box, Server, HardDrive, Database, Globe, Monitor, Network,
   Workflow, Plug, Bot, Code2, ShieldCheck, FolderOpen, Users, User,
   BookOpen, Swords, ChevronLeft, ChevronRight, X, ShieldQuestion, Receipt, ScanSearch,
-  Wallet, Coins, CreditCard,
+  Wallet, Coins, CreditCard, BarChart3,
 } from 'lucide-react'
 import { useSidebarStore } from '@/stores/sidebar'
 import { openPodPicker } from '@/ide/PodPicker'
@@ -42,9 +42,9 @@ const navGroups: NavGroup[] = [
     label: '基础设施',
     to: '/infra',
     items: [
-      { to: '/infra/host', icon: <Server size={18} />, label: '主机', perm: 'infra.host.view' },
-      { to: '/infra/fleet', icon: <Network size={18} />, label: '集群', perm: 'infra.host.view' },
-      { to: '/infra/gpu', icon: <Monitor size={18} />, label: 'GPU', perm: 'infra.host.view' },
+      { to: '/infra/host', icon: <Server size={18} />, label: '机器', perm: 'infra.host.view' },
+      { to: '/infra/gpu', icon: <Monitor size={18} />, label: '加速器', perm: 'infra.host.view' },
+      { to: '/infra/fleet', icon: <Network size={18} />, label: '对比', perm: 'infra.host.view' },
       { to: '/infra/storage', icon: <HardDrive size={18} />, label: '存储', perm: 'infra.storage.read' },
       { to: '/infra/databases', icon: <Database size={18} />, label: '数据库', perm: 'infra.db.read' },
       { to: '/infra/proxy', icon: <Globe size={18} />, label: '子域名', perm: 'infra.proxy' },
@@ -65,7 +65,7 @@ const navGroups: NavGroup[] = [
     to: '/ops',
     items: [
       { to: '/ops/audit', icon: <ShieldCheck size={18} />, label: '审计', perm: 'ops.audit' },
-      { to: '/ops/billing', icon: <Receipt size={18} />, label: '计费', perm: 'ops.audit' },
+      { to: '/ops/billing', icon: <BarChart3 size={18} />, label: '用量', perm: 'ops.audit' },
       { to: '/ops/approvals', icon: <ShieldQuestion size={18} />, label: 'AI 审批', perm: ['admin.users'] },
       { to: '/ops/shared', icon: <FolderOpen size={18} />, label: '共享', perm: 'ops.shared.read' },
       { to: '/ops/scan', icon: <ScanSearch size={18} />, label: '安全巡检', perm: 'ops.scan.read' },
@@ -76,9 +76,10 @@ const navGroups: NavGroup[] = [
     label: '计费',
     to: '/billing/overview',
     items: [
+      { to: '/billing/overview', icon: <Receipt size={18} />, label: '计费总览', perm: ['billing.pay', 'billing.price', 'billing.account'] },
       { to: '/billing', icon: <Wallet size={18} />, label: '钱包与额度', perm: 'billing.pay' },
-      { to: '/ops/pricing', icon: <Coins size={18} />, label: '计费设置', perm: 'billing.price' },
-      { to: '/ops/orders', icon: <CreditCard size={18} />, label: '充值商品', perm: 'billing.account' },
+      { to: '/ops/pricing', icon: <Coins size={18} />, label: '计费设置', perm: ['billing.price', 'billing.account'] },
+      { to: '/ops/orders', icon: <CreditCard size={18} />, label: '充值商品', perm: ['billing.price', 'billing.account'] },
     ],
   },
   {
@@ -101,9 +102,25 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
   const visibleGroups = navGroups
     .map((group) => ({ ...group, items: group.items.filter((i) => allowed(i.perm)) }))
     .filter((group) => group.items.length > 0)
+  const [navQuery, setNavQuery] = useState('')
+  const filteredGroups = useMemo(() => {
+    const q = navQuery.trim().toLowerCase()
+    if (!q) return visibleGroups
+    return visibleGroups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) => `${group.label ?? ''} ${item.label} ${item.to}`.toLowerCase().includes(q)),
+      }))
+      .filter((group) => group.items.length > 0)
+  }, [navQuery, visibleGroups])
   return (
     <nav className="flex-1 py-3" aria-label="主导航">
-      {visibleGroups.map((group, gi) => (
+      {!collapsed && (
+        <div className="px-3 pb-2">
+          <input data-ux="ux-nav-filter" data-tap="ux-nav-filter-tap" value={navQuery} onChange={(e) => setNavQuery(e.target.value)} placeholder="筛选导航" aria-label="筛选导航" className="h-8 w-full rounded-md border border-black/10 bg-transparent px-2 text-xs" />
+        </div>
+      )}
+      {filteredGroups.map((group, gi) => (
         <div key={gi}>
           {group.label && (
             <div
@@ -156,7 +173,7 @@ function NavList({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (
               </NavLink>
             )
           })}
-          {gi < visibleGroups.length - 1 && group.label && (
+          {gi < filteredGroups.length - 1 && group.label && (
             <div className={cn('mx-4 my-2 h-px bg-black/[0.06] transition-opacity duration-150', collapsed && 'opacity-0')} />
           )}
         </div>

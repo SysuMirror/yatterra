@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Bot, Workflow, Plug, ChevronRight, Play, Square, Plus, Clock, Activity, TrendingUp } from 'lucide-react'
@@ -48,6 +49,18 @@ export default function DevOverview() {
   })
   const sessions = sessionsRaw ?? []
 
+  const [overviewFind, setOverviewFind] = useState('')
+  const overviewQuery = overviewFind.trim().toLowerCase()
+  const overviewActive = overviewQuery !== ''
+  const hit = (value: unknown) => overviewQuery !== '' && String(value ?? '').toLowerCase().includes(overviewQuery)
+  const take = <T,>(rows: T[], n: number) => (overviewActive ? rows : rows.slice(0, n))
+  const shownSessions = sessions.filter((s: any) =>
+    !overviewQuery || hit(s.title) || hit(s.id) || hit(s.session_id))
+  const shownMcp = mcpServers.filter((s: any) => !overviewQuery || hit(s.name) || hit(s.id))
+  const shownAgents = agents.filter((a: any) =>
+    !overviewQuery || hit(a.label) || hit(a.name) || hit(a.id))
+  const shownHarnesses = (harnesses ?? []).filter((name: string) => !overviewQuery || hit(name))
+
   // LLM usage summary
   const { data: llmUsage } = useQuery<any>({
     queryKey: ['llm-usage-summary'],
@@ -92,6 +105,17 @@ export default function DevOverview() {
         )}
       </div>
 
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <input
+          data-ux="ux-dev-find"
+          value={overviewFind}
+          onChange={(e) => setOverviewFind(e.target.value)}
+          placeholder="筛选名称、标题或 ID"
+          aria-label="筛选开发概览"
+          className="h-8 w-full max-w-xs rounded-md border border-black/10 bg-transparent px-2 text-xs"
+        />
+      </div>
+
       {/* Recent agent sessions */}
       {sessions.length > 0 && (
         <Card data-onboarding-target="dev-sessions" padding="lg" className="mb-6">
@@ -99,14 +123,15 @@ export default function DevOverview() {
             <div className="flex items-center gap-2">
               <Clock size={16} className="text-accent" />
               <h2 className="text-sm font-semibold">最近会话</h2>
-              <Badge variant="muted">{sessions.length} 条</Badge>
+              <Badge variant="muted">{shownSessions.length} 条</Badge>
             </div>
             <Link to="/dev/harness" className="text-xs text-accent hover:underline flex items-center gap-1">
               查看全部 <ChevronRight size={12} />
             </Link>
           </div>
+          {shownSessions.length > 0 ? (
           <div className="space-y-2">
-            {sessions.slice(0, 5).map((s: any) => (
+            {take(shownSessions, 5).map((s: any) => (
               <div key={s.id || s.session_id} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <span className="text-lg flex-shrink-0">{s.mode === 'ops' ? '🔧' : s.mode === 'build' ? '💻' : '🤖'}</span>
                 <span className="text-sm font-medium flex-1 min-w-0 truncate">{s.title || s.mode || 'New'}</span>
@@ -117,6 +142,9 @@ export default function DevOverview() {
               </div>
             ))}
           </div>
+          ) : (
+            <p className="text-sm text-muted py-4 text-center">无匹配会话</p>
+          )}
         </Card>
       )}
 
@@ -127,14 +155,15 @@ export default function DevOverview() {
             <div className="flex items-center gap-2">
               <Plug size={16} className="text-warn" />
               <h2 className="text-sm font-semibold">MCP 服务器</h2>
-              <Badge variant="muted">{mcpServers.length} 台</Badge>
+              <Badge variant="muted">{shownMcp.length} 台</Badge>
             </div>
             <Link to="/dev/mcp" className="text-xs text-accent hover:underline flex items-center gap-1">
               查看全部 <ChevronRight size={12} />
             </Link>
           </div>
+          {shownMcp.length > 0 ? (
           <div className="space-y-2">
-            {mcpServers.slice(0, 6).map((s: any) => (
+            {take(shownMcp, 6).map((s: any) => (
               <div key={s.id || s.name} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <Plug size={14} className={s.enabled !== false ? 'text-ok' : 'text-muted'} />
                 <span className="text-sm font-medium flex-1 min-w-0 truncate">{s.name}</span>
@@ -146,10 +175,13 @@ export default function DevOverview() {
                 )}
               </div>
             ))}
-            {mcpServers.length > 6 && (
+            {!overviewActive && mcpServers.length > 6 && (
               <p className="text-xs text-muted text-center pt-1">还有 {mcpServers.length - 6} 台…</p>
             )}
           </div>
+          ) : (
+            <p className="text-sm text-muted py-4 text-center">无匹配 MCP</p>
+          )}
         </Card>
       )}
 
@@ -159,15 +191,15 @@ export default function DevOverview() {
           <div className="flex items-center gap-2">
             <Bot size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">Agent</h2>
-            <Badge variant="muted">{agents.length} 个</Badge>
+            <Badge variant="muted">{shownAgents.length} 个</Badge>
           </div>
           <Link to="/dev/harness" className="text-xs text-accent hover:underline flex items-center gap-1">
             查看全部 <ChevronRight size={12} />
           </Link>
         </div>
-        {agents.length > 0 ? (
+        {shownAgents.length > 0 ? (
           <div className="space-y-2">
-            {agents.slice(0, 5).map((a: any) => (
+            {take(shownAgents, 5).map((a: any) => (
               <div key={a.id || a.name} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <span className="text-lg flex-shrink-0">{a.icon || '🤖'}</span>
                 <span className="text-sm font-medium flex-1 min-w-0 truncate">{a.label || a.name || a.id}</span>
@@ -176,12 +208,12 @@ export default function DevOverview() {
                 </Badge>
               </div>
             ))}
-            {agents.length > 5 && (
+            {!overviewActive && agents.length > 5 && (
               <p className="text-xs text-muted text-center pt-1">还有 {agents.length - 5} 个…</p>
             )}
           </div>
         ) : (
-          <p className="text-sm text-muted py-4 text-center">暂无 Agent</p>
+          <p className="text-sm text-muted py-4 text-center">{agents.length ? '无匹配 Agent' : '暂无 Agent'}</p>
         )}
       </Card>
 
@@ -224,27 +256,27 @@ export default function DevOverview() {
           <div className="flex items-center gap-2">
             <Workflow size={16} className="text-ok" />
             <h2 className="text-sm font-semibold">编排流程</h2>
-            <Badge variant="muted">{harnesses?.length ?? 0} 个</Badge>
+            <Badge variant="muted">{shownHarnesses.length} 个</Badge>
           </div>
           <Link to="/dev/harness" className="text-xs text-accent hover:underline flex items-center gap-1">
             查看全部 <ChevronRight size={12} />
           </Link>
         </div>
-        {harnesses && harnesses.length > 0 ? (
+        {shownHarnesses.length > 0 ? (
           <div className="space-y-2">
-            {harnesses.slice(0, 5).map((name: string) => (
+            {take(shownHarnesses, 5).map((name: string) => (
               <div key={name} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <Workflow size={14} className="text-muted flex-shrink-0" />
                 <span className="text-sm font-medium flex-1 min-w-0 truncate">{name}</span>
                 <Badge variant="muted" className="text-[10px]">-</Badge>
               </div>
             ))}
-            {harnesses.length > 5 && (
-              <p className="text-xs text-muted text-center pt-1">还有 {harnesses.length - 5} 个…</p>
+            {!overviewActive && (harnesses?.length ?? 0) > 5 && (
+              <p className="text-xs text-muted text-center pt-1">还有 {(harnesses?.length ?? 0) - 5} 个…</p>
             )}
           </div>
         ) : (
-          <p className="text-sm text-muted py-4 text-center">暂无编排</p>
+          <p className="text-sm text-muted py-4 text-center">{harnesses && harnesses.length > 0 ? '无匹配编排' : '暂无编排'}</p>
         )}
       </Card>
 

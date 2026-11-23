@@ -8,13 +8,15 @@ import { useAuth } from '@/hooks/useAuth'
 
 // page → perm (null = login only)
 export const PAGE_PERMS: Record<string, string | null> = {
-  dashboard: 'infra.host.view',
+  // 平台级洞察 = admin-only（镜像 api/ai.py INSIGHT_PAGE_PERMS）。页面本身可能
+  // 对 user 只读可见，但页内 AI 洞察只对 admin。
+  dashboard: 'admin.users',
   pod: 'group.view',
   pod_ide: 'group.view',
-  gpu: 'infra.host.view',
-  host: 'infra.host.view',
-  infra: 'infra.host.view',
-  fleet: 'infra.host.view',
+  gpu: 'admin.users',
+  host: 'admin.users',
+  infra: 'admin.users',
+  fleet: 'admin.users',
   storage: 'infra.storage.read',
   databases: 'infra.db.read',
   db: 'infra.db.read',

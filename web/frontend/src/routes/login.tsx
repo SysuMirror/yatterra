@@ -62,6 +62,8 @@ function NetworkArt() {
 export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [step, setStep] = useState<1 | 2>(1)
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [health, setHealth] = useState<'checking' | 'ok' | 'error'>('checking')
@@ -115,6 +117,15 @@ export default function Login() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (step === 1) {
+      if (!username.trim()) {
+        setError(c.loginPage.userPlaceholder)
+        return
+      }
+      setError('')
+      setStep(2)
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -255,25 +266,39 @@ export default function Login() {
             </motion.div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <label className="block">
-              <span className="mb-2 block text-xs font-medium tracking-wide text-slate-300">{c.loginPage.userLabel}</span>
-              <div className="relative">
-                <UserRound size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input required type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus placeholder={c.loginPage.userPlaceholder} className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
-              </div>
-            </label>
+          <form onSubmit={handleSubmit} data-ux="ux-login-steps" className="space-y-4">
+            {step === 2 && (
+              <button type="button" onClick={() => setStep(1)} className="text-left text-xs text-cyan-100/80 hover:text-cyan-50">
+                更换账号 · {username}
+              </button>
+            )}
+            {step === 1 && (
+              <label className="block">
+                <span className="mb-2 block text-xs font-medium tracking-wide text-slate-300">{c.loginPage.userLabel}</span>
+                <div className="relative">
+                  <UserRound size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input required type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus placeholder={c.loginPage.userPlaceholder} className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
+                </div>
+              </label>
+            )}
 
-            <label className="block">
-              <span className="mb-2 block text-xs font-medium tracking-wide text-slate-300">{c.loginPage.passLabel}</span>
-              <div className="relative">
-                <KeyRound size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={c.loginPage.passPlaceholder} className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
-              </div>
-            </label>
+            {step === 2 && (
+              <label className="block">
+                <span className="mb-2 flex items-center justify-between text-xs font-medium tracking-wide text-slate-300">
+                  {c.loginPage.passLabel}
+                  <button type="button" data-ux="ux-login-reveal" className="text-cyan-100/80" onClick={() => setShowPassword((v) => !v)}>
+                    {showPassword ? '隐藏密码' : '显示密码'}
+                  </button>
+                </span>
+                <div className="relative">
+                  <KeyRound size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input required type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} autoFocus placeholder={c.loginPage.passPlaceholder} className="h-12 w-full rounded-xl pl-10 pr-3.5 text-sm outline-none transition duration-200 placeholder:text-slate-600 focus:border-cyan-200/60 focus:bg-[#121e3a] focus:shadow-[0_0_0_4px_rgba(103,232,249,.09)]" style={inputStyle} />
+                </div>
+              </label>
+            )}
 
             <motion.button type="submit" disabled={loading} className="group flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-200 to-blue-300 text-sm font-semibold text-[#071021] shadow-[0_10px_28px_rgba(91,195,255,.16)] transition duration-200 hover:brightness-110 disabled:cursor-wait disabled:opacity-55" whileTap={{ scale: .975 }}>
-              {loading ? c.loginPage.submitting : c.loginPage.submit}
+              {step === 1 ? '继续' : loading ? c.loginPage.submitting : c.loginPage.submit}
               {!loading && <ArrowUpRight size={16} className="transition-transform duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />}
             </motion.button>
           </form>

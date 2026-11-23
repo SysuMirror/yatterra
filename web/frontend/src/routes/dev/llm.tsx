@@ -150,6 +150,7 @@ export default function DevLlm() {
   }
 
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
+  const [providerFind, setProviderFind] = useState('')
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => api.post('/llm/providers/delete', { id }),
@@ -173,6 +174,10 @@ export default function DevLlm() {
   const componentData = usageDetail?.component ?? []
   const topUsers = usageDetail?.top_users ?? []
   const recent = usageDetail?.recent ?? []
+  const providerQuery = providerFind.trim().toLowerCase()
+  const shownProviders = (providers ?? []).filter((p: any) => !providerQuery || String(p?.name ?? '').toLowerCase().includes(providerQuery))
+  const shownTop = topUsers.slice(0, 10)
+  const shownRecent = recent.slice(0, 20)
 
   return (
     <>
@@ -191,6 +196,17 @@ export default function DevLlm() {
         />
         </div>
       )}
+
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input
+          data-ux="ux-llm-providers"
+          value={providerFind}
+          onChange={(e) => setProviderFind(e.target.value)}
+          placeholder="筛选 Provider"
+          aria-label="筛选 Provider"
+          className="h-8 w-full max-w-xs rounded-md border border-black/10 bg-transparent px-2 text-xs"
+        />
+      </div>
 
       {isLoading ? (
         <SkeletonTable rows={5} />
@@ -235,9 +251,9 @@ export default function DevLlm() {
               </div>
             )},
           ]}
-          data={providers ?? []}
+          data={shownProviders}
           keyFn={(r: any) => r.id ?? r.name}
-          empty={<div className="flex flex-col items-center gap-2 py-8"><Bot size={28} className="text-muted/40" /><p className="text-sm text-muted">暂无 LLM 服务</p></div>}
+          empty={<div className="flex flex-col items-center gap-2 py-8"><Bot size={28} className="text-muted/40" /><p className="text-sm text-muted">{providerQuery ? '无匹配 Provider' : '暂无 LLM 服务'}</p></div>}
         />
       </Card>
       )}
@@ -311,10 +327,11 @@ export default function DevLlm() {
           <div className="flex items-center gap-2 mb-4">
             <Users size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">用量排行</h2>
-            <Badge variant="muted">Top {topUsers.length}</Badge>
+            <Badge variant="muted">Top {shownTop.length}</Badge>
           </div>
           <div className="space-y-2">
-            {topUsers.slice(0, 10).map((u: any, i: number) => (
+            {shownTop.length === 0 && <p className="text-sm text-muted py-4 text-center">无匹配用量</p>}
+            {shownTop.map((u: any, i: number) => (
               <div key={u.user ?? i} className="flex items-center gap-3 p-2 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <span className="text-xs text-muted w-5 text-right tnum">{i + 1}</span>
                 <span className="text-sm font-medium flex-1 min-w-0 truncate">{u.user_label || u.user}</span>
@@ -334,7 +351,8 @@ export default function DevLlm() {
             <h2 className="text-sm font-semibold">最近请求</h2>
           </div>
           <div className="space-y-1.5">
-            {recent.slice(0, 20).map((r: any, i: number) => (
+            {shownRecent.length === 0 && <p className="text-sm text-muted py-4 text-center">无匹配请求</p>}
+            {shownRecent.map((r: any, i: number) => (
               <div key={i} className="flex items-center gap-3 p-2 rounded-lg hover:bg-black/[0.02] text-xs">
                 <span className="text-muted tnum w-[140px] flex-shrink-0">{formatDatetime(r.ts || r.time)}</span>
                 <span className="font-medium flex-1 min-w-0 truncate">{r.user_label || r.user || r.component || '—'}</span>

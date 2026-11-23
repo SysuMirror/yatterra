@@ -3,7 +3,7 @@
  * 有最近打开的 pod 且仍可访问 → 直达其 IDE;否则列出 pod 供选择。
  * 真正的 IDE 在 /pods/:name/ide(IdeShell)。
  */
-import { useEffect } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Code2, ChevronRight } from 'lucide-react'
@@ -23,20 +23,20 @@ export default function IdeLandingPage() {
   const navigate = useNavigate()
   const { data, isLoading } = useQuery<{ pods: Pod[] }>({
     queryKey: ['ide-pods'],
-    queryFn: () => api.get('/pods'),
+    queryFn: () => api.get('/pods?per_page=200'),
   })
   const aiAllowed = usePageAiAllowed('pod_ide')
 
+  const [query, setQuery] = useState('')
   const pods = data?.pods ?? []
   const lastPod = (() => {
     try { return localStorage.getItem(LAST_POD_KEY) } catch { return null }
   })()
   const lastOk = lastPod && pods.some((p) => p.name === lastPod)
-
-  // 上次的 pod 仍在列表里 → 直达(等列表加载完再判定,避免误跳)
-  useEffect(() => {
-    if (lastOk) navigate(`/pods/${lastPod}/ide`, { replace: true })
-  }, [lastOk, lastPod, navigate])
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return pods.filter((pod) => !q || pod.name.toLowerCase().includes(q) || (pod.image || '').toLowerCase().includes(q))
+  }, [pods, query])
 
   return (
     <div className="p-4 md:p-6 max-w-3xl mx-auto">
@@ -47,7 +47,16 @@ export default function IdeLandingPage() {
         <Code2 size={20} className="text-primary" />
         <h1 className="text-lg font-semibold">Web IDE</h1>
       </div>
-      <p className="text-sm text-muted-foreground mb-4">选择一个 Pod 进入在线开发环境</p>
+      <p className="text-sm text-muted-foreground mb-4">选择一个 Pod 进入在线开发环境。上次打开的环境留在这里，不会自动跳走。</p>
+      <div data-ux="ux-ide-chooser" className="mb-4 space-y-2">
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="按名称或镜像筛选" className="h-10 w-full rounded-lg border border-border bg-transparent px-3 text-sm" />
+        {lastOk && (
+          <button type="button" className="flex w-full items-center justify-between rounded-lg bg-primary/10 px-4 py-3 text-left" onClick={() => navigate(`/pods/${lastPod}/ide`)}>
+            <span>继续上次的 {lastPod}</span>
+            <ChevronRight size={16} />
+          </button>
+        )}
+      </div>
       {isLoading ? (
         <div className="text-sm text-muted-foreground py-8 text-center">加载中…</div>
       ) : pods.length === 0 ? (
@@ -56,7 +65,7 @@ export default function IdeLandingPage() {
         </div>
       ) : (
         <div className="grid gap-2">
-          {pods.map((pod) => (
+          {shown.map((pod) => (
             <Link
               key={pod.name}
               to={`/pods/${pod.name}/ide`}

@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router'
-import { Activity, Cpu, HardDrive, Server, Box, Users, Plus, Bot, Swords, AlertTriangle, Shield, Settings, Plug, Workflow, FolderOpen, ChevronRight } from 'lucide-react'
+import { Cpu, HardDrive, MemoryStick, Server, Box, Users, Plus, Bot, Swords, AlertTriangle, Shield, Settings, Plug, Workflow, FolderOpen, ChevronRight } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { MetricCard } from '@/components/domain/MetricCard'
 import { Badge } from '@/components/ui/Badge'
@@ -20,6 +20,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useToastStore } from '@/stores/toast'
 import { formatBytes, podStatusLabel } from '@/lib/format'
 import { fleetCards } from '@/lib/fleetMachines'
+import { consoleStatIcons, type MarkIcon } from '@/lib/hostCharts'
 
 interface GpuInfo {
   index: number
@@ -63,14 +64,20 @@ interface DashboardData {
   podList: PodRow[]
 }
 
+function statIcon(name: MarkIcon) {
+  if (name === 'cpu') return <Cpu size={15} />
+  if (name === 'memory') return <MemoryStick size={15} />
+  return <HardDrive size={15} />
+}
+
 export default function Dashboard() {
+  const statMarks = consoleStatIcons()
   const toast = useToastStore((s) => s.add)
   const { hasPerm } = useAuth()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [joinTarget, setJoinTarget] = useState<string | null>(null)
   const [joinReason, setJoinReason] = useState('')
-  const [hideRunning, setHideRunning] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery<DashboardData>({
     queryKey: ['dashboard'],
@@ -154,8 +161,7 @@ export default function Dashboard() {
 
   const d = data
   const hasAlert = (d?.pods.failed ?? 0) > 0 || (d?.metrics.disk ?? 0) > 90
-  const attentionPods = (d?.podList ?? []).filter((p) => p.status === 'Failed' || p.status === 'Stopped')
-  const listedPods = (d?.podList ?? []).filter((p) => !hideRunning || p.status !== 'Running')
+  const listedPods = d?.podList ?? []
 
   // Join pod handler
   const handleJoin = (name: string) => {
@@ -240,9 +246,9 @@ export default function Dashboard() {
         ) : (
           <>
             <MetricCard icon={<Box size={15} />} label="运行 Pod" value={d?.pods.running ?? 0} suffix={`/ ${d?.pods.total ?? 0}`} />
-            <MetricCard icon={<Cpu size={15} />} label="CPU 负载 (1m)" value={(d?.metrics.cpu ?? 0).toFixed(2)} />
-            <MetricCard icon={<HardDrive size={15} />} label="内存使用" value={Math.round(d?.metrics.mem ?? 0)} suffix="%" percent={d?.metrics.mem} />
-            <MetricCard icon={<Activity size={15} />} label={d?.metrics.diskMount ? `磁盘峰值 ${d.metrics.diskMount}` : '磁盘'} value={Math.round(d?.metrics.disk ?? 0)} suffix="%" percent={d?.metrics.disk} />
+            <MetricCard icon={statIcon(statMarks.cpu.icon)} label={statMarks.cpu.label} value={(d?.metrics.cpu ?? 0).toFixed(2)} />
+            <MetricCard icon={statIcon(statMarks.memory.icon)} label={statMarks.memory.label} value={Math.round(d?.metrics.mem ?? 0)} suffix="%" percent={d?.metrics.mem} />
+            <MetricCard icon={statIcon(statMarks.disk.icon)} label={d?.metrics.diskMount ? `磁盘峰值 ${d.metrics.diskMount}` : statMarks.disk.label} value={Math.round(d?.metrics.disk ?? 0)} suffix="%" percent={d?.metrics.disk} />
             <MetricCard icon={<Server size={15} />} label="加速器" value={d?.metrics.gpu ?? 0} suffix="块" />
           </>
         )}
@@ -356,52 +362,19 @@ export default function Dashboard() {
         </section>
       )}
 
-      {!isLoading && (
-        <section data-ux="ux-console-attention" className="glass-card rounded-2xl p-5 mb-6">
-          <h2 className="text-sm font-semibold mb-3">失败与已停止</h2>
-          {attentionPods.length === 0 ? (
-            <p className="text-sm text-muted">没有失败或已停止的 Pod</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {attentionPods.map((p) => (
-                <button
-                  key={p.name}
-                  type="button"
-                  className="rounded-md border border-black/10 px-2 py-1 text-xs"
-                  onClick={() => navigate(`/pods/${p.name}`)}
-                >
-                  {p.name} · {podStatusLabel(p.status)}
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
       {/* Pod list */}
       {(d?.podList?.length ?? 0) > 0 && (
         <section data-onboarding-target="dashboard-pods" className="glass-card rounded-2xl p-5 mb-6">
           <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-semibold">Pod 列表</h2>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-ux="ux-console-quiet"
-                aria-pressed={hideRunning}
-                className="rounded-md border border-black/10 px-2 py-1 text-xs"
-                onClick={() => setHideRunning((v) => !v)}
-              >
-                {hideRunning ? '显示运行中' : '隐藏运行中'}
-              </button>
-              <span className="text-xs text-muted">{listedPods.length} 个</span>
-            </div>
+            <span className="text-xs text-muted">{listedPods.length} 个</span>
           </div>
           <DataTable
             columns={podCols}
             data={listedPods}
             keyFn={(r) => r.name}
             onRowClick={(r) => navigate(`/pods/${r.name}`)}
-            empty={<span className="text-sm text-muted">{hideRunning ? '没有非运行中的 Pod' : '暂无 Pod'}</span>}
+            empty={<span className="text-sm text-muted">暂无 Pod</span>}
           />
         </section>
       )}

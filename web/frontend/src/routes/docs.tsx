@@ -175,7 +175,7 @@ const sections: DocSection[] = [
                 ['凭证', '数据库 / MinIO 连接信息'],
                 ['部署', '应用部署配置与运行管理'],
                 ['成员', 'Pod 成员邀请 / 审批 / 移除'],
-                ['设置', 'Pod 配置、资源调整、重置密码'],
+                ['设置', '资源、环境变量、改名、换节点、重置密码'],
               ],
             })}
           </>
@@ -278,6 +278,28 @@ exec python app.py`)}
             {P(<>「日志」是 Pod 容器的 stdout/stderr；部署进程的启动输出通常也会出现在部署日志。应用若使用上例的 {CODE('FileHandler')}，{CODE('/home/cloud/logs/app.log')} 会出现在「应用日志」，平台按该目录收集以 {CODE('*.log')} 结尾的文件。两者是不同来源；写文件不会替代 stdout，异常时应先分别查看。</>)}
             {H4('高级：应用状态回报（可选）')}
             {P(<>部署服务为每个部署注入 {CODE('DEPLOY_ID')}、{CODE('REPORT_URL')} 和 {CODE('REPORT_TOKEN')}。它们用于应用向平台回报状态：向 {CODE('REPORT_URL')} 发起 POST，JSON 至少包含 {CODE('deploy_id')} 和 {CODE('state')}，可选 {CODE('metrics')}、{CODE('message')}，并在 {CODE('X-Report-Token')} 请求头放入 {CODE('REPORT_TOKEN')}。不要打印或提交 Token。这是平台内部部署回报接口；本指南不宣称它与任何外部市场或第三方日志系统有额外集成。</>)}
+          </>
+        ),
+      },
+      {
+        title: '改名与换节点',
+        content: (
+          <>
+            {P('负责人在 Pod「设置」里改名字或换到另一台机器。两件事都不改这个 Pod 的 ssh / web 公网端口编号，连接页上的端口保持原样。android / windows 不支持。')}
+            {H4('改名')}
+            {UL(
+              <>新名字与创建时相同：小写字母、数字、连字符，大写会转成小写，下划线会转成连字符</>,
+              <>页面地址变成 {CODE('/pods/<新名字>')}。Deployment、目录名和反代里的代理名跟着改，端口编号不变</>,
+              <>已有同名 Pod 时会拒绝。改名失败时目录和名字会回到原来的值</>,
+            )}
+            {H4('换节点')}
+            {UL(
+              <>选一台具体节点。{CODE('auto')} 不能当目标</>,
+              <>目标上已经有同一份目录时，只改调度并重新启动，不拷贝文件</>,
+              <>目录还没共享时会先停止，再把 home 拷到目标节点。权重文件（{CODE('*.pt')}、{CODE('*.safetensors')}、{CODE('*.gguf')} 等）默认不传，确认框里可以改</>,
+              <>Pod 已经分配了 GPU 时，目标节点必须有这些卡，否则先到设置里调整 GPU，再换节点</>,
+              <>这是整台 Pod 换机器。部署页里训练任务换 GPU 卡是另一件事，不在这张卡上</>,
+            )}
           </>
         ),
       },
@@ -610,7 +632,8 @@ scripts/install-node.sh --check --kind unified-memory --name newum --ssh newum.e
             )}
             {H4('计费范围与余额提醒')}
             {UL(
-              <>默认所有组都计费；平台自己的组由管理员在 {LINK('计费设置', '/ops/pricing')} 标为「内部」后免计费（不结算、不提醒）</>,
+              <>欠费限制资源默认关闭：不扣费、不提醒、不因欠费限制任何资源。管理员在 {LINK('计费总览', '/billing/overview')} 或 {LINK('计费设置', '/ops/pricing')} 打开后，之后的小时才扣费，欠费会提醒，持续欠费会停机</>,
+              <>平台自己的组在计费总览或计费设置标为「平台内部」后免计费（不结算、不提醒）。这和 Pod 里的集群内端口不是一回事。改回外部不会自动打开该组的计费开关</>,
               <>Pod 额度不足会通过站内通知 + Web Push 提醒（可在个人设置里开关），点击直达钱包页；同一档位每 6 小时最多提醒一次，充值/分配后再欠费会重新提醒</>,
             )}
             {H4('欠费处置（分级）')}
@@ -1016,6 +1039,9 @@ Content-Type: application/json
                 ['POST', '/api/pods/:name/start', '启动 Pod'],
                 ['POST', '/api/pods/:name/stop', '停止 Pod'],
                 ['POST', '/api/pods/:name/restart', '重启 Pod'],
+                ['POST', '/api/pods/:name/rename', '改名 {name}。负责人。index 与 ssh/web 公网端口不变'],
+                ['GET', '/api/pods/:name/migrate-mode', '换节点方式 ?node=。shared 只改调度，copy 停机后拷贝 home'],
+                ['POST', '/api/pods/:name/migrate', '换节点 {node, exclude_weights?}。负责人。端口不变。有 GPU 时目标须覆盖这些卡。默认不传权重'],
                 ['POST', '/api/pods/:name/resize', '调整资源规格'],
                 ['POST', '/api/pods/:name/reset-pw', '重置 SSH 密码'],
                 ['GET', '/api/pods/:name/metrics', '实时指标'],

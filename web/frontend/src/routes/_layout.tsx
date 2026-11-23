@@ -1,7 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Outlet } from 'react-router'
-import { motion, AnimatePresence, useMotionValue, animate } from 'framer-motion'
+import { motion, AnimatePresence, useMotionValue, animate, useReducedMotion } from 'framer-motion'
 import { useDrag } from '@use-gesture/react'
 import { useQueryClient } from '@tanstack/react-query'
 import TopBar from '@/components/layout/TopBar'
@@ -15,6 +15,7 @@ import { OnboardingGuide } from '@/components/ui/OnboardingGuide'
 import { useSidebarStore } from '@/stores/sidebar'
 import { useNavStore } from '@/stores/nav'
 import { useIsDesktop, useIsIdeDesktop } from '@/hooks/useMediaQuery'
+import { APP_ROUTES } from '@/lib/appRoutes'
 
 /** Apple-style rubber-band */
 function rubberband(overshoot: number, dim: number, constant = 0.55): number {
@@ -49,12 +50,25 @@ export default function MainLayout() {
   const { mobileOpen, setMobileOpen } = useSidebarStore()
   const { direction, setDirection } = useNavStore()
   const qc = useQueryClient()
+  const reduceMotion = useReducedMotion()
   const prevPathname = useRef(location.pathname)
 
   // 控制台界面为简体中文;公开页(reports/landing)自行覆盖 document lang
   useEffect(() => {
     document.documentElement.lang = 'zh-CN'
   }, [])
+
+  useEffect(() => {
+    const path = location.pathname
+    const hit = APP_ROUTES.find((route) => {
+      if (route.path === path) return true
+      if (!route.path.includes(':')) return false
+      const pat = route.path.split('/').filter(Boolean)
+      const seg = path.split('/').filter(Boolean)
+      return pat.length === seg.length && pat.every((part, i) => part.startsWith(':') || part === seg[i])
+    })
+    document.title = hit ? `${hit.label} · YatTerra` : 'YatTerra'
+  }, [location.pathname])
 
   useEffect(() => {
     setMobileOpen(false)
@@ -174,6 +188,7 @@ export default function MainLayout() {
       >
         <Sidebar forceMobile={ideMobile} />
         <main
+          data-ux="ux-page-title"
           {...edgeBind()}
           className={
             isIdePage
@@ -196,11 +211,12 @@ export default function MainLayout() {
                 <AnimatePresence mode="wait">
                   <motion.div
                     data-onboarding-page={location.pathname}
+                    data-ux="ux-reduced-motion"
                     key={location.pathname}
-                    initial={variants.initial}
+                    initial={reduceMotion ? false : variants.initial}
                     animate={variants.animate}
-                    exit={variants.exit}
-                    transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
+                    exit={reduceMotion ? undefined : variants.exit}
+                    transition={reduceMotion ? { duration: 0 } : { duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
                     style={{
                       willChange: 'opacity, transform',
                       // Swipe-to-go-back: page follows finger

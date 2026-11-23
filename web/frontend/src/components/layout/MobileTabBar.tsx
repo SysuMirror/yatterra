@@ -9,7 +9,7 @@ import { openPodPicker } from '@/ide/PodPicker'
 const tabs = [
   { key: 'home', path: '/console', icon: LayoutDashboard, label: '概览' },
   { key: 'pods', path: '/pods', icon: Box, label: 'Pod' },
-  { key: 'host', path: '/infra/host', icon: Server, label: '主机' },
+  { key: 'infra', path: '/infra', icon: Server, label: '总览' },
   { key: 'ide', path: '/ide', icon: Code2, label: 'IDE' },
   { key: 'threat', path: '/threat-map', icon: Swords, label: '攻防' },
 ] as const
@@ -23,6 +23,8 @@ export function MobileTabBar() {
   // be treated as the console's active state.
   const activeKey = tabs.find((t) => {
     if (t.path === '/console') return location.pathname === '/console'
+    // /infra matches the overview and every nested infra page, not only /infra/host.
+    if (t.path === '/infra') return location.pathname === '/infra' || location.pathname.startsWith('/infra/')
     return location.pathname.startsWith(t.path)
   })?.key ?? 'home'
 

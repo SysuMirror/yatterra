@@ -27,6 +27,7 @@ export default function DevHarness() {
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [deleteSessionTarget, setDeleteSessionTarget] = useState<string | null>(null)
   const [deleteHarnessTarget, setDeleteHarnessTarget] = useState<string | null>(null)
+  const [harnessFind, setHarnessFind] = useState('')
 
   const { data: agents, isLoading } = useQuery<any[]>({
     queryKey: ['agents'],
@@ -95,6 +96,12 @@ export default function DevHarness() {
     onSuccess: () => { toast({ type: 'success', message: '编排已删除' }); setDeleteHarnessTarget(null); qc.invalidateQueries({ queryKey: ['harnesses'] }); setExpandedHarness(null) },
     onError: () => toast({ type: 'error', message: '删除失败' }),
   })
+
+  const harnessQuery = harnessFind.trim().toLowerCase()
+  const nameHit = (name: unknown) => String(name ?? '').toLowerCase().includes(harnessQuery)
+  const shownHarnessNames = (harnesses ?? []).filter((name: string) => !harnessQuery || nameHit(name))
+  const storeSource = storeHarnesses ?? []
+  const shownStore = storeSource.filter((item: any) => !harnessQuery || nameHit(typeof item === 'string' ? item : item?.name))
 
   const importStoreMut = useMutation({
     mutationFn: (name: string) => api.post('/harnesses/import', { name }),
@@ -216,6 +223,16 @@ export default function DevHarness() {
 
       {/* Harnesses */}
       <Card data-onboarding-target="harness-list" padding="lg" className="mb-6">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <input
+            data-ux="ux-harness-find"
+            value={harnessFind}
+            onChange={(e) => setHarnessFind(e.target.value)}
+            placeholder="筛选编排名称"
+            aria-label="筛选编排"
+            className="h-8 w-full max-w-xs rounded-md border border-black/10 bg-transparent px-2 text-xs"
+          />
+        </div>
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Settings size={16} className="text-muted" />
@@ -243,12 +260,12 @@ export default function DevHarness() {
               </div>
             )},
           ]}
-          data={harnesses ?? []}
+          data={shownHarnessNames}
           keyFn={(r: any) => r}
           empty={
             <div className="flex flex-col items-center gap-2 py-8">
               <Settings size={28} className="text-muted/40" />
-              <p className="text-sm text-muted">暂无编排</p>
+              <p className="text-sm text-muted">{harnessQuery ? '无匹配编排' : '暂无编排'}</p>
             </div>
           }
         />
@@ -286,11 +303,11 @@ export default function DevHarness() {
         <div className="flex items-center gap-2 mb-4">
           <Package size={16} className="text-muted" />
           <h2 className="text-sm font-semibold">编排商店</h2>
-          <Badge variant="muted">{storeHarnesses?.length ?? 0} 个</Badge>
+          <Badge variant="muted">{shownStore.length} 个</Badge>
         </div>
-        {storeHarnesses && storeHarnesses.length > 0 ? (
+        {shownStore.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {storeHarnesses.map((item: any) => (
+            {shownStore.map((item: any) => (
               <Card key={item.name} padding="md">
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center gap-2">
@@ -308,7 +325,7 @@ export default function DevHarness() {
         ) : (
           <div className="flex flex-col items-center gap-2 py-8">
             <Package size={28} className="text-muted/40" />
-            <p className="text-sm text-muted">暂无可用编排</p>
+            <p className="text-sm text-muted">{storeSource.length ? '无匹配编排' : '暂无可用编排'}</p>
           </div>
         )}
       </Card>

@@ -35,6 +35,7 @@ export default function DevMCP() {
   const [editOpen, setEditOpen] = useState(false)
   const [editing, setEditing] = useState<MCPServer | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<MCPServer | null>(null)
+  const [catalogFind, setCatalogFind] = useState('')
 
   // Form state
   const [formName, setFormName] = useState('')
@@ -124,6 +125,13 @@ export default function DevMCP() {
     onError: (e: any) => toast({ type: 'error', message: e?.message || '删除失败' }),
   })
 
+  const catalogQuery = catalogFind.trim().toLowerCase()
+  const shownCatalog = (catalog ?? []).filter((item: any) => {
+    if (!catalogQuery) return true
+    return String(item?.name ?? '').toLowerCase().includes(catalogQuery) || String(item?.id ?? '').toLowerCase().includes(catalogQuery)
+  })
+  const shownServers = data ?? []
+
   const testMut = useMutation({
     mutationFn: (id: string) => api.post(`/mcp/${id}/test`),
     onSuccess: () => toast({ type: 'success', message: '连接测试成功' }),
@@ -171,7 +179,7 @@ export default function DevMCP() {
               </div>
             )},
           ]}
-          data={data ?? []}
+          data={shownServers}
           keyFn={(r: any) => r.name}
           empty={<p className="text-sm text-muted text-center py-8">暂无 MCP 服务器</p>}
         />
@@ -181,11 +189,21 @@ export default function DevMCP() {
       <Card data-onboarding-target="mcp-catalog" className="mt-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold">MCP 目录</h2>
-          <Badge variant="muted">{catalog?.length ?? 0} 个</Badge>
+          <Badge variant="muted">{shownCatalog.length} 个</Badge>
         </div>
-        {catalog && catalog.length > 0 ? (
+        <div className="mb-4">
+          <input
+            data-ux="ux-mcp-find"
+            value={catalogFind}
+            onChange={(e) => setCatalogFind(e.target.value)}
+            placeholder="筛选目录名称或 ID"
+            aria-label="筛选 MCP 目录"
+            className="h-8 w-full max-w-xs rounded-md border border-black/10 bg-transparent px-2 text-xs"
+          />
+        </div>
+        {shownCatalog.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {catalog.map((item: any) => (
+            {shownCatalog.map((item: any) => (
               <Card key={item.name} padding="md">
                 <div className="flex flex-col gap-2.5">
                   <div className="flex items-center justify-between">
@@ -206,7 +224,7 @@ export default function DevMCP() {
         ) : (
           <div className="flex flex-col items-center gap-2 py-8">
             <Plug size={28} className="text-muted/40" />
-            <p className="text-sm text-muted">暂无可用目录</p>
+            <p className="text-sm text-muted">{catalog && catalog.length > 0 ? '无匹配目录' : '暂无可用目录'}</p>
           </div>
         )}
       </Card>
