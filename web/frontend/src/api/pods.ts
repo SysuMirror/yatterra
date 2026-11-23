@@ -11,6 +11,23 @@ export interface Pod {
   owner: string
   reason?: string
   created_at: string
+  /** placement target: "auto" or a node name from /api/infra/nodes */
+  node?: string
+  /** 活动/分组标签（元数据）— 管理员可按 tag 批量发额度 */
+  tag?: string | null
+}
+
+/** 活动资源上限（仅 UniSSO 用户受约束；admin/super 豁免）。 */
+export interface PodLimits {
+  scoped: boolean
+  caps: {
+    cpu: number
+    mem_gib: number
+    storage_gib: number
+    gpu_allowed: boolean
+    mem: string
+    storage: string
+  }
 }
 
 export interface AppLogFile {
@@ -46,12 +63,19 @@ export const podsApi = {
     if (params?.page) sp.set('page', String(params.page))
     if (params?.per_page) sp.set('per_page', String(params.per_page))
     const qs = sp.toString()
-    return api.get<{ items: Pod[]; total: number; page: number }>(`/pods${qs ? `?${qs}` : ''}`)
+    return api.get<{ pods: Pod[]; total: number; page: number; per_page: number }>(`/pods${qs ? `?${qs}` : ''}`)
   },
 
   get: (name: string) => api.get<PodDetail>(`/pods/${name}`),
 
+  /** 当前用户的活动资源上限（scoped=false 表示不受限）。 */
+  limits: () => api.get<PodLimits>('/pods/limits'),
+
   create: (data: Partial<Pod>) => api.post<Pod>('/pods', data),
+
+  /** 设置/清空 Pod 标签（owner 可改；空字符串 = 清空）。 */
+  setTag: (name: string, tag: string) =>
+    api.post<{ ok: boolean; tag: string | null }>(`/pods/${name}/tag`, { tag }),
 
   delete: (name: string) => api.del(`/pods/${name}`),
 

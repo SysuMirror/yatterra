@@ -95,11 +95,11 @@ export function FilesTab({ podName }: { podName: string }) {
           <ArrowLeft size={13} className="inline mr-1" />{dir === HOME ? '/shared' : HOME}
         </button>
         <nav data-onboarding-target="pod-files" className="flex items-center gap-1 text-sm font-mono min-w-0 overflow-x-auto" aria-label="目录">
-          <button className="px-1.5 py-0.5 rounded text-muted hover:text-ink" onClick={() => setDir('/')}>/</button>
+          <button data-ux="ux-files-crumb" className="rounded px-2 text-muted hover:text-ink" onClick={() => setDir('/')}>/</button>
           {crumbs.map((c, i) => (
             <span key={i} className="flex items-center gap-1 whitespace-nowrap">
               <button
-                className="px-1.5 py-0.5 rounded hover:bg-black/[0.05] text-ink-2"
+                className="rounded px-2 hover:bg-black/[0.05] text-ink-2"
                 onClick={() => setDir('/' + crumbs.slice(0, i + 1).join('/'))}
               >
                 {c}
@@ -141,7 +141,7 @@ export function FilesTab({ podName }: { podName: string }) {
                 aria-label={`下载 ${e.name}`}
                 title={e.is_dir ? '打包下载 (tar.gz)' : '下载'}
                 disabled={downloading === e.path}
-                className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-1.5 rounded-md text-muted hover:text-accent hover:bg-accent/10 transition-all disabled:opacity-40"
+                className="show-on-fine-hover flex-shrink-0 p-1.5 rounded-md text-muted hover:text-accent hover:bg-accent/10 transition-all disabled:opacity-40"
                 onClick={() => downloadEntry(e)}
               >
                 {downloading === e.path
@@ -150,7 +150,7 @@ export function FilesTab({ podName }: { podName: string }) {
               </button>
               <button
                 aria-label={`删除 ${e.name}`}
-                className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
+                className="show-on-fine-hover flex-shrink-0 p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
                 onClick={() => deleteEntry(e)}
               >
                 <Trash2 size={13} />

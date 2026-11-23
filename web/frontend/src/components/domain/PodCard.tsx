@@ -10,6 +10,7 @@ import { aiApi } from '@/api/ai'
 import { MarkdownContent } from '@/components/ai'
 import { cn } from '@/lib/cn'
 import { formatSpec, podStatusLabel } from '@/lib/format'
+import { NodeTag } from '@/components/domain/NodeTag'
 import { motionBind } from '@/lib/gesture'
 
 interface PodCardProps {
@@ -22,6 +23,7 @@ interface PodCardProps {
   owner: string
   members?: number
   role?: string
+  node?: string
   reason?: string
   onClick?: () => void
   onStart?: () => void
@@ -57,7 +59,7 @@ function rubberband(overshoot: number, dim: number, constant = 0.55): number {
   return (overshoot * dim * constant) / (dim + constant * Math.abs(overshoot))
 }
 
-export function PodCard({ name, status, cpu, mem, gpus, storage, owner, members, role, reason, onClick, onStart, onStop, onRestart, onDelete }: PodCardProps) {
+export function PodCard({ name, status, cpu, mem, gpus, storage, owner, members, role, node, reason, onClick, onStart, onStop, onRestart, onDelete }: PodCardProps) {
   const isDesktop = useIsDesktop()
   const running = status === 'Running'
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -183,6 +185,7 @@ export function PodCard({ name, status, cpu, mem, gpus, storage, owner, members,
                     {roleInfo.label}
                   </span>
                 )}
+                {node && <NodeTag node={node} className="flex-shrink-0" />}
               </div>
               <p className="text-xs text-muted truncate mt-0.5">
                 {owner}{members != null && members > 1 ? ` · ${members} 人` : ''}

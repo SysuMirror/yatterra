@@ -68,6 +68,12 @@ def rename_tree_script(old, new, storage):
     Unmounts the loop image first so ``mv`` takes the file, not the mount.
     Mounts it again only when ``data.img`` came along. ``/etc/fstab`` is
     rewritten only when it already mentions that image.
+
+    Release uses a *lazy* unmount fallback: a running pod (or a kubelet mount
+    namespace that still references the path) keeps the loop mount "busy", so a
+    plain ``umount`` fails and — under ``set -e`` — aborts the whole rename.
+    ``umount -l`` detaches the mount from the namespace, which is all ``mv``
+    needs; the backing device is freed once the last reference drops.
     """
     root = siteconf.GROUP_DATA_ROOT.rstrip("/")
     old_img, old_mnt = paths(old)
@@ -84,7 +90,7 @@ if [ -e "$new" ]; then
   exit 1
 fi
 if findmnt -n {old_mnt} >/dev/null 2>&1; then
-  umount {old_mnt}
+  umount {old_mnt} 2>/dev/null || umount -l {old_mnt} 2>/dev/null || umount -f {old_mnt} 2>/dev/null || true
 fi
 if [ -f {old_img} ] && grep -qF {old_img} /etc/fstab; then
   grep -vF {old_img} /etc/fstab > /etc/fstab.yatterra-rename
@@ -98,11 +104,15 @@ fi
 
 
 def unmount_script(name):
-    """Unmount the group's /data image so a later tar copies the file."""
+    """Unmount the group's /data image so a later tar copies the file.
+
+    Falls back to a lazy unmount when the mount is held by a pod / kubelet
+    namespace (otherwise a plain ``umount`` aborts under ``set -e``).
+    """
     img, mnt = paths(name)
     return f"""set -euo pipefail
 if findmnt -n {mnt} >/dev/null 2>&1; then
-  umount {mnt}
+  umount {mnt} 2>/dev/null || umount -l {mnt} 2>/dev/null || umount -f {mnt} 2>/dev/null || true
 fi
 if [ -f {img} ] && grep -qF {img} /etc/fstab; then
   grep -vF {img} /etc/fstab > /etc/fstab.yatterra-rename
@@ -116,6 +126,8 @@ def erase_script(name):
 
     A mounted image must be unmounted first. ``rm`` of a live mount deletes
     the files inside the image and then leaves the mount point behind.
+    Lazy unmount is tried when a pod / kubelet namespace still holds the mount,
+    so deletion no longer leaves ``target is busy`` residue behind.
     """
     import shlex
     img, mnt = paths(name)
@@ -123,7 +135,7 @@ def erase_script(name):
     qimg, qmnt, qroot = (shlex.quote(p) for p in (img, mnt, root))
     return f"""set -u
 if findmnt -n {qmnt} >/dev/null 2>&1; then
-  umount {qmnt} || exit 1
+  umount {qmnt} 2>/dev/null || umount -l {qmnt} 2>/dev/null || umount -f {qmnt} 2>/dev/null || exit 1
 fi
 if [ -f {qimg} ] && grep -qF {qimg} /etc/fstab; then
   grep -vF {qimg} /etc/fstab > /etc/fstab.yatterra-rename

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2, Save } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
@@ -8,6 +8,7 @@ import { AiFormHelper } from '@/components/domain/AiFormHelper'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 import { useNavigate } from 'react-router'
+import { RenameProgressDialog } from '@/components/pod/RenameProgressDialog'
 
 export function SettingsTab({ podName, pod, canManage }: { podName: string; pod: any; canManage: boolean }) {
   const toast = useToastStore((s) => s.add)
@@ -66,6 +67,9 @@ export function SettingsTab({ podName, pod, canManage }: { podName: string; pod:
         )}
       </Card>
 
+      {/* Activity tag (按标签批量发额度) */}
+      <TagCard podName={podName} pod={pod} canManage={canManage} />
+
       {/* Env vars */}
       <EnvCard podName={podName} initialEnv={pod?.env} canManage={canManage} />
 
@@ -76,6 +80,11 @@ export function SettingsTab({ podName, pod, canManage }: { podName: string; pod:
         internalHost={pod?.internal_host}
         canManage={canManage}
       />
+
+      <NameCard podName={podName} canManage={canManage} />
+
+      {/* Move the group onto another node. Public ports stay on the index. */}
+      <MigrateCard podName={podName} pod={pod} canManage={canManage} />
 
       {/* Danger zone */}
       <Card padding="lg">
@@ -106,6 +115,50 @@ export function SettingsTab({ podName, pod, canManage }: { podName: string; pod:
     </div>
   )
 }
+
+function TagCard({ podName, pod, canManage }: { podName: string; pod: any; canManage: boolean }) {
+  const toast = useToastStore((s) => s.add)
+  const qc = useQueryClient()
+  const [tag, setTag] = useState(pod?.tag ?? '')
+
+  useEffect(() => { setTag(pod?.tag ?? '') }, [podName, pod?.tag])
+
+  const save = useMutation({
+    mutationFn: (value: string) => api.post<{ ok: boolean; tag: string | null }>(`/pods/${podName}/tag`, { tag: value }),
+    onSuccess: (d: any) => {
+      toast({ type: 'success', message: d?.tag ? `标签已设为「${d.tag}」` : '标签已清空' })
+      qc.invalidateQueries({ queryKey: ['pod', podName] })
+      qc.invalidateQueries({ queryKey: ['pods'] })
+    },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '保存失败' }),
+  })
+
+  return (
+    <Card padding="lg">
+      <div className="mb-4">
+        <h3 className="text-sm font-semibold">活动标签</h3>
+        <p className="mt-1 text-xs text-muted">
+          给 Pod 打标签（如「活动X」），管理员可按标签一键给这一批 Pod 发放额度。纯元数据，不影响运行。
+        </p>
+      </div>
+      {canManage ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <Input placeholder="活动X" value={tag} maxLength={64} onChange={(e) => setTag(e.target.value)} className="w-56" />
+          <Button size="sm" loading={save.isPending} onClick={() => save.mutate(tag.trim())}>
+            <Save size={13} /> 保存
+          </Button>
+          {pod?.tag && (
+            <Button variant="secondary" size="sm" disabled={save.isPending}
+                    onClick={() => { setTag(''); save.mutate('') }}>清空</Button>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm">{pod?.tag ? <span className="font-medium">{pod.tag}</span> : <span className="text-muted">未设置</span>}</p>
+      )}
+    </Card>
+  )
+}
+
 
 function InternalPortsCard({ podName, initialPorts, internalHost, canManage }: {
   podName: string
@@ -167,7 +220,7 @@ function InternalPortsCard({ podName, initialPorts, internalHost, canManage }: {
             {canManage && (
               <button
                 aria-label={`删除端口 ${p}`}
-                className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted hover:text-bad hover:bg-bad/10 transition-all flex-shrink-0"
+                data-ux="ux-settings-touch" className="show-on-fine-hover p-1 rounded text-muted hover:text-bad hover:bg-bad/10 transition-all flex-shrink-0"
                 onClick={() => save.mutate(ports.filter((x) => x !== p))}
               >
                 <Trash2 size={12} />
@@ -190,6 +243,178 @@ function InternalPortsCard({ podName, initialPorts, internalHost, canManage }: {
             <Plus size={13} /> 添加
           </Button>
         </div>
+      )}
+    </Card>
+  )
+}
+
+
+function NameCard({ podName, canManage }: { podName: string; canManage: boolean }) {
+  const toast = useToastStore((s) => s.add)
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const [draft, setDraft] = useState(podName)
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [showProgress, setShowProgress] = useState(false)
+
+  useEffect(() => { setDraft(podName) }, [podName])
+
+  // The rename runs as a background job; the dialog follows its SSE stream.
+  const rename = useMutation({
+    mutationFn: () => api.post<{ job_id: string; name: string }>(`/pods/${podName}/rename`, { name: draft.trim() }),
+    onSuccess: (d: any) => {
+      setJobId(d?.job_id ?? null)
+      setShowProgress(true)
+    },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '改名失败' }),
+  })
+
+  const onRename = () => {
+    const next = draft.trim()
+    if (!next || next === podName) return
+    if (!confirm(`确定把 ${podName} 改名为 ${next}？\n\n公网端口不变。页面地址会变成 /pods/${next}。`)) return
+    rename.mutate()
+  }
+
+  const onDone = useCallback((next: string) => {
+    toast({ type: 'success', message: `已改名为 ${next}，公网端口不变` })
+    setShowProgress(false)
+    qc.invalidateQueries({ queryKey: ['pods'] })
+    qc.invalidateQueries({ queryKey: ['pod', next] })
+    navigate(`/pods/${next}?tab=settings`)
+  }, [navigate, qc, toast])
+
+  return (
+    <Card padding="lg">
+      <div className="mb-4">
+        <h3 data-onboarding-target="pod-name" className="text-sm font-semibold">名称</h3>
+        <p className="mt-1 text-xs text-muted">
+          名字是地址的一部分。改名会换掉 Deployment 和目录名，ssh / web 公网端口保持原编号。
+        </p>
+      </div>
+      {canManage ? (
+        <div className="flex items-center gap-2 flex-wrap max-w-md">
+          <Input value={draft} onChange={(e) => setDraft(e.target.value)} className="font-mono" />
+          <Button size="sm" disabled={!draft.trim() || draft.trim() === podName || rename.isPending} loading={rename.isPending} onClick={onRename}>
+            改名
+          </Button>
+        </div>
+      ) : (
+        <p className="font-mono text-sm">{podName}</p>
+      )}
+      <RenameProgressDialog
+        open={showProgress}
+        onClose={() => setShowProgress(false)}
+        jobId={jobId}
+        podName={podName}
+        onDone={onDone}
+      />
+    </Card>
+  )
+}
+
+
+function MigrateCard({ podName, pod, canManage }: { podName: string; pod: any; canManage: boolean }) {
+  const toast = useToastStore((s) => s.add)
+  const qc = useQueryClient()
+  const current = pod?.node || 'auto'
+  const isWindows = pod?.type === 'windows'
+  const { data: nodesData } = useQuery<any>({
+    queryKey: ['infra-nodes'],
+    queryFn: () => api.get('/infra/nodes'),
+    staleTime: 60_000,
+    enabled: canManage && !isWindows,
+  })
+  const nodeOptions: string[] = ((nodesData?.placement_options ?? ['auto']) as string[]).filter((n) => n !== 'auto')
+  const nodeInfos: any[] = nodesData?.nodes ?? []
+  const [target, setTarget] = useState('')
+  const [excludeWeights, setExcludeWeights] = useState(true)
+  const { data: modeData } = useQuery<{ mode?: string }>({
+    queryKey: ['pod-migrate-mode', podName, target],
+    queryFn: () => api.get(`/pods/${podName}/migrate-mode?node=${encodeURIComponent(target)}`),
+    enabled: canManage && !!target && !isWindows,
+  })
+  const copyHome = modeData?.mode !== 'shared'
+
+  const migrate = useMutation({
+    mutationFn: () => api.post(`/pods/${podName}/migrate`, { node: target, exclude_weights: excludeWeights }),
+    onSuccess: (d: any) => {
+      toast({ type: 'success', message: `已换到 ${d?.node ?? target}，公网端口不变` })
+      setTarget('')
+      qc.invalidateQueries({ queryKey: ['pod', podName] })
+      qc.invalidateQueries({ queryKey: ['pods'] })
+    },
+    onError: (e: any) => toast({ type: 'error', message: e?.message || '迁移失败' }),
+  })
+
+  const onMigrate = () => {
+    if (!target) return
+    const weights = excludeWeights ? '权重文件（*.pt/*.safetensors 等）默认不传' : '权重文件也会传'
+    const how = copyHome ? '会先停止，再把 home 拷到目标节点后启动' : '目录已经在目标节点上，只改调度并重新启动'
+    if (!confirm(`确定把 ${podName} 换到节点 ${target}？\n\n${how}。公网端口不变。${weights}。`)) return
+    migrate.mutate()
+  }
+
+  if (isWindows) return null
+  if (nodeOptions.length === 0) return null
+
+  return (
+    <Card padding="lg">
+      <div className="mb-4">
+        <h3 data-onboarding-target="pod-node" className="text-sm font-semibold">换节点</h3>
+        <p className="mt-1 text-xs text-muted">
+          当前节点: <span className="font-mono text-ink-2">{current === 'auto' ? 'auto（调度器自选）' : current}</span>。
+          公网端口不变。目标还没有这份目录时会停机并拷贝 home；目录已经共享时只改调度。有 GPU 分配时，目标节点必须有这些卡。
+        </p>
+      </div>
+      {canManage ? (
+        <>
+          <div className="grid grid-cols-2 gap-2 max-w-md">
+            {nodeOptions.map((n) => {
+              const info = nodeInfos.find((x) => x.name === n)
+              const disabled = n === current
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => setTarget(n)}
+                  className={
+                    'px-3 py-2 rounded-[10px] text-sm text-left border-[0.5px] transition-all duration-100 ' +
+                    (disabled
+                      ? 'border-black/8 bg-black/[0.02] text-muted cursor-not-allowed'
+                      : target === n
+                      ? 'border-accent bg-accent-light text-accent-dark font-semibold shadow-[0_0_0_3px_rgba(10,132,255,0.12)]'
+                      : 'border-black/8 bg-white/62 text-ink-2 hover:bg-white/85')
+                  }
+                >
+                  <span className="block">{n}{disabled ? '（当前）' : ''}</span>
+                  {info && (
+                    <span className="block text-[11px] font-normal text-muted mt-0.5">
+                      {info.arch} · {info.gpu_models?.replace(/-/g, ' ') || '无 GPU 标签'}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+          <label className="flex items-center gap-2 mt-3 text-xs text-ink-2 select-none w-fit">
+            <input
+              type="checkbox"
+              checked={excludeWeights}
+              onChange={(e) => setExcludeWeights(e.target.checked)}
+              className="accent-[#0a84ff]"
+            />
+            排除权重文件（*.pt / *.safetensors / *.gguf 等不跨节点传输）
+          </label>
+          <div className="mt-4">
+            <Button size="sm" disabled={!target || migrate.isPending} loading={migrate.isPending} onClick={onMigrate}>
+              {target ? `换到 ${target}（${copyHome ? '会拷贝 home' : '目录已共享，只改调度'}）` : '换到 …'}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <p className="text-xs text-muted">仅负责人可换节点。</p>
       )}
     </Card>
   )
@@ -235,7 +460,7 @@ function EnvCard({ podName, initialEnv, canManage }: { podName: string; initialE
             {canManage && (
               <button
                 aria-label={`删除 ${k}`}
-                className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted hover:text-bad hover:bg-bad/10 transition-all flex-shrink-0"
+                data-ux="ux-settings-touch" className="show-on-fine-hover p-1 rounded text-muted hover:text-bad hover:bg-bad/10 transition-all flex-shrink-0"
                 onClick={() => del.mutate(k)}
               >
                 <Trash2 size={12} />

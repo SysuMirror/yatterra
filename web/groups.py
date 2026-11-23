@@ -473,7 +473,10 @@ spec:
       labels:
         app: group-{name}
     spec:
-      terminationGracePeriodSeconds: 120
+      # VM 组:停止时给 guest 一次 ACPI 关机机会。120s 太长,会把
+      # 删除 / 换节点 / 改名里的"释放旧 Pod"拖满整个删除超时;60s 够用,
+      # 超时就 SIGKILL(等于拔电,NTFS 自己会打脏位)。
+      terminationGracePeriodSeconds: 60
       containers:
       - name: windows
         image: {WINDOWS_IMAGE}
@@ -574,7 +577,8 @@ spec:
       labels:
         app: group-{name}
     spec:
-      terminationGracePeriodSeconds: 120
+      # 同 windows:给模拟器一次 ACPI 关机机会,但别拖满删除超时。
+      terminationGracePeriodSeconds: 60
       initContainers:
       # /home/androidusr is bind-mounted onto an empty hostPath; the image's
       # entrypoint (docker-android/mixins/scripts/run.sh) lives there, so seed
@@ -780,6 +784,10 @@ spec:
       labels:
         app: group-{name}
     spec:
+      # 普通平台容器(supervisord/sshd)收到 SIGTERM 就会退出;显式钉住 30s
+      # (= k8s 默认值,防止集群默认被改动)。改名路径删除旧 Pod 时另用
+      # `--grace-period=20` 兜底,旧 Pod 不会按住 hostPath 数据目录不放。
+      terminationGracePeriodSeconds: 30
 {runtime_class}{placement}      containers:
       - name: ubuntu
         image: {g_image}
@@ -1002,13 +1010,104 @@ def apply_group(g):
                 "--ignore-not-found=true", check=False)
 
 
-def delete_group_k8s(name):
-    kubectl("delete", "deployment,service", f"group-{name}",
-            "--ignore-not-found=true", "--wait=true", "--timeout=90s",
-            check=False, timeout=100)
+def _group_pods(name):
+    """(count, phase, ready, detail) for one group's pods. count=-1 on error."""
+    r = kubectl("get", "pod", "-l", f"app=group-{name}", "-o", "json",
+                check=False, timeout=15)
+    if r.returncode != 0:
+        return -1, "", False, (r.stderr or "").strip()[:200]
+    try:
+        items = json.loads(r.stdout or "{}").get("items", [])
+    except Exception as e:
+        return -1, "", False, str(e)[:200]
+    if not items:
+        return 0, "", False, ""
+    st = items[0].get("status") or {}
+    phase = st.get("phase") or "Unknown"
+    ready = any(c.get("type") == "Ready" and c.get("status") == "True"
+                for c in (st.get("conditions") or []))
+    detail = phase
+    for cs in (st.get("containerStatuses") or []):
+        state = cs.get("state") or {}
+        for kind in ("waiting", "terminated"):
+            if state.get(kind, {}).get("reason"):
+                detail = state[kind]["reason"]
+    return len(items), phase, ready, detail
+
+
+def _wait_pods_gone(name, tick=None, timeout=60, interval=2.0):
+    """Poll until the group has no pod left (a deleted pod lingers in
+    Terminating until its grace period ends). ``tick(elapsed, detail)`` is
+    called every poll so a UI can show sub-progress. False on timeout."""
+    t0 = time.time()
+    while True:
+        n, _phase, _ready, detail = _group_pods(name)
+        if n == 0:
+            return True
+        if n < 0:
+            return False          # can't tell → don't block the caller
+        elapsed = time.time() - t0
+        if elapsed >= timeout:
+            return False
+        if tick:
+            try:
+                tick(elapsed, f"{n} 个 Pod 正在退出（{detail}）")
+            except Exception:
+                pass
+        time.sleep(interval)
+
+
+def _wait_pod_ready(name, tick=None, timeout=120, interval=2.0):
+    """Poll until the group's pod is Running and its Ready condition is True.
+    ``tick(elapsed, detail)`` is called every poll. False on timeout."""
+    t0 = time.time()
+    while True:
+        n, phase, ready, detail = _group_pods(name)
+        if n == 1 and ready:
+            return True
+        if n < 0:
+            return False          # can't tell → never block the caller
+        elapsed = time.time() - t0
+        if elapsed >= timeout:
+            return False
+        if tick:
+            try:
+                tick(elapsed, "无 Pod" if n == 0 else f"{phase}（{detail}）")
+            except Exception:
+                pass
+        time.sleep(interval)
+
+
+def delete_group_k8s(name, tick=None, grace=None, timeout=90):
+    """Delete a group's Deployment/Services and wait for its pods to be gone.
+
+    ``grace`` (seconds) shortens the pods' termination grace period, so a
+    container that ignores SIGTERM cannot hold the group's hostPath mount for
+    the full template value — the rename needs the old pod gone before the new
+    one mounts the same directory. ``tick(elapsed, detail)`` is invoked while
+    waiting. Returns True when no pod is left.
+    """
+    # Order matters. 1) the Deployment *and* its ReplicaSet go first: deletion
+    # cascades in the background, and a still-alive ReplicaSet would happily
+    # re-create the very pod we are about to kill. 2) then the pods, with a
+    # short grace period so a container that ignores SIGTERM cannot hold the
+    # group's hostPath for the whole template value. 3) the Services last — the
+    # nodePort they hold is what the new Service needs.
+    sel = f"app=group-{name}"
+    kubectl("delete", "deployment,replicaset", "-l", sel,
+            "--ignore-not-found=true", "--wait=false", check=False, timeout=20)
+    pod_args = ["delete", "pod", "-l", sel,
+                "--ignore-not-found=true", "--wait=false"]
+    if grace is not None:
+        pod_args.append(f"--grace-period={int(grace)}")
+    kubectl(*pod_args, check=False, timeout=20)
+    kubectl("delete", "service", "-l", sel,
+            "--ignore-not-found=true", "--wait=true", "--timeout=30s",
+            check=False, timeout=40)
     kubectl("delete", "service", internal_service_name(name),
             "--ignore-not-found=true", "--wait=true", "--timeout=30s",
             check=False, timeout=40)
+    return _wait_pods_gone(name, tick=tick, timeout=timeout)
 
 
 # --- frpc ---
@@ -1061,11 +1160,32 @@ def reload_frpc():
 
 
 # --- cloud nginx web-ssl sync ---
-def _apr1(password):
-    """Apache-style apr1 hash (openssl) for nginx auth_basic. None on failure."""
+_APR1_ALPHABET = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _apr1_salt(name, password):
+    """Deterministic 8-char apr1 salt for one group.
+
+    openssl picks a *random* salt on every call, so re-hashing the same group
+    produced a different line each time → htpasswd never matched what was on the
+    relay → nginx got rewritten+reloaded on every sync even when nothing had
+    changed (the "无变化" fast path could never trigger). Deriving the salt from
+    name+password keeps the line stable while still salting per group."""
+    import hashlib
+    d = hashlib.sha256(f"{name}\x00{password}".encode()).digest()
+    return "".join(_APR1_ALPHABET[b & 0x3F] for b in d[:8])
+
+
+def _apr1(password, salt=None):
+    """Apache-style apr1 hash (openssl) for nginx auth_basic. None on failure.
+
+    Pass ``salt`` for a reproducible hash (see ``_apr1_salt``)."""
     try:
-        r = subprocess.run(["openssl", "passwd", "-apr1", "-stdin"],
-                           input=str(password or "").encode(),
+        cmd = ["openssl", "passwd", "-apr1"]
+        if salt:
+            cmd += ["-salt", salt]
+        cmd.append("-stdin")
+        r = subprocess.run(cmd, input=str(password or "").encode(),
                            capture_output=True, timeout=10)
         if r.returncode == 0:
             h = r.stdout.decode().strip()
@@ -1077,11 +1197,12 @@ def _apr1(password):
 
 def _htpasswd_content(state):
     """htpasswd file body: one entry per web-auth-protected group
-    (username = group name, password = group password)."""
+    (username = group name, password = group password). Stable across calls."""
     lines = []
     for g in state["groups"].values():
         if g.get("type") in AUTH_WEB_TYPES:
-            h = _apr1(g.get("password"))
+            pw = g.get("password")
+            h = _apr1(pw, _apr1_salt(g["name"], pw))
             if h:
                 lines.append(f"{g['name']}:{h}")
     return ("\n".join(lines) + "\n") if lines else ""
@@ -1170,32 +1291,99 @@ def _strip_web_ssl_blocks(conf):
     return conf
 
 
+_NGINX_SPLIT_MARK = "#__yatterra_conf_split__#"
+
+
+def _nginx_apply_script(base, conf_path, hp_path):
+    """One root shell that installs conf+htpasswd, tests and reloads nginx.
+
+    Everything happens in a single SSH round trip: the per-call latency to the
+    relay is ~0.9s and the old flow needed 4-5 of them. Two details matter:
+
+    * the config is written with ``cat tmp > path`` so the file keeps its inode
+      — it is bind-mounted into the nginx container and a replaced inode would
+      not take effect until a restart;
+    * on a failing ``nginx -t`` the previous config is restored *and the full
+      nginx output is echoed back* — the caller used to keep only the last line,
+      which made every failure a useless "[exit=1]".
+    """
+    import shlex
+    script = r"""set -u
+TB=__BASE__
+D=__BASE__.d
+rm -rf "$D"; mkdir -p "$D" || { echo MKDIRFAIL; exit 2; }
+tar xzf "$TB.tgz" -C "$D" || { echo TARFAIL; rm -rf "$D" "$TB.tgz"; exit 2; }
+CONF=__CONF__
+HP=__HP__
+cp -a "$CONF" "$D/old.conf" || { echo BACKUPFAIL; rm -rf "$D" "$TB.tgz"; exit 2; }
+pre_ok=0
+nginx -t > "$D/pre.log" 2>&1 || pre_ok=1
+if [ -f "$D/htpasswd" ]; then
+  if [ -f "$HP" ]; then cp -a "$HP" "$D/old.htpasswd"; fi
+  cat "$D/htpasswd" > "$HP"
+fi
+cat "$D/https-web.conf" > "$CONF"
+restore() {
+  cat "$D/old.conf" > "$CONF"
+  if [ -f "$D/old.htpasswd" ]; then cat "$D/old.htpasswd" > "$HP"; fi
+}
+if nginx -t > "$D/t.log" 2>&1; then
+  if nginx -s reload > "$D/r.log" 2>&1; then
+    rm -rf "$D" "$TB.tgz"
+    echo "APPLIED conf=$(wc -c < "$CONF") hp=$(wc -c < "$HP" 2>/dev/null || echo 0)"
+    exit 0
+  fi
+  restore
+  nginx -t >/dev/null 2>&1
+  echo RELOADFAIL
+  tail -n 8 "$D/r.log"
+  rm -rf "$D" "$TB.tgz"
+  exit 3
+fi
+restore
+nginx -t >/dev/null 2>&1
+echo "TESTFAIL pre_test_failed=$pre_ok"
+tail -n 20 "$D/t.log"
+rm -rf "$D" "$TB.tgz"
+exit 1
+"""
+    return (script.replace("__BASE__", shlex.quote(base))
+                  .replace("__CONF__", shlex.quote(conf_path))
+                  .replace("__HP__", shlex.quote(hp_path)))
+
+
 def rewrite_nginx_web(state):
     """Sync cloud nginx https-web.conf: rewrite all 23xxx/24000 SSL server blocks
-    from state. Reads → strips → inserts → nginx -t → reload, with rollback.
-    Returns (ok, msg). Never raises (best-effort)."""
+    from state, plus the htpasswd that protects the auth_basic ones.
+
+    Two sudo SSH round trips: read conf+htpasswd, then one remote script that
+    installs, ``nginx -t``, reloads and rolls back on failure. Returns
+    ``(ok, msg)``; never raises. The message always keeps a meaningful tail of
+    the remote output, so a failure can be reported instead of swallowed."""
+    import base64
+    import io
+    import secrets
+    import tarfile
     import remote_hosts
+
     section = build_nginx_web_block(state)
+    mark = _NGINX_SPLIT_MARK
     try:
         ok, out = remote_hosts.run_remote(
-            NGINX_REMOTE_HOST, f"cat {NGINX_WEB_CONF}", sudo=True, timeout=20)
+            NGINX_REMOTE_HOST,
+            # NB: quote the marker — it starts with '#', so an unquoted `echo`
+            # is a shell comment and the split never happens (that silently made
+            # the htpasswd read-back empty and every sync re-apply).
+            f"cat {NGINX_WEB_CONF}; echo '{mark}'; cat {NGINX_HTPASSWD} 2>/dev/null; :",
+            sudo=True, timeout=20)
         if not ok:
-            return False, f"读 {NGINX_WEB_CONF} 失败: {out}"
-        old = out
+            return False, f"读远程 nginx 配置失败: {out.strip()[-400:]}"
     except Exception as e:
         return False, f"读远程 nginx 配置异常: {e}"
 
-    # htpasswd for auth_basic-protected blocks (windows groups). Best-effort;
-    # pushed even when the conf is unchanged, so a missing file self-heals.
-    try:
-        hp = _htpasswd_content(state)
-        if hp:
-            remote_hosts.write_remote_file(
-                NGINX_REMOTE_HOST, NGINX_HTPASSWD, hp,
-                sudo=True, mode="644", timeout=20)
-    except Exception:
-        pass
-
+    pre, _sep, post = out.partition(mark)
+    old = pre
+    old_hp = post[1:] if post.startswith("\n") else post
     new = _strip_web_ssl_blocks(old)
     # insert managed section before the first remaining server { block, else append
     import re as _re
@@ -1204,35 +1392,67 @@ def rewrite_nginx_web(state):
         new = new[:m.start()] + section + "\n\n" + new[m.start():]
     else:
         new = new.rstrip() + "\n\n" + section + "\n"
-    if new == old:
+    hp = _htpasswd_content(state)
+    if new == old and hp == old_hp:
         return True, "无变化"
 
+    # One tar.gz payload, base64 over stdin: putting it on the command line would
+    # die on MAX_ARG_STRLEN once the site has a few hundred groups, and sudo owns
+    # stdin (the password), so the payload can't be the command's stdin either.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for fname, text in (("https-web.conf", new), ("htpasswd", hp)):
+            if not text:
+                continue
+            data = text.encode()
+            ti = tarfile.TarInfo(fname)
+            ti.size = len(data)
+            ti.mode = 0o644
+            ti.mtime = int(time.time())
+            tf.addfile(ti, io.BytesIO(data))
+    payload = base64.b64encode(buf.getvalue()).decode()
+    base = "/tmp/.yt-ngx-" + secrets.token_hex(8)
+
     try:
-        ok, out = remote_hosts.write_remote_file(
-            NGINX_REMOTE_HOST, NGINX_WEB_CONF, new, sudo=True, timeout=30)
+        ok, out = remote_hosts.run_remote(
+            NGINX_REMOTE_HOST, f"umask 077; base64 -d > {base}.tgz",
+            sudo=False, timeout=30, stdin_data=payload)
         if not ok:
-            return False, f"写 {NGINX_WEB_CONF} 失败: {out}"
+            return False, f"推送 nginx 配置失败: {out.strip()[-400:]}"
+        ok, out = remote_hosts.run_remote(
+            NGINX_REMOTE_HOST,
+            _nginx_apply_script(base, NGINX_WEB_CONF, NGINX_HTPASSWD),
+            sudo=True, timeout=60)
     except Exception as e:
-        return False, f"写远程 nginx 配置异常: {e}"
+        return False, f"同步远程 nginx 配置异常: {e}"
 
-    # nginx -t
-    ok, out = remote_hosts.run_remote(
-        NGINX_REMOTE_HOST, "nginx -t", sudo=True, timeout=25)
-    if not (ok and "test is successful" in out):
-        # rollback
-        try:
-            remote_hosts.write_remote_file(
-                NGINX_REMOTE_HOST, NGINX_WEB_CONF, old, sudo=True, timeout=30)
-        except Exception:
-            pass
-        return False, f"nginx -t 失败已回滚: {out.strip().splitlines()[-1] if out.strip() else '未知'}"
+    body = (out or "").strip()
+    if ok and "APPLIED" in body:
+        detail = next((l for l in body.splitlines() if l.startswith("APPLIED")), "APPLIED")
+        return True, f"已应用并 reload（{detail}）"
+    remote_hosts.run_remote(NGINX_REMOTE_HOST, f"rm -f {base}.tgz",
+                            sudo=False, timeout=10)
+    if "TESTFAIL" in body:
+        return False, f"nginx -t 失败，已回滚: {body[-500:]}"
+    if "RELOADFAIL" in body:
+        return False, f"nginx reload 失败，已回滚: {body[-500:]}"
+    return False, f"nginx 同步失败: {body[-500:] or '无输出'}"
 
-    # reload
-    ok, out = remote_hosts.run_remote(
-        NGINX_REMOTE_HOST, "nginx -s reload", sudo=True, timeout=20)
-    if not ok:
-        return False, f"reload 失败: {out}"
-    return True, "已应用并 reload"
+
+def nginx_sync(state):
+    """``rewrite_nginx_web()`` with a guaranteed ``(ok, msg)`` shape.
+
+    Callers must be able to *report* a failed sync instead of swallowing it, and
+    a test double may return None or raise — this normalizes all of that."""
+    try:
+        res = rewrite_nginx_web(state)
+    except Exception as e:
+        return False, f"{e!r}"
+    if isinstance(res, tuple) and len(res) == 2:
+        return bool(res[0]), str(res[1] or "")
+    if res is None:
+        return True, ""
+    return bool(res), ""
 
 
 # --- high-level ops ---
@@ -1402,10 +1622,9 @@ def create_group(name, gpus=None, cpu=None, mem=None, storage=None, creator=None
     save_state(state)
     rewrite_frpc(state)
     reload_frpc()
-    try:
-        rewrite_nginx_web(state)
-    except Exception as e:
-        audit.record("nginx_web_sync_error", detail=str(e))
+    nok, nmsg = nginx_sync(state)
+    if not nok:
+        audit.record("nginx_web_sync_error", detail=f"create {name}: {nmsg}"[:500])
     audit.record("create_group", detail=name)
     return g
 
@@ -1460,10 +1679,9 @@ def remove_group(name):
     save_state(state)
     rewrite_frpc(state)
     reload_frpc()
-    try:
-        rewrite_nginx_web(state)
-    except Exception as e:
-        audit.record("nginx_web_sync_error", detail=str(e))
+    nok, nmsg = nginx_sync(state)
+    if not nok:
+        audit.record("nginx_web_sync_error", detail=f"delete {name}: {nmsg}"[:500])
     mp = os.path.join(MANIFEST_DIR, f"group-{name}.yaml")
     if os.path.exists(mp):
         os.remove(mp)
@@ -1622,13 +1840,31 @@ def _retarget_store_labels(old, new):
         audit.record("rename_label_error", detail=f"minio {old}->{new} {e}")
 
 
-def rename_group(old, new):
+def rename_group(old, new, progress=None):
     """Rename a group. Ports and index stay, so the ssemarket entry does not move.
 
     The directory is renamed on the node that holds it, then the state key,
     manifests, frpc proxy names and deploy list follow. A failure after the
     rename puts the directory and the state key back.
+
+    ``progress`` is an optional callable invoked with a dict per step
+    (``{"key","label","status","node","pct","detail"}``), so a UI can show how
+    far the rename got and on which node. Any error it raises is swallowed.
+
+    The frpc/nginx bookkeeping runs on a second thread, in parallel with the
+    k8s release + rebuild (it is the slow part: SSH round trips to the relay),
+    and the job only reports done once the new pod is Ready. A relay sync that
+    fails is reported as a warning (and audited) instead of being swallowed.
     """
+    def _rep(key, label, status="running", node=None, pct=None, detail=""):
+        if progress is None:
+            return
+        try:
+            progress({"key": key, "label": label, "status": status,
+                      "node": node, "pct": pct, "detail": detail})
+        except Exception:
+            pass
+
     new = normalize_name(new)
     state = load_state()
     g = state["groups"].get(old)
@@ -1641,32 +1877,97 @@ def rename_group(old, new):
     if new in state["groups"]:
         raise ValueError(f"组 {new} 已存在")
     node = nodes.node_for(g)
+    node_label = node or nodes.DEFAULT_NODE
+    _rep("check", "校验名称与目标", "done", node=node_label, pct=6, detail=f"{old} → {new}")
     import hdd_quota
+    disk_label = f"重命名数据目录（节点 {node_label}）"
+    _rep("disk", disk_label, "running", node=node_label, pct=10)
     script = hdd_quota.rename_tree_script(old, new, g.get("storage") or DEFAULT_STORAGE)
     ok, out = nodes.run_on(node, script, timeout=120)
     if not ok:
+        _rep("disk", disk_label, "error", node=node_label, detail=str(out)[:500])
         raise RuntimeError(f"目录改名失败: {out}")
+    _rep("disk", disk_label, "done", node=node_label, pct=25)
     kept = {field: g.get(field) for field in _PORT_FIELDS}
     g["name"] = new
     del state["groups"][old]
     state["groups"][new] = g
     save_state(state)
+    _rep("state", "更新平台状态", "done", node=node_label, pct=35)
+    from concurrent.futures import ThreadPoolExecutor
     moved_deploys = False
-    try:
-        apply_group(g)
-        delete_group_k8s(old)
-        rewrite_frpc(state)
-        reload_frpc()
+    warnings = []
+    route_label = "重写 frpc / nginx 映射"
+
+    def _route_worker():
+        """frpc + nginx rewrite. Neither touches a k8s object, so this runs on
+        a second thread while the main one releases and rebuilds the
+        Deployment — the relay round trips (~2s) were the bulk of the rename."""
+        out = {"frpc": "", "nginx": (True, "")}
+        _rep("route", route_label, "running", node=node_label, pct=72)
         try:
-            rewrite_nginx_web(state)
+            rewrite_frpc(state)
+            reload_frpc()
         except Exception as e:
-            audit.record("nginx_web_sync_error", detail=str(e))
+            out["frpc"] = str(e)
+        out["nginx"] = nginx_sync(state)
+        return out
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        # The ports stay on the same index, so the old Service holds the same
+        # nodePorts the new one wants. Delete the old objects first — two
+        # Services cannot share a nodePort — and let the rollback re-create
+        # them if the new apply fails. The old pod must also be gone before the
+        # new one mounts the same hostPath, hence the poll (with sub-progress).
+        k8s_label = f"释放旧 Deployment / Service（节点 {node_label}）"
+        _rep("k8s", k8s_label, "running", node=node_label, pct=45)
+        route_fut = pool.submit(_route_worker)
+        gone = delete_group_k8s(
+            old, grace=20, timeout=70,
+            tick=lambda el, d: _rep("k8s", k8s_label, "running", node=node_label,
+                                    detail=f"等待旧 Pod 退出 {int(el)}s｜{d}"))
+        if not gone:
+            warnings.append("旧 Pod 未在时限内退出（可能仍占用数据目录）")
+        _rep("k8s", k8s_label, "done", node=node_label, pct=55)
+        dep_label = f"重建 Deployment / Service（节点 {node_label}）"
+        _rep("deploy", dep_label, "running", node=node_label, pct=60)
+        apply_group(g)
+        _rep("deploy", dep_label, "done", node=node_label, pct=72)
+        # "done" should mean usable, so wait for the new pod's Ready condition.
+        rl_label = f"等待 Pod 就绪（节点 {node_label}）"
+        _rep("ready", rl_label, "running", node=node_label, pct=76)
+        ready = _wait_pod_ready(
+            new, timeout=120,
+            tick=lambda el, d: _rep("ready", rl_label, "running", node=node_label,
+                                    detail=f"启动中 {int(el)}s｜{d}"))
+        _rep("ready", rl_label, "done" if ready else "error", node=node_label,
+             pct=90, detail="" if ready else "Pod 启动较慢，改名已完成，请稍后在 Pod 页确认")
+        if not ready:
+            warnings.append("新 Pod 未在 120s 内就绪")
+        # Join before deciding: a bookkeeping thread still running would fight
+        # the rollback's own frpc/nginx rewrite.
+        route = route_fut.result()
+        if route.get("frpc"):
+            raise RuntimeError(f"frpc 重载失败: {route['frpc']}")
+        nok, nmsg = route.get("nginx") or (False, "未执行")
+        if nok:
+            _rep("route", route_label, "done", node=node_label, pct=91,
+                 detail="" if nmsg in ("", "无变化") else nmsg)
+        else:
+            warnings.append(f"nginx 同步失败（公网入口可能未更新）: {nmsg}")
+            audit.record("nginx_web_sync_error", detail=f"{old}->{new} {nmsg}"[:500])
+            _rep("route", route_label, "error", node=node_label, pct=91, detail=nmsg[:300])
+        _rep("deploys", "迁移部署记录", "running", node=node_label, pct=94)
         moved_deploys = _rekey_deploys(old, new)
         _retarget_store_labels(old, new)
         old_manifest = os.path.join(MANIFEST_DIR, f"group-{old}.yaml")
         if os.path.exists(old_manifest):
             os.remove(old_manifest)
-    except Exception:
+        _rep("deploys", "迁移部署记录", "done", node=node_label, pct=96)
+    except Exception as e:
+        pool.shutdown(wait=True)   # never rewrite frpc/nginx behind a rollback
+        _rep("rollback", "出错，正在回滚到原名…", "running", node=node_label, detail=str(e)[:300])
         back = hdd_quota.rename_tree_script(new, old, g.get("storage") or DEFAULT_STORAGE)
         nodes.run_on(node, back, timeout=120)
         g["name"] = old
@@ -1675,20 +1976,37 @@ def rename_group(old, new):
         state["groups"].pop(new, None)
         state["groups"][old] = g
         save_state(state)
+        # Drop the half-written new manifest too; apply_group(g) below rewrites
+        # the old one, but nothing would otherwise clean up group-<new>.yaml.
+        try:
+            new_manifest = os.path.join(MANIFEST_DIR, f"group-{new}.yaml")
+            if os.path.exists(new_manifest):
+                os.remove(new_manifest)
+        except OSError:
+            pass
         if moved_deploys:
             try:
                 _rekey_deploys(new, old)
             except Exception:
                 pass
         try:
+            # Free the nodePorts held by the half-created new objects first,
+            # otherwise re-applying the old name collides on the same port.
+            delete_group_k8s(new, grace=10, timeout=40)
             apply_group(g)
-            delete_group_k8s(new)
             rewrite_frpc(state)
             reload_frpc()
+            nginx_sync(state)
         except Exception:
             pass
+        _rep("rollback", "已回滚到原名", "error", node=node_label, detail=str(e)[:300])
         raise
+    finally:
+        pool.shutdown(wait=False)
     audit.record("rename_group", detail=f"{old}->{new} ports={kept['ssh_public']}/{kept['web_public']}")
+    tail = "；".join(warnings)
+    _rep("done", "改名完成", "done", node=node_label, pct=100,
+         detail=(f"新名字 {new}；注意：{tail}" if tail else f"新名字 {new}"))
     return g
 
 

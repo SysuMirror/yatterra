@@ -13,13 +13,14 @@ import siteconf
 users = import_module("users")
 import groups, lifecycle, audit, deploys
 import nodes
+import rename_jobs
 import contract
 import quota
 import minio_svc as minio_mod
 import db_svc as db_mod
 import cpu_stats, gpu_stats, metrics
 
-from api._auth import require_auth, require_pod, current_username as _actor_fn
+from api._auth import require_auth, require_pod, current_username as _actor_fn, current_user_obj
 from api import _body
 
 # Credential-card enrichment: the SPA CredentialCard expects host/port/user/password
@@ -630,9 +631,80 @@ def restart_pod(name):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  POST /api/pods/<name>/rename  — new slug, same index and public ports
+#  body: {"name": "<new>"}
+#
+#  The rename itself (unmount/move/rollout/frpc) is slow, so it runs as a
+#  background job and the caller follows it on the SSE stream below.
+# ═══════════════════════════════════════════════════════════════
+@pods_bp.route("/<name>/rename", methods=["POST"])
+@api_pod("owner")
+def rename_pod(name):
+    new = (_body().get("name") or "").strip()
+    try:
+        job = rename_jobs.start(name, new, username=_actor_fn())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    audit.record("api_rename_pod", detail=f"{name}->{job.new}", actor=_actor())
+    return jsonify({"ok": True, "job_id": job.id, "old": job.old,
+                    "name": job.new, "node": job.node})
+
+
+def _rename_job_or_404(jid):
+    """Fetch a rename job, enforcing that the caller started it (or is staff)."""
+    job = rename_jobs.get(jid)
+    if not job:
+        return None, (jsonify({"error": {"code": "NOT_FOUND",
+                                         "message": "改名任务不存在或已过期"}}), 404)
+    u = current_user_obj() or {}
+    if u.get("role") not in ("admin", "super") and job.username != u.get("username"):
+        return None, (jsonify({"error": {"code": "FORBIDDEN",
+                                         "message": "无权查看该改名任务"}}), 403)
+    return job, None
+
+
+@pods_bp.route("/rename-jobs/<jid>", methods=["GET"])
+@require_auth()
+def rename_job_status(jid):
+    job, err = _rename_job_or_404(jid)
+    if err:
+        return err
+    snap = rename_jobs.snapshot(jid)
+    return jsonify({"ok": True, **snap})
+
+
+@pods_bp.route("/rename-jobs/<jid>/stream", methods=["GET"])
+@require_auth()
+def rename_job_stream(jid):
+    job, err = _rename_job_or_404(jid)
+    if err:
+        return err
+    try:
+        after = int(request.headers.get("Last-Event-ID") or 0)
+    except ValueError:
+        after = 0
+
+    resp = Response(rename_jobs.sse(jid, after=after), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
+# ═══════════════════════════════════════════════════════════════
+#  GET /api/pods/<name>/migrate-mode?node=xfusion
 #  POST /api/pods/<name>/migrate  — move pod to another node (LAN)
 #  body: {"node": "spark"|"wz8", "exclude_weights": true}
 # ═══════════════════════════════════════════════════════════════
+@pods_bp.route("/<name>/migrate-mode", methods=["GET"])
+@api_pod("owner")
+def migrate_pod_mode(name):
+    node = request.args.get("node", "")
+    try:
+        return jsonify({"ok": True, "mode": groups.migrate_mode(name, node)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @pods_bp.route("/<name>/migrate", methods=["POST"])
 @api_pod("owner")
 def migrate_pod(name):

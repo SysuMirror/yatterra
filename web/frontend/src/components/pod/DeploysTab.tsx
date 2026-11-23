@@ -427,20 +427,19 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
               {running && <DeployStatusBadge podName={podName} deployId={id} />}
               <div className="flex-1" />
               {canManage && (
-                <div data-ux="ux-deploy-touch" className="flex w-full items-center gap-1.5 sm:w-auto">
+                <div data-ux="ux-deploy-touch" className="flex items-center gap-1.5">
                   {running ? (
-                    <Button variant="secondary" size="sm" className="min-h-11 flex-1 sm:min-h-0 sm:flex-none" onClick={() => stop.mutate(d)}><Square size={13} /> 停止</Button>
+                    <Button variant="secondary" size="sm" onClick={() => stop.mutate(d)}><Square size={13} /> 停止</Button>
                   ) : (
-                    <Button variant="secondary" size="sm" className="min-h-11 flex-1 sm:min-h-0 sm:flex-none" onClick={() => run.mutate(d)}><Play size={13} /> 启动</Button>
+                    <Button variant="secondary" size="sm" onClick={() => run.mutate(d)}><Play size={13} /> 启动</Button>
                   )}
                   {gpuCapable && d.kind === 'train' && (
-                    <Button variant="ghost" size="sm" className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0" aria-label="弹性契约" title="弹性契约" onClick={() => openContract(d)}>
+                    <Button variant="ghost" size="sm" aria-label="弹性契约" title="弹性契约" onClick={() => openContract(d)}>
                       <SlidersHorizontal size={13} />
                     </Button>
                   )}
                   <Button
                     variant="ghost" size="sm"
-                    className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
                     aria-label="编辑部署"
                     title="编辑部署"
                     onClick={() => openEdit(d)}
@@ -449,13 +448,12 @@ export function DeploysTab({ podName, canManage }: { podName: string; canManage:
                   </Button>
                   <Button
                     variant="ghost" size="sm"
-                    className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
                     aria-label="查看日志"
                     onClick={() => setLogsFor(logsFor === id ? null : id)}
                   >
                     <ScrollText size={13} />
                   </Button>
-                  <Button variant="ghost" size="sm" className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0" aria-label="删除" onClick={() => { if (confirm(`删除部署 ${d.name}？`)) deleteDeploy.mutate(d) }}>
+                  <Button variant="ghost" size="sm" aria-label="删除" onClick={() => { if (confirm(`删除部署 ${d.name}？`)) deleteDeploy.mutate(d) }}>
                     <Trash2 size={13} />
                   </Button>
                 </div>

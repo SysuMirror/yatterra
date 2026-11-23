@@ -53,10 +53,12 @@ class GroupMove(unittest.TestCase):
         self.data = data
         self.calls = []
         self.groups.apply_group = lambda g: self.calls.append(("apply", g["name"], g.get("node")))
-        self.groups.delete_group_k8s = lambda name: self.calls.append(("delete", name))
+        self.groups.delete_group_k8s = lambda name, **kw: self.calls.append(("delete", name))
         self.groups.rewrite_frpc = lambda state: self.calls.append(("frpc", sorted(state["groups"])))
         self.groups.reload_frpc = lambda: self.calls.append(("reload",))
         self.groups.rewrite_nginx_web = lambda state: None
+        # the rename job waits for the new pod's Ready condition; no cluster here
+        self.groups._wait_pod_ready = lambda name, **kw: True
         self.groups._retarget_store_labels = lambda old, new: None
 
     def _group(self, name="alpha", node="wz8", gpus=None, type_="cpu"):

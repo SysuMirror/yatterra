@@ -304,7 +304,11 @@ def validate_script(path):
 
 def normalize_repo(url):
     """Normalize a repo URL for matching: strip token, drop .git, lower host+path."""
-    p = urlparse((url or "").strip())
+    raw = (url or "").strip()
+    if "://" not in raw and ":" in raw:
+        left, right = raw.split(":", 1)
+        raw = "ssh://" + left.split("@")[-1] + "/" + right
+    p = urlparse(raw)
     host = (p.hostname or "").lower()
     path = p.path or ""
     if path.endswith(".git"):
@@ -708,99 +712,144 @@ def _scheduling_ctx(dep, env):
     return base
 
 
+def _context_json_str(group, dep, env):
+    """Build the structured JSON context string. May raise — caller decides
+    whether that is fatal (hot path) or best-effort (other paths)."""
+    g = groups.load_state().get("groups", {}).get(group) or {}
+    gpus = g.get("gpus") or []
+    web_public = g.get("web_public")
+    ssh_public = g.get("ssh_public")
+    ctx = {
+        "group": group,
+        "type": g.get("type", ""),
+        "gpus": gpus,
+        "public": {
+            "host": siteconf.PUBLIC_HOST,
+            "web_port": web_public,
+            "web_url": siteconf.public_url(web_public) if web_public else "",
+            "ssh_port": ssh_public,
+        },
+        "resources": {
+            "cpu": g.get("cpu", ""),
+            "memory": g.get("mem", ""),
+            "gpu_count": len(gpus),
+        },
+        "platform": {
+            "url": siteconf.PLATFORM_URL,
+            "shared_dir": env.get("SHARED_DIR", "/shared"),
+        },
+        "host": {
+            "name": env.get("HOST_NAME", ""),
+            "kernel": env.get("HOST_KERNEL", ""),
+            "cpu_count": env.get("HOST_CPU_COUNT", ""),
+            "mem_mb": env.get("HOST_MEM_MB", ""),
+            "gpu_models": (env.get("GPU_MODELS", "") or "").split(",") if env.get("GPU_MODELS") else [],
+            "gpu_mem_total_mb": (env.get("GPU_MEM_TOTAL_MB", "") or "").split(",") if env.get("GPU_MEM_TOTAL_MB") else [],
+        },
+        "services": {
+            "mysql": {
+                "host": env.get("MYSQL_HOST", ""),
+                "port": env.get("MYSQL_PORT", ""),
+                "database": env.get("MYSQL_DB", ""),
+            },
+            "minio": {
+                "endpoint": env.get("MINIO_ENDPOINT", ""),
+                "bucket": env.get("MINIO_BUCKET", ""),
+            },
+            "redis": {
+                "host": env.get("REDIS_HOST", ""),
+                "port": env.get("REDIS_PORT", ""),
+            },
+            "qdrant": {
+                "endpoint": env.get("QDRANT_ENDPOINT", ""),
+                "grpc": env.get("QDRANT_GRPC", ""),
+            },
+        },
+        "scheduling": _scheduling_ctx(dep, env),
+        "logging": {
+            "dir": "/home/cloud/logs",
+            "pattern": "*.log",
+            "hint": "应用可将日志写到此目录，平台自动收集展示",
+        },
+    }
+    return json.dumps(ctx, indent=2, sort_keys=True)
+
+
 def _write_context_json(group, dep, env):
     """Write a structured JSON context file to /home/cloud/deploy/context.json
     inside the pod. Best-effort: never raises — a failure here must not break a
     deploy run. Built from the same group record + env used for the program conf."""
     try:
-        g = groups.load_state().get("groups", {}).get(group) or {}
-        gpus = g.get("gpus") or []
-        web_public = g.get("web_public")
-        ssh_public = g.get("ssh_public")
-        ctx = {
-            "group": group,
-            "type": g.get("type", ""),
-            "gpus": gpus,
-            "public": {
-                "host": siteconf.PUBLIC_HOST,
-                "web_port": web_public,
-                "web_url": siteconf.public_url(web_public) if web_public else "",
-                "ssh_port": ssh_public,
-            },
-            "resources": {
-                "cpu": g.get("cpu", ""),
-                "memory": g.get("mem", ""),
-                "gpu_count": len(gpus),
-            },
-            "platform": {
-                "url": siteconf.PLATFORM_URL,
-                "shared_dir": env.get("SHARED_DIR", "/shared"),
-            },
-            "host": {
-                "name": env.get("HOST_NAME", ""),
-                "kernel": env.get("HOST_KERNEL", ""),
-                "cpu_count": env.get("HOST_CPU_COUNT", ""),
-                "mem_mb": env.get("HOST_MEM_MB", ""),
-                "gpu_models": (env.get("GPU_MODELS", "") or "").split(",") if env.get("GPU_MODELS") else [],
-                "gpu_mem_total_mb": (env.get("GPU_MEM_TOTAL_MB", "") or "").split(",") if env.get("GPU_MEM_TOTAL_MB") else [],
-            },
-            "services": {
-                "mysql": {
-                    "host": env.get("MYSQL_HOST", ""),
-                    "port": env.get("MYSQL_PORT", ""),
-                    "database": env.get("MYSQL_DB", ""),
-                },
-                "minio": {
-                    "endpoint": env.get("MINIO_ENDPOINT", ""),
-                    "bucket": env.get("MINIO_BUCKET", ""),
-                },
-                "redis": {
-                    "host": env.get("REDIS_HOST", ""),
-                    "port": env.get("REDIS_PORT", ""),
-                },
-                "qdrant": {
-                    "endpoint": env.get("QDRANT_ENDPOINT", ""),
-                    "grpc": env.get("QDRANT_GRPC", ""),
-                },
-            },
-            "scheduling": _scheduling_ctx(dep, env),
-            "logging": {
-                "dir": "/home/cloud/logs",
-                "pattern": "*.log",
-                "hint": "应用可将日志写到此目录，平台自动收集展示",
-            },
-        }
         _write_file(group, "/home/cloud/deploy/context.json",
-                    json.dumps(ctx, indent=2, sort_keys=True))
+                    _context_json_str(group, dep, env))
     except Exception:
         pass
+
+
+def _deploy_json_str(group, dep, env):
+    """Build the per-deploy info JSON string. May raise — caller decides."""
+    g = groups.load_state().get("groups", {}).get(group) or {}
+    web_public = g.get("web_public")
+    d = {
+        "id": dep["id"],
+        "name": dep["name"],
+        "repo": dep["repo"],
+        "branch": dep.get("branch", ""),
+        "ref": dep.get("last_ref", ""),
+        "kind": dep.get("kind", "serve"),
+        "mode": dep.get("mode", "service"),
+        "port": env.get("PORT", "8080"),
+        "public_url": siteconf.public_url(web_public) if web_public else "",
+        "report_url": env.get("REPORT_URL", ""),
+        "report_token": env.get("REPORT_TOKEN", ""),
+        "health": dep.get("health", ""),
+        "created": dep.get("created", 0),
+    }
+    return json.dumps(d, indent=2, sort_keys=True)
 
 
 def _write_deploy_json(group, dep, env):
     """Write per-deploy info to /home/cloud/deploy/deploy-<id>.json (best-effort).
     The app reads this to know who it is, where to report, and its public URL."""
     try:
-        g = groups.load_state().get("groups", {}).get(group) or {}
-        web_public = g.get("web_public")
-        d = {
-            "id": dep["id"],
-            "name": dep["name"],
-            "repo": dep["repo"],
-            "branch": dep.get("branch", ""),
-            "ref": dep.get("last_ref", ""),
-            "kind": dep.get("kind", "serve"),
-            "mode": dep.get("mode", "service"),
-            "port": env.get("PORT", "8080"),
-            "public_url": siteconf.public_url(web_public) if web_public else "",
-            "report_url": env.get("REPORT_URL", ""),
-            "report_token": env.get("REPORT_TOKEN", ""),
-            "health": dep.get("health", ""),
-            "created": dep.get("created", 0),
-        }
         _write_file(group, f"/home/cloud/deploy/deploy-{dep['id']}.json",
-                    json.dumps(d, indent=2, sort_keys=True))
+                    _deploy_json_str(group, dep, env))
     except Exception:
         pass
+
+
+def _write_deploy_files(group, dep, conf, env):
+    """Write program conf + context.json + deploy-<id>.json + log symlinks in
+    ONE pod exec. 热部署里每个 kubectl exec 都有 ~0.3s 固定开销，逐个写要 6 次。
+    conf 写失败必须让部署失败（与旧的单独 _write_file 语义一致）；context/deploy
+    json 构建或写入失败保持 best-effort（跟旧行为一致），不挡部署。"""
+    parts = [
+        "set -e",
+        f"mkdir -p ~/deploy/{dep['name']}/logs /home/cloud/logs",
+        "echo %s | base64 -d > ~/deploy/programs/deploy-%s.conf"
+        % (base64.b64encode(conf.encode()).decode(), dep["id"]),
+    ]
+    for build, target in (
+        (lambda: _context_json_str(group, dep, env), "/home/cloud/deploy/context.json"),
+        (lambda: _deploy_json_str(group, dep, env),
+         f"/home/cloud/deploy/deploy-{dep['id']}.json"),
+    ):
+        try:
+            payload = base64.b64encode(build().encode()).decode()
+        except Exception:
+            continue
+        parts.append(f"echo {payload} | base64 -d > {target}")
+    parts += [
+        "ln -sf /home/cloud/deploy/%s/logs/stdout.log /home/cloud/logs/deploy-%s.log"
+        % (dep["name"], dep["name"]),
+        "ln -sf /home/cloud/deploy/%s/logs/stderr.log /home/cloud/logs/deploy-%s.error.log"
+        % (dep["name"], dep["name"]),
+    ]
+    script = "\n".join(parts)
+    b64 = base64.b64encode(script.encode()).decode()
+    rc, out, err = _exec(group, "echo %s | base64 -d | bash" % b64, timeout=30)
+    if rc != 0:
+        raise RuntimeError((err or out).strip()[:300])
 
 
 def _program_conf(dep, env):
@@ -809,6 +858,10 @@ def _program_conf(dep, env):
     mode = dep.get("mode", "service")
     source = dep.get("source", "repo")
     autorestart = "true" if mode == "service" else "false"
+    # 配了健康检查的 service 由健康门限把关真正可用性，supervisord 只需 1s 确认活着；
+    # 其余保守用 3s。oneshot 构建被新部署打断时按 5s 强杀，不等默认 10s。
+    startsecs = 1 if (mode == "service" and (dep.get("health") or "").strip()) else 3
+    stopwaitsecs = 5 if mode == "oneshot" else 10
     env_str = ",".join(f'{k}="{v}"' for k, v in env.items())
     if source == "local":
         script = (dep.get("script") or "").strip()
@@ -822,7 +875,8 @@ command={command}
 directory={workdir}
 autostart=true
 autorestart={autorestart}
-startsecs=3
+startsecs={startsecs}
+stopwaitsecs={stopwaitsecs}
 stopasgroup=true
 killasgroup=true
 stdout_logfile=/home/cloud/deploy/{name}/logs/stdout.log
@@ -848,20 +902,24 @@ echo "【脚本就绪 {script}】\""""
     branch = (dep.get("branch") or "").strip()
     subdir = (dep.get("subdir") or "").strip()
     clone_branch = f"-b {branch}" if branch else ""
+    sync_repo = f"git remote set-url origin {repo} && git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+    # 只抓目标分支：fetch --all 拉全部 ref 的对象，热部署白等几秒；
+    # 远端 refspec 配全量，fetch origin <branch> 会顺手更新 origin/<branch>。
     if branch:
-        fetch_reset = f"git fetch --all && git reset --hard origin/{branch} && git clean -fd -- web/dist server/dist"
+        fetch_reset = f"{sync_repo} && git -c http.proxy= -c https.proxy= fetch origin {branch} && git reset --hard origin/{branch} && git clean -fd -- web/dist server/dist"
     else:
-        fetch_reset = "git fetch --all && git reset --hard origin/$(git rev-parse --abbrev-ref HEAD) && git clean -fd -- web/dist server/dist"
+        fetch_reset = f"{sync_repo} && git -c http.proxy= -c https.proxy= fetch --all && git reset --hard origin/$(git rev-parse --abbrev-ref HEAD) && git clean -fd -- web/dist server/dist"
     target = f"{name}/{subdir}" if subdir else name
     return f"""set -e
 mkdir -p ~/deploy && cd ~/deploy
 if [ -d {name}/.git ]; then
   cd {name} && {fetch_reset} && cd ..
 else
-  git clone --depth 1 {clone_branch} {repo} {name}
+  git -c http.proxy= -c https.proxy= clone --depth 1 {clone_branch} {repo} {name}
 fi
 cd {target}
 test -x ./deploy.sh || {{ echo "【仓库未找到可执行 deploy.sh】"; exit 1; }}
+echo "REF $(git rev-parse HEAD)"
 echo "【clone 完成,deploy.sh 就绪】\""""
 
 
@@ -1159,8 +1217,9 @@ def _run_impl(group, dep, skip_if_same_ref=False):
     except Exception:
         pass
 
-    # 2a.1) capture deployed git ref
-    ref = _current_ref(group, dep)
+    # 2a.1) capture deployed git ref — clone 脚本已顺带输出 REF 行，免一次 pod exec
+    m = re.search(r"^REF ([0-9a-f]{40})\s*$", clone_out, re.M)
+    ref = m.group(1) if m else _current_ref(group, dep)
     prev_ref = dep.get("last_ref") or ""
     if skip_if_same_ref and ref and ref == prev_ref:
         # 幂等闸门: 同一 ref 重复投递(=GitHub redelivery / 双 push 同一 commit)不再重启,
@@ -1180,27 +1239,13 @@ def _run_impl(group, dep, skip_if_same_ref=False):
         dep["last_ref"] = ref
         env["DEPLOY_REF"] = ref
 
-    # ensure log dir exists (supervisord refuses to load conf if logfile dir is missing)
-    _exec(group, f"mkdir -p ~/deploy/{dep['name']}/logs", timeout=10)
-
+    # program conf + context.json + deploy.json + 日志软链，一次 exec 写完
     try:
-        _write_file(group, f"~/deploy/programs/deploy-{dep['id']}.conf", _program_conf(dep, env))
+        _write_deploy_files(group, dep, _program_conf(dep, env), env)
     except Exception as e:
         msg = f"写 program 配置失败: {e}"
         update(group, dep["id"], last_status="failed", last_msg=msg)
         return False, msg
-
-    # 2b) write structured context.json + per-deploy deploy.json (best-effort)
-    _write_context_json(group, dep, env)
-    _write_deploy_json(group, dep, env)
-
-    # 2c) symlink deploy logs into /home/cloud/logs/ (best-effort)
-    try:
-        _exec(group, "mkdir -p /home/cloud/logs", timeout=10)
-        _exec(group, f"ln -sf /home/cloud/deploy/{dep['name']}/logs/stdout.log /home/cloud/logs/deploy-{dep['name']}.log", timeout=10)
-        _exec(group, f"ln -sf /home/cloud/deploy/{dep['name']}/logs/stderr.log /home/cloud/logs/deploy-{dep['name']}.error.log", timeout=10)
-    except Exception:
-        pass
 
     # 3) reread + update + (re)start
     _supctl(group, "reread", timeout=15)

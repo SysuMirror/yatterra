@@ -42,7 +42,7 @@ export function DeployRow({ name, status, createdAt, lastRun, onRun, onStop, onD
 
   return (
     <div className="px-4 py-3 rounded-xl hover:bg-black/[0.02] active:bg-black/[0.04] active:scale-[0.99] transition-all group">
-      <div className="flex items-center gap-4">
+      <div className="group flex items-center gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium truncate">{name}</span>
@@ -54,7 +54,7 @@ export function DeployRow({ name, status, createdAt, lastRun, onRun, onStop, onD
           </div>
         </div>
 
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="show-on-fine-hover flex items-center gap-1 transition-opacity">
           <Button variant="ghost" size="sm" onClick={handleAiAnalyze} title="AI 分析">
             {aiLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} className="text-accent" />}
           </Button>

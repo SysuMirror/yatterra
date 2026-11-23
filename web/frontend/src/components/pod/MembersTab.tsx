@@ -108,7 +108,7 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
               {canManage && owners.length > 1 && (
                 <button
                   aria-label={`移除所有者 ${lbl(u)}`}
-                  className="ml-auto opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
+                  data-ux="ux-members-touch" className="show-on-fine-hover ml-auto p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
                   onClick={() => { if (confirm(`移除所有者 ${lbl(u)}？`)) remove.mutate({ kind: 'owner', u }) }}
                 >
                   <Trash2 size={13} />
@@ -143,7 +143,7 @@ export function MembersTab({ podName, canManage }: { podName: string; canManage:
                 {canManage && (
                   <button
                     aria-label={`移除成员 ${lbl(u)}`}
-                    className="ml-auto opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
+                    data-ux="ux-members-touch" className="show-on-fine-hover ml-auto p-1.5 rounded-md text-muted hover:text-bad hover:bg-bad/10 transition-all"
                     onClick={() => { if (confirm(`移除成员 ${lbl(u)}？`)) remove.mutate({ kind: 'member', u }) }}
                   >
                     <Trash2 size={13} />
