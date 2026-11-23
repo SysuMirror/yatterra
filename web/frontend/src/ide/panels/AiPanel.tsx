@@ -23,6 +23,7 @@ import type { ReactNode } from 'react'
 import {
   Send, StopCircle, Plus, Mic, MicOff,
   ChevronDown, ChevronRight, FileDiff, ArrowDown, ShieldAlert, ShieldCheck,
+  Check, Play, AlertTriangle, FileText, ClipboardList, Timer,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { apiFetch } from '@/api/client'
@@ -569,7 +570,7 @@ function DiffCardView({
               style={mobile ? { height: 36, width: 44 } : undefined}
               title={busy ? '写入中…' : '接受修改'}
             >
-              {busy ? '…' : '✓'}
+              {busy ? '…' : <Check size={12} />}
             </button>
           </>
         )}
@@ -595,7 +596,7 @@ function DiffCardView({
           className="px-2 py-1 font-mono text-[11px]"
           style={{ color: card.status === 'accepted' ? 'var(--ide-diff-add)' : 'var(--ide-mut)' }}
         >
-          {card.status === 'accepted' ? '✓ ' : ''}{card.outcome}
+          {card.status === 'accepted' && <Check size={11} className="inline-block mr-1 -mt-0.5" />}{card.outcome}
         </p>
       )}
     </div>
@@ -1743,7 +1744,9 @@ export function AiPanel(props: PanelProps) {
                     className="flex-none font-mono text-[10px]"
                     style={{ color: s.done ? 'var(--ide-mut)' : 'var(--ide-diff-add)' }}
                   >
-                    {s.done ? (s.exit === 0 || s.exit == null ? '✓' : `exit ${s.exit}`) : '▶ 运行中'}
+                    {s.done
+                      ? (s.exit === 0 || s.exit == null ? <Check size={10} /> : `exit ${s.exit}`)
+                      : <span className="inline-flex items-center gap-0.5"><Play size={9} /> 运行中</span>}
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={s.command}>
                     {s.command}
@@ -1794,9 +1797,9 @@ export function AiPanel(props: PanelProps) {
           style={{ color: pendingAskCount > 0 ? 'var(--ide-accent)' : 'var(--ide-mut)' }}
         >
           {pendingAskCount > 0
-            ? `⚠ 等待你确认 · ${pendingAskCount}`
+            ? <span className="inline-flex items-center gap-1"><AlertTriangle size={10} /> 等待你确认 · {pendingAskCount}</span>
             : submitting ? '已收到,正在准备任务…'
-            : loading ? `⏱ ${elapsedText} · 任务进行中 · ${activeRunIds.size}` : `Pod ${podName}`}
+            : loading ? <span className="inline-flex items-center gap-1"><Timer size={10} /> {elapsedText} · 任务进行中 · {activeRunIds.size}</span> : `Pod ${podName}`}
         </span>
         <button
           type="button"
@@ -1950,11 +1953,11 @@ export function AiPanel(props: PanelProps) {
         <div className={cn('ide-ai-context', inputFocused && 'ide-ai-context-on')} aria-hidden={!inputFocused}>
           {editorContext?.path && (
             <span className="ide-chip" title={editorContext.path}>
-              📄 {editorContext.path.split('/').pop()}
+              <FileText size={10} className="inline-block -mt-0.5" /> {editorContext.path.split('/').pop()}
               {editorContext.cursorLine ? `:${editorContext.cursorLine}` : ''}
             </span>
           )}
-          {profileReady && <span className="ide-chip">📋 项目画像</span>}
+          {profileReady && <span className="ide-chip inline-flex items-center gap-1"><ClipboardList size={10} /> 项目画像</span>}
           <span className="ide-chip" title={AUTO_DESC[autoMode]}>
             🛡 AI 确认: {AUTO_LABEL[autoMode]}
           </span>

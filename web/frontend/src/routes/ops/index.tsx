@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { ShieldCheck, ShieldQuestion, FolderOpen, Swords, ChevronRight, AlertTriangle, Ban, Crosshair, Server, HardDrive, Database, Bot, Activity } from 'lucide-react'
@@ -6,6 +7,7 @@ import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
 import { MetricCard } from '@/components/domain/MetricCard'
 import { Card } from '@/components/ui/Card'
+import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { SkeletonCard } from '@/components/ui/Skeleton'
@@ -79,15 +81,24 @@ export default function OpsOverview() {
 
   const auditEntries = audit?.entries ?? []
   const auditTotal = audit?.total ?? 0
+  const [auditFind, setAuditFind] = useState('')
+  const auditQuery = auditFind.trim().toLowerCase()
+  const shownAudit = auditEntries.filter((entry: any) => {
+    if (!auditQuery) return true
+    return [entry.actor, entry.actor_label, entry.user, entry.action, entry.type, entry.detail, entry.target]
+      .some((value) => String(value ?? '').toLowerCase().includes(auditQuery))
+  })
   const sharedFiles = shared?.entries ?? (Array.isArray(shared) ? shared : [])
 
   const k3sReady = host?.k3s?.nodes?.every((n: any) => n.ready) ?? false
-  const rootDisk = host?.disk?.find((d: any) => d.mount === '/') ?? host?.disk?.[0]
+  const disks: any[] = Array.isArray(host?.disk) ? host.disk : []
+  const shownDisks = disks
+  const diskSummary = disks.map((d) => d.error ? `${d.mount} 不可用` : `${d.mount} ${(d.used_pct ?? 0).toFixed(1)}%`).join('，')
 
   return (
     <>
       <PageHeader title="运维" description="审计、共享与安全概览" doc={{ section: 'ops', item: 0, label: '运维文档' }}>
-        <PageAiAssistant page="ops" context={`运维概览: 今日审计 ${audit?.total ?? 0} 条, 威胁攻击 ${threat?.stats?.total_attacks ?? 0} 次, 封禁 ${threat?.stats?.total_banned ?? 0} 个, K3s ${k3sReady ? '正常' : '异常'}, 磁盘 ${(rootDisk?.used_pct ?? 0).toFixed(1)}%`} />
+        <PageAiAssistant page="ops" context={`运维概览: 今日审计 ${audit?.total ?? 0} 条, 威胁攻击 ${threat?.stats?.total_attacks ?? 0} 次, 封禁 ${threat?.stats?.total_banned ?? 0} 个, K3s ${k3sReady ? '正常' : '异常'}, 磁盘 ${diskSummary || '无'}`} />
       </PageHeader>
 
       {/* AI Insight */}
@@ -134,7 +145,7 @@ export default function OpsOverview() {
               <Server size={16} className="text-ok" />
               <h2 className="text-sm font-semibold">系统健康</h2>
             </div>
-            <Link to="/infra/host" className="text-xs text-accent hover:underline flex items-center gap-1">
+            <Link data-ux="ux-ops-host-link" to="/infra/host" className="inline-flex items-center gap-1 text-xs text-accent hover:underline">
               查看详情 <ChevronRight size={12} />
             </Link>
           </div>
@@ -150,15 +161,27 @@ export default function OpsOverview() {
                 <span className="tnum text-xs">{Math.round(host.mem?.used_pct ?? 0)}%</span>
               </div>
             </div>
-            {rootDisk && (
-              <div>
-                <p className="text-xs text-muted mb-1">磁盘 /</p>
-                <div className="flex items-center gap-1">
-                  <Progress value={rootDisk.used_pct ?? 0} size="sm" color={rootDisk.used_pct > 90 ? 'bad' : rootDisk.used_pct > 70 ? 'warn' : 'ok'} />
-                  <span className="tnum text-xs">{Math.round(rootDisk.used_pct ?? 0)}%</span>
-                </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <p className="text-xs text-muted">磁盘</p>
               </div>
-            )}
+              <div className="space-y-1.5">
+                {shownDisks.map((d: any, i: number) => {
+                  const pct = d.used_pct ?? 0
+                  return (
+                    <div key={`${d.mount}-${i}`}>
+                      <div className="flex items-center justify-between text-[10px] text-muted mb-0.5">
+                        <span className="font-mono truncate">{d.mount}</span>
+                        <span className="tnum">{d.error ? d.error : `${Math.round(pct)}%`}</span>
+                      </div>
+                      {!d.error && (
+                        <Progress value={pct} size="sm" color={pct > 90 ? 'bad' : pct > 70 ? 'warn' : 'ok'} />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
             <div>
               <p className="text-xs text-muted mb-1">负载</p>
               <p className="font-medium tnum">{host.load?.load1?.toFixed(2) ?? '—'}</p>
@@ -226,9 +249,21 @@ export default function OpsOverview() {
             查看全部 <ChevronRight size={12} />
           </Link>
         </div>
-        {auditEntries.length > 0 ? (
+        <div className="mb-3">
+          <div className="w-full max-w-xs">
+            <Input
+              data-ux="ux-ops-audit-find"
+              value={auditFind}
+              onChange={(e) => setAuditFind(e.target.value)}
+              placeholder="操作者、动作或详情"
+              aria-label="筛选审计"
+              className="h-9 py-1.5 text-xs"
+            />
+          </div>
+        </div>
+        {shownAudit.length > 0 ? (
           <div className="space-y-2">
-            {auditEntries.map((entry: any, i: number) => (
+            {shownAudit.map((entry: any, i: number) => (
               <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/[0.02] transition-colors">
                 <span className="text-xs text-muted tnum w-[140px] flex-shrink-0">
                   {formatDatetime(entry.ts || entry.time)}
@@ -241,7 +276,7 @@ export default function OpsOverview() {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-muted py-4 text-center">今日暂无审计事件</p>
+          <p className="text-sm text-muted py-4 text-center">{auditEntries.length ? '无匹配审计' : '今日暂无审计事件'}</p>
         )}
       </Card>
 
@@ -269,7 +304,7 @@ export default function OpsOverview() {
       </Card>
 
       {/* Quick actions */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {canApprove && (
           <QuickAction icon={<ShieldQuestion size={18} />} label="审批队列" desc="AI 高危写动作审批" to="/ops/approvals" />
         )}

@@ -24,6 +24,8 @@ export default function OpsShared() {
   const viewerRef = useRef<HTMLDivElement>(null)
   const [mkdirOpen, setMkdirOpen] = useState(false)
   const [mkdirName, setMkdirName] = useState('')
+  const [nameQuery, setNameQuery] = useState('')
+
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const mkdirMut = useMutation({
@@ -94,6 +96,9 @@ export default function OpsShared() {
     modified: e.mtime,
     path: e.path,
   }))
+  const nameQ = nameQuery.trim().toLowerCase()
+  const matchedEntries = nameQ ? fileEntries.filter((e) => e.name.toLowerCase().includes(nameQ)) : fileEntries
+  const shownEntries = matchedEntries
 
   return (
     <>
@@ -154,9 +159,17 @@ export default function OpsShared() {
               </button>
             )}
           </div>
-          <div className="p-2">
+          <div className="p-2 space-y-2">
+            <Input
+              data-ux="ux-shared-find"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="筛选文件名"
+              aria-label="筛选文件名"
+              className="h-9 py-1.5 text-xs"
+            />
             <FileBrowser
-              entries={fileEntries}
+              entries={shownEntries}
               onOpen={handleOpen}
               onExpand={handleExpand}
               onDownload={(path) => { const a = document.createElement('a'); a.href = `/api/shared/download?path=${encodeURIComponent(path)}`; a.click() }}

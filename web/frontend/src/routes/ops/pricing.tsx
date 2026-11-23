@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Coins, Save, RefreshCw, Play, Info } from 'lucide-react'
+import { Coins, Save, RefreshCw, Play } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { Card } from '@/components/ui/Card'
@@ -10,9 +10,12 @@ import { Select } from '@/components/ui/Select'
 import { DataTable, type Column } from '@/components/ui/DataTable'
 import { SkeletonCard } from '@/components/ui/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { Disclosure } from '@/components/ui/Disclosure'
 import { Dialog } from '@/components/ui/Dialog'
 import { useToastStore } from '@/stores/toast'
-import { billingMoneyApi, type BillingAccount, type WalletAccount } from '@/api/billing'
+import { billingMoneyApi, billingScopeLabel, type BillingAccount, type WalletAccount } from '@/api/billing'
+import { useAuth } from '@/hooks/useAuth'
+import { ArrearsPolicyCard } from '@/components/billing/ArrearsPolicyCard'
 
 const yuan = (cents: number | null | undefined) => `¥${(((cents ?? 0) as number) / 100).toFixed(2)}`
 
@@ -31,14 +34,19 @@ const UNIT_HINT: Record<string, string> = {
 export default function OpsPricing() {
   const toast = useToastStore((s) => s.add)
   const qc = useQueryClient()
+  const { hasPerm } = useAuth()
+  const canPrice = hasPerm('billing.price')
+  const canAccount = hasPerm('billing.account')
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [bulkText, setBulkText] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
   const [acctFilter, setAcctFilter] = useState('')
+  const [acctScope, setAcctScope] = useState<'all' | 'internal' | 'external'>('all')
   const [adjustFor, setAdjustFor] = useState<BillingAccount | null>(null)
   const [adjustCents, setAdjustCents] = useState('')
   const [adjustNote, setAdjustNote] = useState('')
   const [settling, setSettling] = useState(false)
+  const [priceFind, setPriceFind] = useState('')
 
   const { data: priceData, isLoading: priceLoading, refetch: refetchPrices } = useQuery({
     queryKey: ['billing-prices'],
@@ -48,11 +56,14 @@ export default function OpsPricing() {
   const keys = priceData?.keys ?? []
   const prices = priceData?.prices ?? {}
   const labels = priceData?.labels ?? {}
+  const priceQuery = priceFind.trim().toLowerCase()
+  const shownPriceKeys = keys.filter((k) => !priceQuery || k.toLowerCase().includes(priceQuery))
   const valueOf = (k: string) => (k in draft ? draft[k] : String(prices[k] ?? 0))
 
   const { data: acctData, refetch: refetchAccts } = useQuery({
     queryKey: ['billing-accounts'],
     queryFn: () => billingMoneyApi.accounts(),
+    enabled: canAccount,
     staleTime: 15_000,
   })
   const accounts: BillingAccount[] = acctData?.accounts ?? []
@@ -60,12 +71,23 @@ export default function OpsPricing() {
   const acctQuery = acctFilter.trim().toLowerCase()
   const filteredAccts = useMemo(() => {
     const rows = acctData?.accounts ?? []
-    return acctQuery ? rows.filter((a) => a.group_name.toLowerCase().includes(acctQuery)) : rows
-  }, [acctData, acctQuery])
+    return rows.filter((a) => {
+      if (acctScope === 'internal' && !a.internal) return false
+      if (acctScope === 'external' && a.internal) return false
+      if (!acctQuery) return true
+      return a.group_name.toLowerCase().includes(acctQuery)
+    })
+  }, [acctData, acctQuery, acctScope])
+  const bulkNames = useMemo(
+    () => bulkText.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean),
+    [bulkText],
+  )
+  const unknownBulk = bulkNames.filter((n) => !accounts.some((a) => a.group_name === n))
 
   const { data: incomeData, refetch: refetchIncome } = useQuery({
     queryKey: ['billing-income'],
     queryFn: () => billingMoneyApi.income(),
+    enabled: canAccount,
     staleTime: 30_000,
   })
   const byKind = incomeData?.by_kind ?? {}
@@ -73,6 +95,7 @@ export default function OpsPricing() {
   const { data: walletData, refetch: refetchWallets } = useQuery({
     queryKey: ['billing-wallets'],
     queryFn: () => billingMoneyApi.adminWallets(),
+    enabled: canAccount,
     staleTime: 15_000,
   })
   const wallets: WalletAccount[] = walletData?.wallets ?? []
@@ -111,7 +134,11 @@ export default function OpsPricing() {
   const runSettle = async (dryRun: boolean) => {
     setSettling(true)
     try {
-      const r = await billingMoneyApi.settle({ dry_run: dryRun }) as any
+      const r = await billingMoneyApi.settle({ dry_run: dryRun }) as { hours: number; groups: number; charged_cents: number; skipped?: boolean }
+      if (r.skipped) {
+        toast({ type: 'info', message: '欠费限制未打开，这次没有扣费。试算仍可预览。' })
+        return
+      }
       toast({ type: 'success', message: `结算完成：${r.hours} 小时 / ${r.groups} 组 / ${yuan(r.charged_cents)}${dryRun ? '（试算）' : ''}` })
       void refetchAccts()
       void refetchIncome()
@@ -147,18 +174,56 @@ export default function OpsPricing() {
     }
   }
 
+  const [restoring, setRestoring] = useState<string | null>(null)
+  const restore = async (acct: BillingAccount) => {
+    setRestoring(acct.group_name)
+    try {
+      const r = await billingMoneyApi.restoreAccount(acct.group_name, true)
+      if (r.started) {
+        toast({ type: 'success', message: `${acct.group_name} 已恢复并启动` })
+      } else {
+        // 账户解冻成功但 Pod 没起来 —— 多半是组不存在/节点无资源，如实报出来
+        const err = (r.start_result as { error?: string } | null)?.error
+        toast({ type: 'warning', message: `${acct.group_name} 账户已恢复，但 Pod 启动未成功${err ? `：${err}` : ''}` })
+      }
+      void refetchAccts()
+    } catch (e) {
+      toast({ type: 'error', message: e instanceof Error ? e.message : '恢复失败' })
+    } finally {
+      setRestoring(null)
+    }
+  }
+
   const setInternal = async (acct: BillingAccount, flag: boolean) => {
     try {
       await billingMoneyApi.bulkAccounts([acct.group_name], { internal: flag })
-      toast({ type: 'success', message: `${acct.group_name} → ${flag ? '内部组(不计费)' : '外部组(计费)'}` })
+      toast({
+        type: 'success',
+        message: flag
+          ? `${acct.group_name} → 平台内部，不结算、不提醒`
+          : `${acct.group_name} → 外部。计费开关不会自动打开；欠费限制关闭时也不会扣费`,
+      })
       void refetchAccts()
+      void qc.invalidateQueries({ queryKey: ['billing-health'] })
+    } catch (e) {
+      toast({ type: 'error', message: e instanceof Error ? e.message : '修改失败' })
+    }
+  }
+
+  const setBillable = async (acct: BillingAccount) => {
+    if (acct.internal) return
+    try {
+      await billingMoneyApi.setAccount(acct.group_name, { billable: acct.billable ? 0 : 1 })
+      toast({ type: 'success', message: `${acct.group_name} 计费${acct.billable ? '关' : '开'}` })
+      void refetchAccts()
+      void qc.invalidateQueries({ queryKey: ['billing-health'] })
     } catch (e) {
       toast({ type: 'error', message: e instanceof Error ? e.message : '修改失败' })
     }
   }
 
   const runBulk = async (flag: boolean) => {
-    const names = bulkText.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean)
+    const names = bulkNames
     if (!names.length) { toast({ type: 'info', message: '请先填写组名(逗号/空格分隔)' }); return }
     setBulkBusy(true)
     try {
@@ -169,6 +234,7 @@ export default function OpsPricing() {
       })
       setBulkText('')
       void refetchAccts()
+      void qc.invalidateQueries({ queryKey: ['billing-health'] })
     } catch (e) {
       toast({ type: 'error', message: e instanceof Error ? e.message : '批量修改失败' })
     } finally {
@@ -225,16 +291,16 @@ export default function OpsPricing() {
       <span className="flex items-center gap-1.5 min-w-0">
         <span className="truncate">{a.group_name}</span>
         {a.synthetic && (
-          <span className="text-[10px] text-muted/70 flex-shrink-0"
-                title="尚未建账：结算 / 充值 / 调整后自动建账，此处显示默认值">未建账</span>
+          <Badge variant="muted" className="text-[10px] flex-shrink-0"
+                 title="尚未建账：结算 / 充值 / 调整后自动建账，此处显示默认值">未建账</Badge>
         )}
       </span>
     ) },
-    { key: 'internal', title: '归属', width: '80px', render: (a) => (
+    { key: 'internal', title: '归属', width: '150px', render: (a) => (
       <button className={`text-xs hover:underline ${a.internal ? 'text-muted' : 'text-accent'}`}
               onClick={() => setInternal(a, !a.internal)}
-              title={a.internal ? '平台内部组：不计费' : '外部组：按用量计费'}>
-        {a.internal ? '内部' : '外部'}
+              title={a.internal ? '平台内部组，点击改为外部' : '外部组，点击改为平台内部'}>
+        {billingScopeLabel(a)}
       </button>
     ) },
     { key: 'balance_cents', title: '余额', width: '110px', sortable: true, render: (a) => (
@@ -249,14 +315,28 @@ export default function OpsPricing() {
         options={[{ value: 'active', label: '正常' }, { value: 'suspended', label: '停用' }, { value: 'closed', label: '关闭' }]}
       />
     ) },
-    { key: 'billable', title: '计费', width: '80px', render: (a) => (
-      <button className="text-xs text-accent hover:underline"
-              onClick={() => billingMoneyApi.setAccount(a.group_name, { billable: a.billable ? 0 : 1 }).then(() => refetchAccts())}>
+    { key: 'billable', title: '计费开关', width: '90px', render: (a) => (
+      <button className={`text-xs ${a.internal ? 'text-muted/40 cursor-not-allowed' : 'text-accent hover:underline'}`}
+              disabled={!!a.internal}
+              title={a.internal ? '平台内部组不走这个开关' : '只对外部组生效。欠费限制关闭时仍然不扣费'}
+              onClick={() => setBillable(a)}>
         {a.billable ? '开' : '关'}
       </button>
     ) },
-    { key: 'op', title: '操作', width: '80px', render: (a) => (
-      <button className="text-xs text-accent hover:underline" onClick={() => setAdjustFor(a)}>调整</button>
+    { key: 'op', title: '操作', width: '130px', render: (a) => (
+      <div className="flex items-center gap-2">
+        <button className="text-xs text-accent hover:underline" onClick={() => setAdjustFor(a)}>调整</button>
+        {a.status !== 'active' && (
+          <button
+            className="text-xs text-ok hover:underline disabled:opacity-50"
+            disabled={restoring === a.group_name}
+            title="解冻账户并把停机的 Pod 拉起来(停机是两步，恢复也一步到位)"
+            onClick={() => restore(a)}
+          >
+            {restoring === a.group_name ? '启动中…' : '恢复并启动'}
+          </button>
+        )}
+      </div>
     ) },
   ]
 
@@ -297,25 +377,44 @@ export default function OpsPricing() {
         <PageAiAssistant page="pricing" context={aiContext} />
       </PageHeader>
 
-      <Card padding="md" className="mb-5 bg-accent/[0.04] border-accent/20">
-        <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-ink"><Info size={15} className="text-accent" /> 怎么用</div>
-        <ul className="list-disc list-inside text-xs text-muted space-y-1 leading-relaxed">
-          <li>① 设单价：填每种资源的「分 / 计量单位」，<b>0 表示该项不计费</b>。填完点保存，立即对下一次结算生效。</li>
-          <li>② 看账户：结算或充值后每个组会自动建账，可在此查看余额、切换<b>归属（内部/外部）</b>、开关计费、人工调整余额。<b>默认全部组计费</b>；把平台自己的组标记为「内部」即免计费（不结算、不提醒）。</li>
-          <li>③ 看钱包：用户的充值先进<b>个人钱包</b>（本页「用户钱包」表），再由用户/管理员<b>分配</b>给具体 Pod。可人工调整钱包余额、冻结钱包、或代用户给某 Pod 分配/收回额度。</li>
-          <li>④ 跑结算：每小时结算一次（幂等，重复跑只补未结算的小时）。改动后可点「试算」预览不落账。</li>
-        </ul>
-      </Card>
+      <div className="mb-5">
+        <Disclosure title="怎么用：单价 / 欠费限制 / 账户 / 钱包 / 结算">
+          <div className="px-4 pb-4 space-y-2 text-xs text-muted leading-relaxed">
+            <p>① 设单价：填每种资源的「分 / 计量单位」，<b className="text-ink-2">0 表示该项不计费</b>。填完点保存，立即对下一次结算生效。</p>
+            <p>② 欠费限制默认关闭：不扣费、不提醒、不限制资源。打开之后的小时才开始扣费。</p>
+            <p>③ 看账户：切换平台内部 / 外部，再单独开关计费。改回外部不会自动打开计费。</p>
+            <p>④ 看钱包：充值先进个人钱包，再分配给 Pod。可调整、冻结，或代分配 / 收回。</p>
+            <p>⑤ 跑结算：欠费限制打开后每小时结算一次（幂等）。改动后可点「试算」预览不落账。</p>
+          </div>
+        </Disclosure>
+      </div>
 
-      {priceLoading ? <SkeletonCard /> : (
+      {canAccount && <ArrearsPolicyCard />}
+
+      {canPrice ? (priceLoading ? <SkeletonCard /> : (
         <Card padding="md" className="mb-5">
           <div className="flex items-center gap-2 mb-4">
             <Coins size={16} className="text-accent" />
             <span className="text-sm font-semibold text-ink">资源单价（单位：分 / 计量单位；0 = 不计费）</span>
             <Button size="sm" className="ml-auto" loading={saving} onClick={savePrices}><Save size={14} /> 保存</Button>
           </div>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="w-full max-w-xs">
+              <Input
+                data-ux="ux-pricing-find"
+                value={priceFind}
+                onChange={(e) => setPriceFind(e.target.value)}
+                placeholder="筛选单价 key"
+                aria-label="筛选单价"
+                className="h-9 py-1.5 text-xs"
+              />
+            </div>
+          </div>
+          {shownPriceKeys.length === 0 ? (
+            <p className="text-sm text-muted py-4 text-center">{keys.length ? '无匹配单价' : '暂无单价'}</p>
+          ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {keys.map((k) => (
+            {shownPriceKeys.map((k) => (
               <Input
                 key={k}
                 label={labels[k] ?? k}
@@ -326,17 +425,24 @@ export default function OpsPricing() {
               />
             ))}
           </div>
+          )}
+        </Card>
+      )) : (
+        <Card padding="md" className="mb-5">
+          <p className="text-sm text-muted">改单价需要「设置单价」权限。</p>
         </Card>
       )}
 
+      {canAccount && (
       <div className="flex flex-wrap items-center gap-3 mb-5">
         <Button size="sm" loading={settling} onClick={() => runSettle(false)}><Play size={14} /> 立即结算</Button>
         <Button size="sm" variant="outline" loading={settling} onClick={() => runSettle(true)}>试算</Button>
-        <span className="text-xs text-muted">结算幂等：重复运行只补未结算的小时。</span>
+        <span className="text-xs text-muted">欠费限制关闭时，立即结算不会扣费。试算只预览。</span>
       </div>
+      )}
 
       {/* 收支概览 */}
-      {Object.keys(byKind).length > 0 && (
+      {canAccount && Object.keys(byKind).length > 0 && (
         <Card padding="md" className="mb-5">
           <div className="text-sm font-semibold text-ink mb-3">台账收支（按类型）</div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -351,31 +457,52 @@ export default function OpsPricing() {
         </Card>
       )}
 
+      {canAccount && (
       <Card padding="none">
-        <div className="px-4 py-3 border-b border-black/[0.06]">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm font-semibold text-ink">组账户</span>
-            <span className="text-xs text-muted">
-              列出全部组；默认全部计费，「内部组」免计费（不结算、不提醒）。未建账的组按默认值显示，可直接切换归属。
-            </span>
-            <div className="flex flex-wrap items-center gap-2 ml-auto">
-              <div className="w-64">
-                <Input value={bulkText} onChange={(e) => setBulkText(e.target.value)}
-                       placeholder="批量：组名，逗号/空格分隔" />
-              </div>
-              <Button size="sm" variant="outline" loading={bulkBusy} onClick={() => runBulk(true)}>设为内部</Button>
-              <Button size="sm" variant="outline" loading={bulkBusy} onClick={() => runBulk(false)}>设为外部</Button>
-            </div>
+        <div className="px-4 py-3 border-b border-black/[0.06] space-y-2">
+          <div className="text-sm font-semibold text-ink">组账户</div>
+          <p className="text-xs text-muted">
+            未建账的组按默认值显示；平台内部 / 外部的计费差异见上方「怎么用」。
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {([
+              ['all', '全部'],
+              ['internal', '平台内部'],
+              ['external', '外部'],
+            ] as const).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setAcctScope(k)}
+                className={`rounded-lg px-2.5 py-1 text-xs font-medium ${acctScope === k ? 'bg-accent/10 text-accent' : 'bg-black/[0.04] text-muted'}`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="w-full sm:w-64">
+              <Input value={bulkText} onChange={(e) => setBulkText(e.target.value)}
+                     placeholder="批量组名，逗号或空格分隔" />
+            </div>
+            <Button size="sm" variant="outline" loading={bulkBusy} onClick={() => runBulk(true)}>设为平台内部</Button>
+            <Button size="sm" variant="outline" loading={bulkBusy} onClick={() => runBulk(false)}>设为外部</Button>
+          </div>
+          {bulkNames.length > 0 && (
+            <p className="text-xs text-muted">
+              将修改 {bulkNames.length} 个：{bulkNames.slice(0, 12).join('、')}{bulkNames.length > 12 ? '…' : ''}
+              {unknownBulk.length > 0 ? `。其中 ${unknownBulk.slice(0, 8).join('、')} 不在组列表里` : ''}
+            </p>
+          )}
         </div>
         <div className="p-2">
           <div className="flex flex-wrap items-center gap-3 px-2 pb-2">
-            <div className="w-56">
+            <div className="w-full sm:w-56">
               <Input value={acctFilter} onChange={(e) => setAcctFilter(e.target.value)} placeholder="筛选组名…" />
             </div>
             <span className="text-xs text-muted tnum">
-              {acctQuery ? `匹配 ${filteredAccts.length} / ${accounts.length}` : `共 ${accounts.length} 组`}
-              {internalCount > 0 ? ` · 内部 ${internalCount}` : ''}
+              {acctQuery || acctScope !== 'all' ? `匹配 ${filteredAccts.length} / ${accounts.length}` : `共 ${accounts.length} 组`}
+              {internalCount > 0 ? ` · 平台内部 ${internalCount}` : ''}
             </span>
           </div>
           <DataTable columns={acctCols} data={filteredAccts} keyFn={(a) => a.group_name}
@@ -384,18 +511,21 @@ export default function OpsPricing() {
                                         description={acctQuery ? '换个关键字试试。' : '结算或首次充值后自动建账。'} />} />
         </div>
       </Card>
+      )}
 
       {/* 用户钱包 */}
+      {canAccount && (
       <Card padding="none" className="mt-5">
         <div className="px-4 py-3 border-b border-black/[0.06]">
           <div className="text-sm font-semibold text-ink">用户钱包</div>
-          <div className="text-xs text-muted">充值的钱先进这里；用户把钱分配给它所属的 Pod，Pod 再独立扣费。可人工调整、冻结、或代分配/收回。</div>
+          <div className="text-xs text-muted">充值的钱先进这里，再由用户分配给所属 Pod 独立扣费；支持人工调整、冻结、代分配 / 收回。</div>
         </div>
         <div className="p-2">
           <DataTable columns={walletCols} data={wallets} keyFn={(w) => w.username}
                      empty={<EmptyState icon={<Coins size={20} />} title="暂无钱包" description="用户首次充值或首次分配后自动建钱包。" />} />
         </div>
       </Card>
+      )}
 
       <Dialog
         open={!!adjustFor}

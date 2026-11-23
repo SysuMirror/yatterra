@@ -367,7 +367,7 @@ export function AiInsightPanel({
                       onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChatSend() } }}
                       placeholder="基于当前数据追问..."
                       disabled={chatLoading}
-                      className="flex-1 rounded-lg border border-accent/15 bg-bg px-2.5 py-1.5 text-sm focus:outline-none focus:border-accent/40 disabled:opacity-50"
+                      className="flex-1 rounded-lg border border-accent/15 bg-[var(--surface-1)] px-2.5 py-1.5 text-sm focus:outline-none focus:border-accent/40 disabled:opacity-50"
                     />
                     {chatLoading ? (
                       <button

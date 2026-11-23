@@ -35,12 +35,12 @@ const POD_STATUS: Record<string, string> = {
 
 /** 三步说明 —— 让「钱怎么走」一眼看明白。 */
 const STEPS = [
-  { n: 1, t: '充值进钱包', d: '选一个金额档位下单，用微信小程序付款，付完钱进**你自己的钱包**（不用先挑组）。' },
+  { n: 1, t: '充值进钱包', d: '选一个金额档位下单，用微信小程序付款，付完钱进你自己的钱包（不用先挑组）。' },
   { n: 2, t: '分配给 Pod', d: '在「我的 Pod 额度」把你钱包里的钱分配给你所属的某个 Pod；未分配的钱留着不动。' },
-  { n: 3, t: 'Pod 独立扣费', d: '平台按 CPU/GPU/内存/存储用量，每小时从**该 Pod 的额度**扣一次；额度耗尽会提醒并停机。' },
+  { n: 3, t: 'Pod 独立扣费', d: '平台按 CPU/GPU/内存/存储用量，每小时从该 Pod 的额度扣一次；额度耗尽会提醒并停机。' },
 ]
 
-/** 账户与充值 —— 个人钱包（充值入口）+ 给 Pod 分配额度（扣费出口）。 */
+/** 钱包与额度 —— 个人钱包（充值入口）+ 给 Pod 分配额度。 */
 export default function Billing() {
   const toast = useToastStore((s) => s.add)
   const qc = useQueryClient()
@@ -100,6 +100,11 @@ export default function Billing() {
   }, [polled?.status])
 
   const [creating, setCreating] = useState('')
+  const [payStep, setPayStep] = useState(0)
+
+  const jumpPayStep = (index: number) => {
+    if (index < payStep) setPayStep(index)
+  }
   const createOrder = async (item: PayItem) => {
     setCreating(item.item_key)
     try {
@@ -250,17 +255,28 @@ export default function Billing() {
       {/* 怎么用 —— 三步 */}
       <Card padding="md" className="mb-5 bg-accent/[0.04] border-accent/20">
         <div className="flex items-center gap-2 mb-3 text-sm font-semibold text-ink"><Info size={15} className="text-accent" /> 怎么用</div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {STEPS.map((s) => (
-            <div key={s.n} className="flex gap-2">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent text-[11px] font-bold text-white">{s.n}</span>
-              <div>
-                <div className="text-sm font-medium text-ink">{s.t}</div>
-                <div className="text-xs text-muted leading-relaxed">{s.d}</div>
-              </div>
-            </div>
-          ))}
+        <div data-ux="ux-billing-step-jump" className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {STEPS.map((s, i) => {
+            const done = i < payStep
+            const current = i === payStep
+            return (
+              <button
+                key={s.n}
+                type="button"
+                aria-current={current ? 'step' : undefined}
+                onClick={() => jumpPayStep(i)}
+                className={`flex gap-2 text-left rounded-lg p-1 transition-colors ${current ? 'bg-white/70 ring-1 ring-accent/30' : done ? 'hover:bg-white/60' : 'cursor-default'}`}
+              >
+                <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${current || done ? 'bg-accent' : 'bg-black/25'}`}>{s.n}</span>
+                <span>
+                  <span className="block text-sm font-medium text-ink">{s.t}</span>
+                  <span className="block text-xs text-muted leading-relaxed">{s.d}</span>
+                </span>
+              </button>
+            )
+          })}
         </div>
+
       </Card>
 
       {walletLoading ? <SkeletonCard /> : (
@@ -323,7 +339,7 @@ export default function Billing() {
           <h2 className="text-sm font-semibold text-ink mb-1">给钱包充值</h2>
           <p className="text-xs text-muted mb-2">点击「充值」生成一个微信支付订单，付款成功后金额进入你的钱包（不再选择组）。</p>
           {!configured && (
-            <div className="mb-5 rounded-xl bg-warn/10 border border-warn/25 px-4 py-3 text-sm text-[#9a6700]">
+            <div className="mb-5 rounded-xl bg-warn/10 border border-warn/25 px-4 py-3 text-sm text-warn">
               支付功能尚未配置（缺少 PAY_APP_SECRET），暂时无法下单充值。请联系管理员。
             </div>
           )}
@@ -333,7 +349,10 @@ export default function Billing() {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-5">
               {items.map((it) => (
                 <Card key={it.item_key} padding="md" hover className="flex flex-col">
-                  <div className="text-lg font-bold text-ink tnum">{yuan(it.credit_cents || it.amount_cents)}</div>
+                  <div data-ux="ux-billing-amount" className="flex items-baseline gap-2">
+                    <span className="text-lg font-bold text-ink tnum">{yuan(it.credit_cents || it.amount_cents)}</span>
+                    <span className="text-[10px] text-muted">到账</span>
+                  </div>
                   <div className="text-xs text-muted mb-3">
                     {it.title}
                     {it.credit_cents && it.credit_cents !== it.amount_cents
@@ -432,7 +451,7 @@ export default function Billing() {
               title={`收回归还 · ${reclaimFor?.name ?? ''}`} width="max-w-sm">
         <div className="space-y-3">
           <p className="text-xs text-muted">
-            把该 Pod 未用完的额度退回**指定用户**的钱包（仅管理员）。金额以 Pod 当前余额为上限。
+            把该 Pod 未用完的额度退回指定用户的钱包（仅管理员）。金额以 Pod 当前余额为上限。
           </p>
           <Input label="退回到的用户名" value={reclaimUser} onChange={(e) => setReclaimUser(e.target.value)} placeholder="如 alice" />
           <Input label="收回金额（元）" type="number" step="0.01" value={reclaimYuan}

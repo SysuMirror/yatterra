@@ -18,13 +18,15 @@ interface DataTableProps<T> {
   data: T[]
   keyFn: (row: T) => string
   onRowClick?: (row: T) => void
+  /** Highlight the row(s) matching this predicate (e.g. master-detail selection) */
+  isRowActive?: (row: T) => boolean
   empty?: React.ReactNode
   className?: string
 }
 
 type SortDir = 'asc' | 'desc' | null
 
-export function DataTable<T>({ columns, data, keyFn, onRowClick, empty, className }: DataTableProps<T>) {
+export function DataTable<T>({ columns, data, keyFn, onRowClick, isRowActive, empty, className }: DataTableProps<T>) {
   const [sortKey, setSortKey] = useState<string | null>(null)
   const [sortDir, setSortDir] = useState<SortDir>(null)
 
@@ -58,7 +60,8 @@ export function DataTable<T>({ columns, data, keyFn, onRowClick, empty, classNam
   const gridCols = columns.map((col) => col.width || 'auto').join(' ')
 
   return (
-    <div className={cn('overflow-x-auto rounded-xl border-[0.5px] border-black/[0.06]', className)}>
+    <div data-ux="ux-table-cards" className={cn('rounded-xl border-[0.5px] border-black/[0.06]', className)}>
+      <div className="overflow-x-auto">
       <table className="w-full text-sm" style={{ tableLayout: 'auto' }}>
         <thead>
           <tr className="border-b border-black/[0.06] bg-black/[0.02]">
@@ -101,8 +104,12 @@ export function DataTable<T>({ columns, data, keyFn, onRowClick, empty, classNam
                 className={cn(
                   'border-b border-black/[0.04] last:border-0 transition-colors hover:bg-[var(--surface-2)]',
                   onRowClick && 'cursor-pointer active:bg-black/[0.04]',
+                  isRowActive?.(row) && 'bg-accent/[0.05]',
                 )}
-                onClick={() => onRowClick?.(row)}
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest('a,button,input,select,textarea')) return
+                  onRowClick?.(row)
+                }}
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.15, delay: Math.min(i * 0.02, 0.3) }}
@@ -119,6 +126,7 @@ export function DataTable<T>({ columns, data, keyFn, onRowClick, empty, classNam
           </AnimatePresence>
         </tbody>
       </table>
+      </div>
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Folder, File, ChevronRight, FolderPlus, FilePlus, Download, Copy, Trash2, Sparkles, Loader2 } from 'lucide-react'
+import { Folder, File, ChevronRight, FolderPlus, FilePlus, Download, Copy, Trash2, Sparkles, Loader2, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { haptic } from '@/lib/haptic'
 import { useLongPress } from '@/hooks/useLongPress'
@@ -221,7 +221,7 @@ function FileNode({ entry, path, onOpen, onExpand, onDownload, onDelete, depth, 
               {loading ? (
                 <span className="w-[14px] h-[14px] border-2 border-muted border-t-transparent rounded-full animate-spin flex-shrink-0" />
               ) : loadError ? (
-                <span className="w-[14px] text-xs text-red-500 flex-shrink-0" aria-hidden="true">!</span>
+                <AlertCircle size={14} className="text-bad flex-shrink-0" aria-hidden="true" />
               ) : (
                 <motion.span animate={{ rotate: expanded ? 90 : 0 }} transition={{ duration: 0.15 }} className="flex-shrink-0">
                   <ChevronRight size={14} className="text-muted" />

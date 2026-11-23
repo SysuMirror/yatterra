@@ -22,6 +22,17 @@ const BUCKETS: { key: BillingBucket; label: string }[] = [
   { key: 'hour', label: '按小时' },
   { key: 'day', label: '按天' },
 ]
+const BILLING_RANGE_KEY = 'ux-ops-billing-range'
+
+function storedBillingRange(): BillingRange {
+  try {
+    const saved = sessionStorage.getItem(BILLING_RANGE_KEY)
+    if (saved && RANGES.some((r) => r.key === saved)) return saved as BillingRange
+  } catch {
+    /* ignore */
+  }
+  return '7d'
+}
 
 function bucketLabel(ts: number, bucket: string): string {
   const d = new Date(ts * 1000)
@@ -32,8 +43,12 @@ function bucketLabel(ts: number, bucket: string): string {
 /** 平台计费总览 —— 按组核时/卡时账单（管理员）。 */
 export default function OpsBilling() {
   const dark = useThemeStore((s) => s.resolved) === 'dark'
-  const [range, setRange] = useState<BillingRange>('7d')
+  const [range, setRange] = useState<BillingRange>(storedBillingRange)
   const [bucket, setBucket] = useState<BillingBucket>('day')
+  const chooseRange = (key: BillingRange) => {
+    setRange(key)
+    try { sessionStorage.setItem(BILLING_RANGE_KEY, key) } catch { /* ignore */ }
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ['billing-summary', range, bucket],
@@ -44,6 +59,7 @@ export default function OpsBilling() {
 
   const t = data?.totals
   const series = (data?.series ?? []).map((r) => ({ ...r, label: bucketLabel(r.bucket_start, bucket) }))
+  const chartSeries = series
   const perGroup = data?.per_group ?? []
 
   // 给 AI 助手的页面上下文摘要（顶部浪费核时 Top 5）。
@@ -73,18 +89,18 @@ export default function OpsBilling() {
   return (
     <>
       <PageHeader
-        title="计费"
-        description="按核时 / 卡时统计各组资源用量（超算式计量）"
+        title="用量"
+        description="按核时 / 卡时统计各组资源用量，仅统计不扣费。"
         count={perGroup.length > 0 ? `${perGroup.length} 个组` : undefined}
-        doc={{ section: 'ops', item: 0, label: '计费说明' }}
+        doc={{ section: 'ops', item: 3, label: '计费说明' }}
       >
         <PageAiAssistant page="billing" context={aiContext} />
         <Button variant="secondary" size="sm" disabled={!perGroup.length} onClick={exportCsv}><Download size={14} /> 导出</Button>
       </PageHeader>
 
-      <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+      <div data-ux="ux-billing-range-memory" className="flex items-center gap-1.5 mb-4 flex-wrap">
         {RANGES.map((r) => (
-          <button key={r.key} type="button" onClick={() => setRange(r.key)}
+          <button key={r.key} type="button" onClick={() => chooseRange(r.key)}
             data-assistant-control={`billing-range-${r.key}`}
             data-assistant-label={`计费区间 ${r.label}`}
             data-assistant-actions="inspect click"
@@ -133,12 +149,12 @@ export default function OpsBilling() {
               <Receipt size={15} className="text-accent" />
               <h2 className="text-sm font-semibold">平台核时走势：实测 vs 申请</h2>
             </div>
-            {series.length === 0 ? (
+            {chartSeries.length === 0 ? (
               <p className="text-sm text-muted py-10 text-center">该区间暂无用量记录</p>
             ) : (
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={series} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+                  <BarChart data={chartSeries} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
                     <CartesianGrid stroke={gridStroke(dark)} vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 10, fill: axisTick(dark) }} tickLine={false} axisLine={false} minTickGap={20} />
                     <YAxis tick={{ fontSize: 10, fill: axisTick(dark) }} tickLine={false} axisLine={false} width={48} />

@@ -173,77 +173,82 @@ function StaticPanel() {
       </Card>
 
       <Card padding="none">
-        <div className="p-4 flex items-center gap-2 flex-wrap border-b border-line">
-          <div className="relative">
-            <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索文件 / 片段…"
-              className="pl-8 w-56"
+        <div className="p-4 border-b border-line">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="搜索文件 / 片段…"
+                className="pl-8 w-56"
+              />
+            </div>
+            <Select
+              value={sev}
+              onChange={setSev}
+              options={[
+                { value: '', label: '全部等级' },
+                { value: 'critical', label: '严重' },
+                { value: 'high', label: '高危' },
+                { value: 'medium', label: '中危' },
+                { value: 'low', label: '低危' },
+              ]}
+              className="w-32"
             />
+            <Select
+              value={status}
+              onChange={setStatus}
+              options={[
+                { value: '', label: '全部状态' },
+                { value: 'open', label: '待处理' },
+                { value: 'ignored', label: '已忽略' },
+                { value: 'resolved', label: '已解决' },
+              ]}
+              className="w-32"
+            />
+            <span className="ml-auto text-sm text-muted tnum">
+              {findings?.total ?? 0} 项{isFetching ? ' · 加载中' : ''}
+            </span>
           </div>
-          <Select
-            value={sev}
-            onChange={setSev}
-            options={[
-              { value: '', label: '全部等级' },
-              { value: 'critical', label: '严重' },
-              { value: 'high', label: '高危' },
-              { value: 'medium', label: '中危' },
-              { value: 'low', label: '低危' },
-            ]}
-            className="w-32"
-          />
-          <Select
-            value={status}
-            onChange={setStatus}
-            options={[
-              { value: '', label: '全部状态' },
-              { value: 'open', label: '待处理' },
-              { value: 'ignored', label: '已忽略' },
-              { value: 'resolved', label: '已解决' },
-            ]}
-            className="w-32"
-          />
-          <Select
-            value={check}
-            onChange={setCheck}
-            options={checkOptions}
-            className="w-56"
-          />
-          <Select
-            value={category}
-            onChange={setCategory}
-            options={categoryOptions}
-            className="w-36"
-          />
-          <Select
-            value={scope}
-            onChange={(v) => { setScope(v); setCheck('') }}
-            options={scopeOptions}
-            className="w-52"
-          />
-          <Select
-            value={source}
-            onChange={setSource}
-            options={sourceOptions}
-            className="w-32"
-          />
-          {scope && scope !== 'platform' && scope !== 'host' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!canRun || reviewPod.isPending}
-              onClick={() => reviewPod.mutate(scope)}
-              title="对该 Pod 立即跑一次 podwatch 巡检（含 LLM 安全审查）"
-            >
-              <ShieldAlert size={14} className="mr-1" />LLM 复核该 Pod
-            </Button>
-          )}
-          <span className="ml-auto text-sm text-muted tnum">
-            {findings?.total ?? 0} 项{isFetching ? ' · 加载中' : ''}
-          </span>
+          <div className="flex items-center gap-2 flex-wrap mt-2 pt-2 border-t border-line/60">
+            <span className="text-[10px] uppercase tracking-wide text-muted/70">细分</span>
+            <Select
+              value={check}
+              onChange={setCheck}
+              options={checkOptions}
+              className="w-56"
+            />
+            <Select
+              value={category}
+              onChange={setCategory}
+              options={categoryOptions}
+              className="w-36"
+            />
+            <Select
+              value={scope}
+              onChange={(v) => { setScope(v); setCheck('') }}
+              options={scopeOptions}
+              className="w-52"
+            />
+            <Select
+              value={source}
+              onChange={setSource}
+              options={sourceOptions}
+              className="w-32"
+            />
+            {scope && scope !== 'platform' && scope !== 'host' && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!canRun || reviewPod.isPending}
+                onClick={() => reviewPod.mutate(scope)}
+                title="对该 Pod 立即跑一次 podwatch 巡检（含 LLM 安全审查）"
+              >
+                <ShieldAlert size={14} className="mr-1" />LLM 复核该 Pod
+              </Button>
+            )}
+          </div>
         </div>
 
         {(findings?.items || []).length === 0 ? (
@@ -440,7 +445,7 @@ function ArtexPanel() {
         </div>
         {(statusError || status == null) ? (
           <div className="mt-2 text-sm text-bad">
-            无法读取 ARTEX 状态（后端 /security/artex 未响应或返回空）。
+            无法读取 ARTEX 状态，请稍后重试。
           </div>
         ) : (!status.ok && status.error && (
           <div className="mt-2 text-sm text-bad">连接失败：{status.error}</div>
@@ -468,14 +473,14 @@ function ArtexPanel() {
           />
           {sel && <span className="text-xs text-muted font-mono">{sel.internal_url}</span>}
           {targetList.length === 0 && (
-            <span className="text-xs text-muted">暂无可选 Pod（需运行中且 :8080 有服务响应）</span>
+            <span className="text-xs text-muted">暂无可选 Pod（需在运行中且 Web 服务正常）</span>
           )}
         </div>
         {sel && (
           <div className="mt-2 text-xs text-muted">
             内部目标 <span className="font-mono text-ink">{sel.internal_url}</span>
             {' · '}类型 {sel.type || 'cpu'}{sel.node ? ` · 节点 ${sel.node}` : ''}
-            {' · '}ARTEX 经集群内网直连该 Service 的 :8080
+            {' · '}ARTEX 经集群内网直连该 Pod 的 Web 服务
           </div>
         )}
         <div className="mt-3 flex items-center gap-2 flex-wrap">

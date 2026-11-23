@@ -18,8 +18,11 @@ import { SkeletonCard } from '@/components/ui/Skeleton'
 import { api } from '@/api/client'
 import { useThemeStore } from '@/stores/theme'
 import { formatDatetime } from '@/lib/format'
+import { piePalette, chartTooltip, axisTick, gridStroke } from '@/lib/chartColors'
 
-const ACTION_COLORS = ['#0a84ff', '#ff9f0a', '#30d158', '#ff453a', '#bf5af2', '#64d2ff', '#ff6482', '#ac8e68']
+/** 操作类型分布按调色板固定顺序取色；超出槽位的类型并入中性色。 */
+const actionColor = (dark: boolean, i: number) =>
+  piePalette(dark)[i] ?? (dark ? '#4b5563' : '#c3c2b7')
 
 /** Actors that are subsystems rather than people (audit.record(module=...)). */
 const MODULE_ACTORS = new Set(['proxy_map', 'minio_svc', 'db_svc', 'deploys', 'scheduler', 'platform', 'webhook', 'app', 'agent', 'harness', 'subagent', 'system'])
@@ -55,6 +58,7 @@ export default function OpsAudit() {
   const [action, setAction] = useState('')
   const [dateRange, setDateRange] = useState('')
   const [limit, setLimit] = useState('100')
+
   const aiRef = useRef<PageAiAssistantHandle>(null)
 
   const { data, isLoading } = useQuery<any>({
@@ -73,6 +77,7 @@ export default function OpsAudit() {
 
   const items = data?.entries ?? []
   const total = data?.total ?? 0
+  const visibleItems = Array.isArray(items) ? items : []
 
   // Compute statistics from current items
   const stats = useMemo(() => {
@@ -135,7 +140,7 @@ export default function OpsAudit() {
     <>
       <PageHeader title="审计日志" description="系统操作审计追踪" count={total > 0 ? `共 ${total} 条` : undefined} doc={{ section: 'ops', item: 0, label: '审计文档' }}>
         <div className="flex items-center gap-2">
-          <Button data-onboarding-target="audit-export" variant="secondary" size="sm" disabled={!items.length} onClick={handleExportCsv}><Download size={14} /> 导出</Button>
+          <Button data-ux="ux-audit-export-why" data-onboarding-target="audit-export" variant="secondary" size="sm" disabled={!items.length} title={items.length ? '下载当前筛选结果' : '当前没有可导出的记录'} onClick={handleExportCsv}><Download size={14} /> 导出</Button>
           <Button data-onboarding-target="audit-summarize" variant="secondary" size="sm" disabled={!items.length} onClick={handleSummarize}>让运维助手总结</Button>
           <PageAiAssistant page="audit" ref={aiRef} context={items.length > 0 ? `审计日志: 共 ${total} 条, 当前显示 ${items.length} 条\n最近事件:\n${items.slice(0, 15).map((r: any) => `  ${r.time ?? r.ts ?? ''} ${r.actor_label ?? r.actor ?? '?'} ${r.action ?? ''} ${r.target ?? ''}`).join('\n')}` : ''} />
         </div>
@@ -176,22 +181,13 @@ export default function OpsAudit() {
           <div className="h-40">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={stats.actionDist} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 80 }}>
-                <CartesianGrid stroke={dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'} horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 10, fill: dark ? '#98989d' : '#86868b' }} tickLine={false} axisLine={false} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: dark ? '#f5f5f7' : '#1d1d1f' }} tickLine={false} axisLine={false} width={76} />
-                <Tooltip
-                  contentStyle={{
-                    borderRadius: 10,
-                    border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.1)',
-                    fontSize: 12,
-                    background: dark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
-                    color: dark ? '#f5f5f7' : undefined,
-                  }}
-                  labelStyle={{ color: dark ? '#98989d' : '#86868b' }}
-                />
+                <CartesianGrid stroke={gridStroke(dark)} horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 10, fill: axisTick(dark) }} tickLine={false} axisLine={false} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: axisTick(dark) }} tickLine={false} axisLine={false} width={76} />
+                <Tooltip {...chartTooltip(dark)} />
                 <Bar dataKey="count" radius={[0, 4, 4, 0]} isAnimationActive={false}>
                   {stats.actionDist.map((_: any, i: number) => (
-                    <Cell key={i} fill={ACTION_COLORS[i % ACTION_COLORS.length]} />
+                    <Cell key={i} fill={actionColor(dark, i)} />
                   ))}
                 </Bar>
               </BarChart>
@@ -297,7 +293,7 @@ export default function OpsAudit() {
             }},
             { key: 'detail', title: '详情', render: (r: any) => <span className="text-muted text-xs truncate max-w-[300px] block">{r.detail || r.target || '—'}</span> },
           ]}
-          data={Array.isArray(items) ? items : []}
+          data={visibleItems}
           keyFn={(r: any) => r.id || r.time || Math.random().toString()}
           empty={<p className="text-sm text-muted text-center py-8">暂无审计记录</p>}
         />

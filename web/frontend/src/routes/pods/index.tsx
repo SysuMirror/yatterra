@@ -74,7 +74,6 @@ export default function PodList() {
   const showOwner = useMediaQuery('(min-width: 640px)')
   // Dense table on desktop by default; single-column cards on phones
   const [view, setView] = useState<ViewMode>(isDesktop ? 'table' : 'cards')
-  const [onlyMine, setOnlyMine] = useState(false)
 
   const { data, isLoading } = useQuery<{ pods: Pod[]; total: number }>({
     queryKey: ['pods', { search, status: statusFilter }],
@@ -97,7 +96,7 @@ export default function PodList() {
   // their implicit ownership isn't a membership, so it must not be counted.
   const isMine = (p: Pod) =>
     p.my_role_for_display === 'owner' || p.my_role_for_display === 'member'
-  const visiblePods = onlyMine ? pods.filter(isMine) : pods
+  const visiblePods = pods
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['pods'] })
 
@@ -174,7 +173,7 @@ export default function PodList() {
         return (
           <span className={cn(
             'inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium',
-            r === 'owner' ? 'bg-ok/10 text-[#1a7f37]' :
+            r === 'owner' ? 'bg-ok/10 text-ok' :
             r === 'admin' || r === 'super' ? 'bg-accent/10 text-accent-dark' :
             'bg-black/[0.03] text-muted',
           )}>
@@ -251,8 +250,8 @@ export default function PodList() {
         </div>
       )}
 
-      {/* AI diagnostic hint for failed pods */}
-      {!isLoading && pods.some(p => p.status === 'Failed') && (
+      {/* AI diagnostic hint for failed pods — 只在未筛出失败列表时提示，避免与筛选结果重复 */}
+      {!isLoading && statusFilter !== 'Failed' && pods.some(p => p.status === 'Failed') && (
         <div data-onboarding-target="pods-failed-hint" className="flex items-center gap-2 px-4 py-2 rounded-xl bg-accent/6 border border-accent/12 mb-5 text-sm">
           <Bot size={15} className="text-accent" />
           <span className="text-ink-2">有 Pod 失败，</span>
@@ -268,12 +267,6 @@ export default function PodList() {
       {/* Filters — wrap on narrow screens instead of squeezing */}
       <div data-onboarding-target="pods-filters" className="flex items-center gap-3 mb-5 flex-wrap">
         <SearchBar onboardingTarget="pods-search" value={search} onChange={setSearch} placeholder="搜索 Pod 名称..." className="flex-1 min-w-[180px] max-w-xs" />
-        <button type="button" data-ux="ux-pods-mine" aria-pressed={onlyMine} className="rounded-md border border-black/10 px-2 py-1 text-xs" onClick={() => setOnlyMine((v) => !v)}>
-          {onlyMine ? '只看我参与的' : '包含别人的 Pod'}
-        </button>
-        <button type="button" className="rounded-md border border-black/10 px-2 py-1 text-xs" aria-pressed={view === 'piles'} onClick={() => setView(view === 'piles' ? (isDesktop ? 'table' : 'cards') : 'piles')}>
-          {view === 'piles' ? '退出分堆' : '按状态分堆'}
-        </button>
         <Select
           onboardingTarget="pods-status"
           value={statusFilter}
@@ -298,7 +291,7 @@ export default function PodList() {
         <EmptyState
           icon={<Plus size={24} />}
           title="暂无 Pod"
-          description={search || statusFilter || onlyMine ? '没有匹配的环境，试试调整筛选条件' : '创建一个 Pod 开始开发'}
+          description={search || statusFilter ? '没有匹配的环境，试试调整筛选条件' : '创建一个 Pod 开始开发'}
           action={<Button onClick={() => setCreateOpen(true)}><Plus size={16} /> 创建 Pod</Button>}
         />
       ) : view === 'piles' ? (
@@ -535,7 +528,7 @@ function CreatePodDialog({ open, onClose }: { open: boolean; onClose: () => void
     <Dialog open={open} onClose={onClose} title="创建 Pod" description="配置新的容器开发环境" width="max-w-md">
       <div className="space-y-4">
         {scoped && caps && (
-          <div className="flex items-start gap-2 px-3 py-2 rounded-[10px] bg-amber-50 border border-amber-200 text-[12px] text-amber-800">
+          <div className="flex items-start gap-2 px-3 py-2 rounded-[10px] bg-warn-bg border border-warn/30 text-[12px] text-warn">
             <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
             <span>
               活动资源上限：CPU ≤ {caps.cpu} 核 / 内存 ≤ {caps.mem} / 存储 ≤ {caps.storage}

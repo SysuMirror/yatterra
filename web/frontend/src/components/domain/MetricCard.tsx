@@ -46,7 +46,7 @@ export function MetricCard({ icon, label, value, suffix = '', percent, color, sp
   const displayValue = isNum ? animated : (value as string)
 
   return (
-    <div className={cn('glass-card p-4 rounded-2xl flex flex-col gap-2 hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all duration-200', className)}>
+    <div className={cn('p-4 rounded-xl border-[0.5px] border-black/[0.06] bg-[var(--surface-1)] flex flex-col gap-2 hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all duration-200', className)}>
       <div className="flex items-center gap-2">
         {icon && <span className="text-muted flex-shrink-0">{icon}</span>}
         <span className="text-xs font-medium text-muted truncate">{label}</span>

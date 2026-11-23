@@ -29,10 +29,12 @@ import {
 import { haptic } from '@/lib/haptic'
 import { ThemePicker } from '@/components/ui/ThemePicker'
 
+/** OAuth 提供方品牌色（仅头像圆点用，非主题色）。 */
 const PROVIDER_COLORS: Record<string, string> = {
   ssemarket: '#0a84ff',
   unisso: '#bf5af2',
 }
+const PROVIDER_FALLBACK_COLOR = '#64748b'
 const PROVIDER_LABELS: Record<string, string> = {
   ssemarket: 'SSE Market',
   unisso: 'UniSSO',
@@ -253,7 +255,7 @@ export default function Profile() {
               <p className="font-medium mt-0.5 flex items-center gap-1.5">
                 <span
                   className="inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold flex-shrink-0"
-                  style={{ background: PROVIDER_COLORS[oauthProvider] || '#888' }}
+                  style={{ background: PROVIDER_COLORS[oauthProvider] || PROVIDER_FALLBACK_COLOR }}
                 >
                   {PROVIDER_LETTER[oauthProvider] || '?'}
                 </span>
@@ -275,7 +277,7 @@ export default function Profile() {
           <div className="space-y-2">
             {identities.map((id: any, i: number) => {
               const prov = id.provider || id.kind
-              const color = PROVIDER_COLORS[prov] || '#888'
+              const color = PROVIDER_COLORS[prov] || PROVIDER_FALLBACK_COLOR
               const letter = PROVIDER_LETTER[prov] || '?'
               const label = PROVIDER_LABELS[prov] || prov
               return (
@@ -324,7 +326,7 @@ export default function Profile() {
                   绑定 {label}
                 </button>
                 {isBound && (
-                  <span className="flex items-center gap-1 text-xs font-semibold mt-1" style={{ color: '#34c759' }}>
+                  <span className="flex items-center gap-1 text-xs font-semibold mt-1 text-ok">
                     <Check size={12} /> 已绑定
                   </span>
                 )}
@@ -391,13 +393,13 @@ export default function Profile() {
                   : '安装到桌面或主屏幕，通过独立窗口快速打开。资源管理和终端操作仍需联网。'}
             </p>
             {isInstalled ? (
-              <p className="mt-2 text-xs font-semibold text-green-600">已安装</p>
+              <p className="mt-2 text-xs font-semibold text-ok">已安装</p>
             ) : canInstall ? (
               <Button data-onboarding-target="profile-install-btn" className="mt-3" size="sm" onClick={() => { void promptInstall().catch(() => toast({ type: 'error', message: '未能打开安装提示，请通过浏览器菜单安装。' })) }}>
                 <Download size={14} /> 安装应用
               </Button>
             ) : (
-              <p className="mt-2 text-xs text-muted">也可以使用浏览器菜单中的“安装应用”或“添加到主屏幕”。</p>
+              <p className="mt-2 text-xs text-muted">也可以使用浏览器菜单中的「安装应用」或「添加到主屏幕」。</p>
             )}
 
             {/* 增强能力：仅在支持的浏览器/已安装场景下点亮 */}
@@ -408,7 +410,7 @@ export default function Profile() {
                 { label: '离线资源持久化', on: persisted },
               ].map((cap) => (
                 <div key={cap.label} className="flex items-center gap-2 text-xs">
-                  <span className={`h-1.5 w-1.5 rounded-full ${cap.on ? 'bg-green-500' : 'bg-black/20'}`} />
+                  <span className={`h-1.5 w-1.5 rounded-full ${cap.on ? 'bg-ok' : 'bg-black/20'}`} />
                   <span className={cap.on ? 'text-ink-2' : 'text-muted'}>{cap.label}</span>
                   <span className="ml-auto text-[11px] text-muted">{cap.on ? '已启用' : '不可用'}</span>
                 </div>
@@ -441,17 +443,17 @@ export default function Profile() {
       </Card>
 
       {/* Push Notifications */}
-      <Card data-onboarding-target="profile-push" padding="lg">
+      <Card data-onboarding-target="profile-push" padding="lg" className="">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             {pushEnabled ? <Bell size={18} className="text-accent" /> : <BellOff size={18} className="text-muted" />}
             <div>
               <h2 className="text-sm font-semibold">推送通知</h2>
-              <p className="text-xs text-muted mt-0.5">
+              <p data-ux="ux-profile-push-why" className="text-xs text-muted mt-0.5">
                 {!pushSupported ? '此浏览器不支持推送' :
-                  pushState === 'denied' ? '通知权限被拒绝，请在浏览器设置中开启' :
-                  pushEnabled ? '有新版本时推送通知' :
-                  '开启后，部署新版本将推送通知'}
+                  pushState === 'denied' ? '通知权限被拒绝。请到系统或浏览器的网站设置里允许通知，回到这里再打开开关。' :
+                  pushEnabled ? '已开启：风险告警等重要通知会推送到本设备' :
+                  '开启后，风险告警等重要通知会推送到本设备'}
               </p>
             </div>
           </div>

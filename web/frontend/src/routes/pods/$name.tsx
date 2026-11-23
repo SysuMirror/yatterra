@@ -2,7 +2,7 @@ import { lazy, Suspense, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Terminal as TermIcon, Activity, Key, Rocket, Users, Settings, Play, Square, RotateCw, ArrowLeft, FolderOpen, Plus, Trash2, ScrollText, Link2, Lock, Globe, Code2, Gauge } from 'lucide-react'
+import { Terminal as TermIcon, Activity, Key, KeyRound, BookOpen, ChevronDown, ChevronRight, Rocket, Users, Settings, Play, Square, RotateCw, ArrowLeft, FolderOpen, Plus, Trash2, ScrollText, Link2, Lock, Globe, Code2, Gauge } from 'lucide-react'
 import { Tabs } from '@/components/ui/Tabs'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -32,13 +32,6 @@ import { useToastStore } from '@/stores/toast'
 import { podStatusLabel } from '@/lib/format'
 import { DOMAIN, PUBLIC_HOST, PUBLIC_SCHEME, publicUrl, subdomainUrl } from '@/lib/site'
 
-const POD_STAGES = [
-  { id: 'watch', label: '看状态', keys: ['monitor', 'usage', 'profile'] },
-  { id: 'work', label: '干活', keys: ['connect', 'terminal', 'files', 'logs', 'app-logs'] },
-  { id: 'ship', label: '发布', keys: ['creds', 'domains', 'deploys'] },
-  { id: 'admin', label: '管理', keys: ['members', 'settings'] },
-] as const
-
 const tabDefs = [
   { key: 'monitor', label: '监控', icon: <Activity size={15} /> },
   { key: 'connect', label: '连接', icon: <Link2 size={15} /> },
@@ -59,7 +52,6 @@ export default function PodDetail() {
   const { name } = useParams()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('monitor')
-  const [stage, setStage] = useState<'all' | 'watch' | 'work' | 'ship' | 'admin'>('all')
   const toast = useToastStore((s) => s.add)
   const qc = useQueryClient()
   const [joinReason, setJoinReason] = useState('')
@@ -90,16 +82,9 @@ export default function PodDetail() {
     if (saved && tabDefs.some((t) => t.key === saved)) setActiveTab(saved)
   }, [name])
 
-  const stageKeys = stage === 'all' ? null : POD_STAGES.find((s) => s.id === stage)?.keys
-  const visibleTabs = stageKeys ? tabDefs.filter((t) => (stageKeys as readonly string[]).includes(t.key)) : tabDefs
   const chooseTab = (key: string) => {
     setActiveTab(key)
     if (name) sessionStorage.setItem(`ux-pod-tab:${name}`, key)
-  }
-  const chooseStage = (id: 'all' | 'watch' | 'work' | 'ship' | 'admin') => {
-    setStage(id)
-    const keys = id === 'all' ? tabDefs.map((t) => t.key) : [...(POD_STAGES.find((s) => s.id === id)?.keys ?? [])]
-    if (!keys.includes(activeTab)) chooseTab(keys[0] ?? 'monitor')
   }
 
   const joinPod = useMutation({
@@ -216,14 +201,8 @@ export default function PodDetail() {
       />
       </div>
 
-      <div data-ux="ux-pod-stages" className="mb-3 flex flex-wrap gap-2">
-        <button type="button" aria-pressed={stage === 'all'} className="rounded-md border border-black/10 px-2 py-1 text-xs" onClick={() => chooseStage('all')}>全部步骤</button>
-        {POD_STAGES.map((s) => (
-          <button key={s.id} type="button" aria-pressed={stage === s.id} className="rounded-md border border-black/10 px-2 py-1 text-xs" onClick={() => chooseStage(s.id)}>{s.label}</button>
-        ))}
-      </div>
       <div data-ux="ux-pod-tab-memory">
-        <Tabs onboardingPrefix="pod-tab" tabs={visibleTabs} active={activeTab} onChange={chooseTab} className="mb-6" swipeable />
+        <Tabs onboardingPrefix="pod-tab" tabs={tabDefs} active={activeTab} onChange={chooseTab} className="mb-6" swipeable />
       </div>
 
       <AnimatePresence mode="wait">
@@ -312,13 +291,13 @@ function ConnectTab({ pod }: { pod?: any }) {
             onClick={() => setSshCfgOpen(v => !v)}
             className="w-full flex items-center gap-2 px-4 py-2.5 text-sm font-semibold hover:bg-black/[0.02] transition-colors"
           >
-            <span>🔑 SSH Config 片段</span>
-            <span className="ml-auto text-muted text-xs">{sshCfgOpen ? '▾' : '▸'}</span>
+            <span className="flex items-center gap-2"><KeyRound size={14} className="text-muted" /> SSH Config 片段</span>
+            <span className="ml-auto text-muted">{sshCfgOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
           </button>
           {sshCfgOpen && (
             <div className="px-4 pb-3 space-y-2">
               <p className="text-xs text-muted">添加到本地 <code className="font-mono bg-black/[0.04] px-1 rounded">~/.ssh/config</code> 即可 <code className="font-mono bg-black/[0.04] px-1 rounded">ssh {podName}</code> 直连。</p>
-              <pre className="bg-[#1d1d1f] text-[#f5f5f7] text-xs leading-6 p-3 rounded-lg overflow-x-auto">{sshConfigSnippet}</pre>
+              <pre className="bg-[var(--surface-4)] text-[var(--ink)] text-xs leading-6 p-3 rounded-lg overflow-x-auto">{sshConfigSnippet}</pre>
               <Button data-ux="ux-ssh-copied" variant="secondary" size="sm" onClick={() => { navigator.clipboard.writeText(sshConfigSnippet).then(() => toast({ type: 'success', message: 'SSH 配置已复制' })).catch(() => toast({ type: 'error', message: '复制失败，请手动选择上面的配置' })) }}>复制</Button>
             </div>
           )}
@@ -331,8 +310,8 @@ function ConnectTab({ pod }: { pod?: any }) {
           onClick={() => setGuideOpen(v => !v)}
           className="w-full flex items-center gap-2 px-4 py-2.5 text-sm font-semibold hover:bg-black/[0.02] transition-colors"
         >
-          <span>📖 使用说明</span>
-          <span className="ml-auto text-muted text-xs">{guideOpen ? '▾' : '▸'}</span>
+          <span className="flex items-center gap-2"><BookOpen size={14} className="text-muted" /> 使用说明</span>
+          <span className="ml-auto text-muted">{guideOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
         </button>
         {guideOpen && (
           <div className="px-4 pb-4 space-y-4 text-xs">
@@ -431,7 +410,6 @@ function CredsTab({ podName, pod }: { podName: string; pod?: any }) {
         <h2 className="text-sm font-semibold">凭证管理</h2>
         <Button size="sm" onClick={() => setApplyOpen(true)}><Plus size={14} /> 应用凭证</Button>
       </div>
-      <ConnCard pod={pod} />
 
       <Dialog open={applyOpen} onClose={() => setApplyOpen(false)} title="应用凭证">
         <div className="space-y-4">
@@ -573,10 +551,10 @@ function SubdomainsTab({ podName }: { podName: string }) {
               <div className="min-w-0 flex-1">
                 {editId === m.id ? (
                   <div className="flex items-center gap-1.5">
-                    <input
+                    <Input
                       value={editPrefix}
                       onChange={(e) => setEditPrefix(e.target.value)}
-                      className="w-40 rounded-md border border-black/[0.12] px-2 py-1 text-sm font-mono focus:outline-none focus:border-accent/50"
+                      className="w-40 py-1.5 font-mono"
                       autoFocus
                     />
                     <span className="text-xs text-muted">.{DOMAIN}</span>
@@ -635,47 +613,6 @@ function SubdomainsTab({ podName }: { podName: string }) {
           </div>
         </div>
       </Dialog>
-    </div>
-  )
-}
-
-function ConnCard({ pod }: { pod?: any }) {
-  const ssh = pod?.ssh
-  if (!ssh?.port) return null
-  const sshCmd = `ssh -p ${ssh.port} ${ssh.user}@${ssh.host}`
-  const cfg = `Host ${pod?.name || 'pod'}
-    HostName ${ssh.host}
-    Port ${ssh.port}
-    User ${ssh.user}`
-  return (
-    <div>
-      <h2 className="text-sm font-semibold mb-3">连接信息</h2>
-      <div className="p-4 rounded-xl border-[0.5px] border-black/[0.06] bg-[var(--surface-1)] space-y-2.5 hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] transition-all duration-200">
-        <div className="flex items-center gap-2">
-          <TermIcon size={16} className="text-muted" />
-          <span className="text-sm font-semibold">SSH 连接</span>
-        </div>
-        <div className="space-y-1.5 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-muted w-12">命令</span>
-            <CodeChip code={sshCmd} />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted w-12">密码</span>
-            <CodeChip code={ssh.password ?? ''} mask />
-          </div>
-          {pod?.web_url && (
-            <div className="flex items-center gap-2">
-              <span className="text-muted w-12">网址</span>
-              <CodeChip code={pod.web_url} />
-            </div>
-          )}
-          <div className="flex items-center gap-2">
-            <span className="text-muted w-12">Config</span>
-            <CodeChip code={cfg} />
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { User, Plus, Trash2, Key, Copy, Search, ShieldCheck } from 'lucide-react'
+import { User, Plus, Trash2, Key, Copy, Search, ShieldCheck, AlertTriangle } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
 import { AiFormHelper } from '@/components/domain/AiFormHelper'
 import { Card } from '@/components/ui/Card'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { DataTable } from '@/components/ui/DataTable'
@@ -39,6 +40,7 @@ export default function Users() {
   const [tokenDesc, setTokenDesc] = useState('')
   const [createdToken, setCreatedToken] = useState('')
   const [search, setSearch] = useState('')
+  const [selectedUser, setSelectedUser] = useState<string | null>(null)
   const [deleteUserTarget, setDeleteUserTarget] = useState<string | null>(null)
   const [deleteTokenTarget, setDeleteTokenTarget] = useState<string | null>(null)
 
@@ -52,6 +54,8 @@ export default function Users() {
 
   const current = data?.current ?? ''
   const users = data?.users ?? []
+  const shownUsers = users
+  const picked = shownUsers.find((u: any) => (u.username || u.user) === selectedUser) ?? null
 
   const createMut = useMutation({
     mutationFn: (d: any) => api.post('/users', d),
@@ -110,7 +114,12 @@ export default function Users() {
 
       {!canManage && (
         <Card className="mb-5">
-          <p className="text-sm text-muted">无权限查看系统用户(需要 admin.users 权限)。你只能管理自己的 API Token。</p>
+          <EmptyState
+            icon={<ShieldCheck size={20} />}
+            title="无权限查看系统用户"
+            description="需要 admin.users 权限。你仍可在下方管理自己的 API Token。"
+            className="py-10"
+          />
         </Card>
       )}
 
@@ -130,7 +139,8 @@ export default function Users() {
           <Search size={16} className="text-muted" />
           <Input aria-label="搜索用户" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索昵称、用户名或 OAuth 身份…" />
         </div>
-        <Card data-onboarding-target="users-table" padding="none">
+        <div data-ux="ux-users-desk" className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <Card data-onboarding-target="users-table" padding="none" className="min-w-0 flex-1">
         <DataTable
           columns={[
             { key: 'username', title: '用户名', sortable: true, render: (r: any) => {
@@ -148,7 +158,7 @@ export default function Users() {
                 </div>
               )
             }},
-            { key: 'role', title: '角色', sortable: true, width: '200px', render: (r: any) => (
+            { key: 'role', title: '角色', sortable: true, width: 'minmax(150px, auto)', render: (r: any) => (
               <Select
                 onboardingTarget="users-role"
                 value={r.role}
@@ -161,7 +171,7 @@ export default function Users() {
               const name = r.username || r.user
               if (name === current) return null
               return (
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                   <Button data-onboarding-target="users-reset" variant="ghost" size="sm" onClick={() => { setResetUser(name); setNewPassword(''); setResetOpen(true) }} title="重置密码" aria-label="重置密码">
                     <Key size={14} />
                   </Button>
@@ -172,11 +182,53 @@ export default function Users() {
               )
             }},
           ]}
-          data={users}
+          data={shownUsers}
           keyFn={(r: any) => r.user_id || r.username || r.user}
+          onRowClick={(r: any) => setSelectedUser(r.username || r.user)}
+          isRowActive={(r: any) => (r.username || r.user) === selectedUser}
           empty={<p className="text-sm text-muted text-center py-8">暂无用户</p>}
         />
-      </Card></>}
+      </Card>
+      <Card className="lg:w-80">
+        {picked ? (
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-full flex items-center justify-center bg-accent-light">
+                <User size={15} className="text-accent" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-semibold truncate">{picked.label || picked.display_name || picked.username || picked.user}</h2>
+                {(picked.display_name || picked.label) && (picked.username || picked.user) && (
+                  <p className="text-xs text-muted truncate">{picked.username || picked.user}</p>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted">角色</span>
+              <Badge variant={picked.role === 'super' ? 'bad' : picked.role === 'admin' ? 'warn' : picked.role === 'guest' ? 'muted' : 'accent'}>
+                {roleOptions.find(o => o.value === (picked.role ?? 'user'))?.label ?? picked.role}
+              </Badge>
+              {(picked.username || picked.user) === current && <Badge variant="ok">当前账号</Badge>}
+            </div>
+            <div className="flex gap-2 pt-1 border-t border-black/[0.06] pt-3">
+              <Button size="sm" variant="secondary" onClick={() => { setResetUser(picked.username || picked.user); setNewPassword(''); setResetOpen(true) }}><Key size={14} /> 重置密码</Button>
+              {(picked.username || picked.user) !== current && (
+                <Button size="sm" variant="danger" onClick={() => setDeleteUserTarget(picked.username || picked.user)}><Trash2 size={14} /> 删除</Button>
+              )}
+            </div>
+            <button type="button" className="text-xs text-muted hover:text-ink transition-colors" onClick={() => setSelectedUser(null)}>取消选择</button>
+          </div>
+        ) : (
+          <EmptyState
+            icon={<User size={20} />}
+            title="未选择用户"
+            description="在表格中选择一行，即可在这里处理角色、重置密码和删除。"
+            className="py-10"
+          />
+        )}
+      </Card>
+      </div>
+      </>}
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="创建用户">
@@ -285,7 +337,7 @@ export default function Users() {
                   <Copy size={14} />
                 </Button>
               </div>
-              <p className="text-xs text-warn">⚠ 请立即复制，此 Token 仅显示一次</p>
+              <p className="text-xs text-warn flex items-center gap-1"><AlertTriangle size={12} /> 请立即复制，此 Token 仅显示一次</p>
               <div className="flex justify-end">
                 <Button onClick={() => setTokenOpen(false)}>关闭</Button>
               </div>

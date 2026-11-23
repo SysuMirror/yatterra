@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldQuestion, Check, X, RefreshCw, Terminal, FileEdit, Globe, Bot } from 'lucide-react'
+import { ShieldQuestion, Check, X, RefreshCw, Terminal, FileEdit, Globe, Bot, AlertTriangle } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import { Dialog } from '@/components/ui/Dialog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { SkeletonCard } from '@/components/ui/Skeleton'
@@ -86,9 +87,43 @@ function toolIcon(rec: ApprovalRecord) {
   return <Bot size={14} />
 }
 
+function ApprovalDesk({ rec, onDecide }: { rec: ApprovalRecord; onDecide: (action: 'approve' | 'reject', rec: ApprovalRecord) => void }) {
+  const sb = STATUS_BADGE[rec.status] ?? { variant: 'muted' as const, label: rec.status }
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-ink">审阅 #{rec.id}</h2>
+        <Badge variant={sb.variant} dot>{sb.label}</Badge>
+      </div>
+      <pre className="text-sm font-mono text-ink bg-black/[0.03] rounded-lg px-3 py-2 whitespace-pre-wrap break-all">{actionOf(rec)}</pre>
+      <p className="text-xs text-warn flex items-start gap-1"><AlertTriangle size={12} className="mt-0.5 flex-shrink-0" /> {rec.reason}</p>
+      {rec.status !== 'pending' && rec.exec_out && (
+        <p className="text-xs text-muted break-all">结果：{String(rec.exec_out).slice(0, 300)}</p>
+      )}
+      {rec.verify && (
+        <p className="text-xs text-muted flex items-start gap-1">
+          <span>核验（{rec.verify.status === 'ok' ? '通过' : rec.verify.status === 'fail' ? '失败' : '待执行'}）：{rec.verify.cmd}</span>
+        </p>
+      )}
+      {rec.status === 'pending' && (
+        <div className="flex gap-2 pt-2 border-t border-black/[0.06]">
+          <Button size="sm" variant="danger" onClick={() => onDecide('reject', rec)}>
+            <X size={14} /> 拒绝
+          </Button>
+          <Button size="sm" onClick={() => onDecide('approve', rec)}>
+            <Check size={14} /> 批准
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function ApprovalsPage() {
   const [filter, setFilter] = useState<StatusFilter>('pending')
   const [intent, setIntent] = useState<IntentKey | 'all'>('all')
+  const [approvalQuery, setApprovalQuery] = useState('')
+  const [pickedId, setPickedId] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ action: 'approve' | 'reject'; rec: ApprovalRecord } | null>(null)
   const qc = useQueryClient()
   const toast = useToastStore((s) => s.add)
@@ -145,7 +180,18 @@ export default function ApprovalsPage() {
     return c
   }, [records])
 
-  const shown = intent === 'all' ? records : records.filter((r) => intentOf(r) === intent)
+  const shown = useMemo(() => {
+    const base = intent === 'all' ? records : records.filter((r) => intentOf(r) === intent)
+    const q = approvalQuery.trim().toLowerCase()
+    if (!q) return base
+    return base.filter((r) => {
+      const requester = `${r.agent_id || ''} ${r.actor || ''}`
+      const pod = r.pod || ''
+      const summary = `${r.reason || ''} ${actionOf(r)}`
+      return `${requester} ${pod} ${summary}`.toLowerCase().includes(q)
+    })
+  }, [records, intent, approvalQuery])
+  const picked = records.find((r) => r.id === pickedId) ?? null
 
   return (
     <>
@@ -162,8 +208,8 @@ export default function ApprovalsPage() {
         </Button>
       </PageHeader>
 
-      <Card data-onboarding-target="approvals-list" padding="lg">
-        <div className="flex flex-wrap items-center gap-2 mb-4">
+      <Card data-onboarding-target="approvals-list" padding="none">
+        <div className="px-4 py-3 border-b border-black/[0.06] flex flex-wrap items-center gap-2">
           {(['pending', 'all', 'done'] as StatusFilter[]).map((f, fi) => (
             <button
               key={f}
@@ -179,7 +225,7 @@ export default function ApprovalsPage() {
           {data?.mode && <Badge data-onboarding-target="approvals-mode" variant="muted" className="ml-auto">模式 {data.mode}</Badge>}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 mb-4 pt-3 border-t border-black/[0.06]">
+        <div className="px-4 py-3 border-b border-black/[0.06] flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted mr-1">意图</span>
           <button
             onClick={() => setIntent('all')}
@@ -203,22 +249,42 @@ export default function ApprovalsPage() {
           ))}
         </div>
 
+        <div className="px-4 py-3 border-b border-black/[0.06]">
+          <div className="w-full max-w-sm">
+            <Input
+              data-ux="ux-approvals-query"
+              value={approvalQuery}
+              onChange={(e) => setApprovalQuery(e.target.value)}
+              placeholder="搜索发起人、Pod 或摘要"
+              aria-label="搜索发起人、Pod 或摘要"
+              className="h-9 py-1.5 text-xs"
+            />
+          </div>
+        </div>
+
+        <div data-ux="ux-approvals-desk" className="p-4 flex flex-col gap-4 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1">
         {isLoading ? (
           <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} />)}</div>
         ) : shown.length === 0 ? (
           <EmptyState
             icon={<ShieldQuestion size={22} />}
-            title={records.length === 0 ? (filter === 'pending' ? '暂无待审批动作' : '暂无审批记录') : '该意图下暂无记录'}
+            title={records.length === 0 ? (filter === 'pending' ? '暂无待审批动作' : '暂无审批记录') : approvalQuery.trim() ? '没有匹配的审批' : '该意图下暂无记录'}
             description={records.length === 0
               ? (filter === 'pending' ? 'AI agent 的高危写动作会在这里排队等待确认' : '调整筛选条件查看其它状态记录')
-              : '换个意图或状态筛选看看'}
+              : approvalQuery.trim() ? '换个关键词，或清空搜索' : '换个意图或状态筛选看看'}
           />
         ) : (
           <div className="space-y-3">
             {shown.map((rec) => {
               const sb = STATUS_BADGE[rec.status] ?? { variant: 'muted' as const, label: rec.status }
               return (
-                <div key={rec.id} data-onboarding-target="approvals-record" className="rounded-xl border border-black/[0.06] p-4 hover:bg-black/[0.015] transition-colors">
+                <div
+                  key={rec.id}
+                  data-onboarding-target="approvals-record"
+                  onClick={() => setPickedId(rec.id)}
+                  className={`rounded-xl border p-4 hover:bg-black/[0.015] transition-colors cursor-pointer ${pickedId === rec.id ? 'border-accent/40 bg-accent/[0.04]' : 'border-black/[0.06]'}`}
+                >
                   <div className="flex items-start gap-3">
                     <div className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center text-muted flex-shrink-0 mt-0.5">
                       {toolIcon(rec)}
@@ -246,7 +312,7 @@ export default function ApprovalsPage() {
                         <span>工具：<span className="text-ink-2 font-medium">{rec.tool}</span></span>
                         {rec.decided_by && <span>处理人：<span className="text-ink-2 font-medium">{rec.decided_by}</span></span>}
                       </div>
-                      <p className="text-xs text-warn mb-0">⚠ {rec.reason}</p>
+                      <p className="text-xs text-warn mb-0 flex items-start gap-1"><AlertTriangle size={12} className="mt-0.5 flex-shrink-0" /> {rec.reason}</p>
                       {rec.status !== 'pending' && rec.exec_out && (
                         <p className="text-xs text-muted mt-2 break-all">
                           结果：{String(rec.exec_out).slice(0, 300)}
@@ -254,12 +320,12 @@ export default function ApprovalsPage() {
                       )}
                       {rec.verify && (
                         <p className="text-xs text-muted mt-1">
-                          核验（{rec.verify.status === 'ok' ? '✓ 通过' : rec.verify.status === 'fail' ? '✗ 失败' : '待执行'}）：{rec.verify.cmd}
+                          核验（{rec.verify.status === 'ok' ? '通过' : rec.verify.status === 'fail' ? '失败' : '待执行'}）：{rec.verify.cmd}
                         </p>
                       )}
                     </div>
                     {rec.status === 'pending' && (
-                      <div className="flex gap-2 flex-shrink-0">
+                      <div data-ux="ux-approvals-tap" className="flex gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                         <Button data-onboarding-target="approvals-reject" size="sm" variant="danger" onClick={() => setConfirm({ action: 'reject', rec })}>
                           <X size={14} /> 拒绝
                         </Button>
@@ -274,8 +340,22 @@ export default function ApprovalsPage() {
             })}
           </div>
         )}
+        </div>
+        <div className="w-full lg:w-80 shrink-0 rounded-xl border border-black/[0.06] p-4">
+          {picked ? (
+            <ApprovalDesk rec={picked} onDecide={(action, rec) => setConfirm({ action, rec })} />
+          ) : (
+            <EmptyState
+              icon={<ShieldQuestion size={20} />}
+              title="未选择审批"
+              description="在列表中选择一条，即可在这里核对详情并处理。"
+              className="py-10"
+            />
+          )}
+        </div>
+        </div>
         {filter === 'pending' && pendingCount > 0 && (
-          <p className="text-xs text-muted mt-3">共 {pendingCount} 条待审批，页面每 15 秒自动刷新。</p>
+          <p className="text-xs text-muted px-4 py-3 border-t border-black/[0.06]">共 {pendingCount} 条待审批，页面每 15 秒自动刷新。</p>
         )}
       </Card>
 
@@ -292,7 +372,7 @@ export default function ApprovalsPage() {
             <pre className="text-sm font-mono text-ink bg-black/[0.03] rounded-lg px-3 py-2 whitespace-pre-wrap break-all">
               {actionOf(confirm.rec)}
             </pre>
-            <p className="text-xs text-warn">⚠ {confirm.rec.reason}</p>
+            <p className="text-xs text-warn flex items-start gap-1"><AlertTriangle size={12} className="mt-0.5 flex-shrink-0" /> {confirm.rec.reason}</p>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={() => setConfirm(null)}>取消</Button>
               <Button

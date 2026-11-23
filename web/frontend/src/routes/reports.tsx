@@ -63,18 +63,33 @@ export default function Reports() {
   const zh = stored !== 'en'
   const ui = zh ? UI.zh : UI.en
   const list = zh ? reportsZh : reports
-  const [activeReport, setActiveReport] = useState(list[0].id)
+  const initialReport = list[0]!
+  const [activeReport, setActiveReport] = useState(initialReport.id)
   const narrow = useMediaQuery('(max-width: 640px)')
   const [activeSub, setActiveSub] = useState<string | null>(null)
+  const [reportQuery, setReportQuery] = useState('')
   const articleRef = useRef<HTMLElement>(null)
 
-  const report = list.find(r => r.id === activeReport) ?? list[0]
+  const report = list.find(r => r.id === activeReport) ?? initialReport
+  const q = reportQuery.trim().toLowerCase()
+  const reportHit = (r: (typeof list)[number]) => {
+    if (!q) return true
+    if (r.title.toLowerCase().includes(q) || r.label.toLowerCase().includes(q)) return true
+    return r.sections.some((sec) => sec.heading.toLowerCase().includes(q) || sec.subsections.some((sub) => sub.title.toLowerCase().includes(q)))
+  }
+  const visibleReports = list.filter(reportHit)
+  const sectionsForReport = report.sections.filter((sec) => {
+    if (!q) return true
+    return sec.heading.toLowerCase().includes(q) || sec.subsections.some((sub) => sub.title.toLowerCase().includes(q))
+  })
+  const renderedSections = sectionsForReport
   const diagrams = reportDiagrams[report.id] ?? []
   // 繁中模式下按索引替换图注(SVG 内部标签保留英文)
   const zhCaps = zh ? captionsZh[report.id] : undefined
   const captionOf = (d: ReportDiagram) => zhCaps?.[diagrams.indexOf(d)] ?? d.caption
-  const firstSub = report.sections[0]?.subsections[0]
-  const firstSubId = firstSub ? `${report.sections[0].id}-0` : null
+  const firstSection = report.sections[0]
+  const firstSub = firstSection?.subsections[0]
+  const firstSubId = firstSection && firstSub ? `${firstSection.id}-0` : null
 
   // 页面语言跟随所选语言(浏览器自动翻译/读屏按此判断),离开时还原
   useEffect(() => {
@@ -114,7 +129,7 @@ export default function Reports() {
 
   return (
     <main
-      className="relative h-screen overflow-hidden bg-[#070B18] text-[#F5F7FF]"
+      className="relative h-screen overflow-hidden bg-[var(--report-bg)] text-[var(--report-ink)]"
       style={{ backgroundImage: 'radial-gradient(circle at 15% 10%, rgba(71, 103, 210, .23), transparent 36%), radial-gradient(circle at 84% 85%, rgba(108, 68, 184, .2), transparent 34%)' }}
     >
       <div
@@ -145,7 +160,8 @@ export default function Reports() {
           </div>
 
           <nav className="flex-1 space-y-1 overflow-y-auto px-4 pb-6">
-            {list.map(r => {
+            {visibleReports.length === 0 && <p className="px-3 py-2 text-xs text-slate-500">没有匹配的报告</p>}
+            {visibleReports.map(r => {
               const isActive = r.id === activeReport
               return (
                 <div key={r.id}>
@@ -210,9 +226,19 @@ export default function Reports() {
 
         {/* ── 右侧正文 ── */}
         <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex flex-wrap items-center gap-2 border-b border-white/[.07] px-5 py-3">
+            <input
+              data-ux="ux-reports-find"
+              value={reportQuery}
+              onChange={(e) => setReportQuery(e.target.value)}
+              placeholder="按标题筛选报告或章节"
+              aria-label="按标题筛选报告或章节"
+              className="h-8 min-w-[180px] flex-1 rounded-md border border-white/15 bg-transparent px-2 text-xs text-slate-200 placeholder:text-slate-500"
+            />
+          </div>
           {/* 移动端报告切换 */}
           <div className="flex items-center gap-2 overflow-x-auto border-b border-white/[.07] px-5 py-3 lg:hidden">
-            {list.map(r => (
+            {visibleReports.map(r => (
               <button
                 key={r.id}
                 type="button"
@@ -272,8 +298,12 @@ export default function Reports() {
                   ) : null
                 })()}
 
+                {q && sectionsForReport.length === 0 && (
+                  <p className="mt-8 text-sm text-slate-500">没有匹配的章节</p>
+                )}
+
                 <div className="mt-12 space-y-14">
-                  {report.sections.map(sec => {
+                  {renderedSections.map(sec => {
                     const secDiagrams = diagrams.filter(d => d.sectionId === sec.id)
                     return (
                     <section key={sec.id} data-section-id={sec.id} className="scroll-mt-8">
@@ -288,7 +318,9 @@ export default function Reports() {
                         </figure>
                       ))}
                       <div className="space-y-8">
-                        {sec.subsections.map((sub, j) => (
+                        {sec.subsections.map((sub, j) => {
+                          if (q && !sec.heading.toLowerCase().includes(q) && !sub.title.toLowerCase().includes(q)) return null
+                          return (
                           <div key={j} data-sub-id={`${sec.id}-${j}`} className="scroll-mt-24 space-y-4">
                             <h3 className="flex items-baseline gap-2 text-[16px] font-semibold text-cyan-100/90">
                               <span className="text-[11px] font-bold tabular-nums text-cyan-300/50">{sec.heading.split('.')[0]}.{j + 1}</span>
@@ -298,7 +330,8 @@ export default function Reports() {
                               <p key={k} className="text-[15px] leading-[1.85] text-slate-300/90">{p}</p>
                             ))}
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </section>
                     )

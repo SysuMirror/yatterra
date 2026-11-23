@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { HardDrive, Plus, Trash2, Key, Eye, EyeOff, FolderOpen } from 'lucide-react'
+import { HardDrive, Plus, Trash2, Key, Eye, EyeOff, FolderOpen, Check, Copy } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -15,6 +15,7 @@ import { Select } from '@/components/ui/Select'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { FileBrowser, type FileEntry } from '@/components/domain/FileBrowser'
 import { api } from '@/api/client'
+import InfraNav from '@/components/infra/InfraNav'
 import { useToastStore } from '@/stores/toast'
 import { useAuth } from '@/hooks/useAuth'
 import { useState } from 'react'
@@ -39,7 +40,7 @@ function MaskedSecret({ value }: { value: string }) {
         className="w-8 h-8 rounded flex items-center justify-center text-muted hover:text-ink hover:bg-black/[0.04] active:bg-black/[0.06] transition-colors"
         title="复制"
       >
-        {copied ? <span className="text-ok text-[10px]">✓</span> : <span className="text-[10px]">⧉</span>}
+        {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
       </button>
       <button
         onClick={() => setRevealed(!revealed)}
@@ -137,6 +138,7 @@ export default function InfraStorage() {
   const [browseBucket, setBrowseBucket] = useState<string | null>(null)
   const [deleteBucketTarget, setDeleteBucketTarget] = useState<string | null>(null)
   const [deleteKeyTarget, setDeleteKeyTarget] = useState<any | null>(null)
+  const [bucketQuery, setBucketQuery] = useState('')
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['infra-storage'],
@@ -174,6 +176,11 @@ export default function InfraStorage() {
   })
 
   const buckets = data?.buckets ?? []
+  const bucketQueryNorm = bucketQuery.trim().toLowerCase()
+  const visibleBuckets = buckets.filter((b: any) => {
+    const name = (typeof b === 'string' ? b : String(b?.name ?? '')).toLowerCase()
+    return !bucketQueryNorm || name.includes(bucketQueryNorm)
+  })
   const bucketOptions = buckets.map((b: any) => {
     const name = typeof b === 'string' ? b : b.name
     return { value: name, label: name }
@@ -187,6 +194,7 @@ export default function InfraStorage() {
 
   return (
     <>
+      <InfraNav />
       <PageHeader title="对象存储" description="MinIO 存储桶与访问密钥管理" doc={{ section: 'infra', item: 1, label: '对象存储文档' }}>
         <PageAiAssistant page="storage" context={buckets.length > 0 ? `存储桶: ${buckets.length} 个\n${buckets.map((b: any) => `  ${b.name ?? b} (${b.creation_date ?? b.created ?? '?'})`).join('\n')}` : '暂无存储桶'} />
         <div className="flex gap-2">
@@ -227,10 +235,11 @@ export default function InfraStorage() {
             <button
               data-onboarding-target="storage-endpoint"
               onClick={handleCopyEndpoint}
-              className="w-8 h-8 rounded flex items-center justify-center text-muted hover:text-ink hover:bg-black/[0.04] active:bg-black/[0.06] transition-colors"
+              data-ux="ux-storage-copy-tap"
+              className="rounded flex items-center justify-center text-xs text-muted hover:text-ink hover:bg-black/[0.04] active:bg-black/[0.06] transition-colors"
               title="复制"
             >
-              {endpointCopied ? <span className="text-ok text-[10px]">✓</span> : <span className="text-[10px]">⧉</span>}
+              {endpointCopied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
             </button>
           </div>
         </Card>
@@ -258,10 +267,20 @@ export default function InfraStorage() {
 
       {/* Buckets */}
       <Card data-onboarding-target="storage-buckets" padding="lg" className="mb-6">
-        <h2 className="text-sm font-semibold mb-3">存储桶</h2>
-        {buckets.length ? (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold">存储桶</h2>
+          <input
+            data-ux="ux-storage-buckets"
+            value={bucketQuery}
+            onChange={(e) => setBucketQuery(e.target.value)}
+            placeholder="按名称筛选桶"
+            aria-label="按名称筛选桶"
+            className="h-8 w-full max-w-xs rounded-md border border-black/10 bg-transparent px-2 text-xs"
+          />
+        </div>
+        {visibleBuckets.length ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {buckets.map((b: any, i: number) => {
+            {visibleBuckets.map((b: any, i: number) => {
               const name = typeof b === 'string' ? b : b.name
               return (
                 <div key={i} className="flex flex-col gap-2 p-4 rounded-xl border-[0.5px] border-black/[0.06] bg-black/[0.02] hover:bg-black/[0.04] transition-colors">
@@ -282,7 +301,7 @@ export default function InfraStorage() {
             })}
           </div>
         ) : (
-          <p className="text-sm text-muted">暂无桶</p>
+          <p className="text-sm text-muted">{buckets.length ? '没有匹配的桶' : '暂无桶'}</p>
         )}
       </Card>
 

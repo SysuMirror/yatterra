@@ -16,11 +16,12 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { api } from '@/api/client'
+import InfraNav from '@/components/infra/InfraNav'
 import { useToastStore } from '@/stores/toast'
 import { useAuthStore } from '@/stores/auth'
 import { PUBLIC_HOST } from '@/lib/site'
 
-const SERVICE_PORTS: Record<string, number> = { mysql: 3306, redis: 6379, qdrant: 6333, postgres: 5432 }
+const SERVICE_PORTS: Record<string, number> = { mysql: 3306, redis: 6379, qdrant: 6333, postgres: 5432, clickhouse: 8123, kafka: 9092 }
 const NS = 'platform-infra'
 
 // In-cluster endpoints (full k8s service DNS)
@@ -30,6 +31,9 @@ const INCLUSTER_ENDPOINTS = [
   { label: 'Qdrant', value: `http://qdrant.${NS}.svc.cluster.local:6333` },
   { label: 'Qdrant gRPC', value: `qdrant.${NS}.svc.cluster.local:6334` },
   { label: 'PostgreSQL', value: `postgres.${NS}.svc.cluster.local:5432` },
+  { label: 'ClickHouse', value: `http://langfuse-clickhouse.${NS}.svc.cluster.local:8123` },
+  { label: 'ClickHouse native', value: `langfuse-clickhouse.${NS}.svc.cluster.local:9000` },
+  { label: 'Kafka', value: `kafka.${NS}.svc.cluster.local:9092` },
 ]
 
 // FRP tunnel endpoints (relay host localhost)
@@ -39,6 +43,9 @@ const FRP_ENDPOINTS = [
   { label: 'Qdrant', value: 'http://127.0.0.1:25033' },
   { label: 'Qdrant gRPC', value: '127.0.0.1:25034' },
   { label: 'PostgreSQL', value: '127.0.0.1:25432' },
+  { label: 'ClickHouse', value: 'http://127.0.0.1:25812' },
+  { label: 'ClickHouse native', value: '127.0.0.1:25900' },
+  { label: 'Kafka', value: '127.0.0.1:29092' },
 ]
 
 const CONN_EXAMPLE = `# MySQL (pip install --break-system-packages pymysql)
@@ -63,7 +70,22 @@ qc = QdrantClient(host="qdrant.platform-infra.svc.cluster.local", port=6333,
 import psycopg
 conn = psycopg.connect(host="postgres.platform-infra.svc.cluster.local", port=5432,
                         user="管理员发的用户", password="管理员发的密码",
-                        dbname="管理员发的库")`
+                        dbname="管理员发的库")
+
+# ClickHouse HTTP (pip install --break-system-packages clickhouse-connect)
+import clickhouse_connect
+ch = clickhouse_connect.get_client(host="langfuse-clickhouse.platform-infra.svc.cluster.local",
+                                    port=8123, username="管理员发的用户", password="管理员发的密码")
+ch.query("SELECT 1")
+
+# Kafka (pip install --break-system-packages kafka-python)
+from kafka import KafkaProducer, KafkaConsumer
+producer = KafkaProducer(bootstrap_servers="kafka.platform-infra.svc.cluster.local:9092")
+producer.send("前缀_my-topic", b"hello")   # topic 名以 前缀_ 开头
+producer.flush()
+consumer = KafkaConsumer("前缀_my-topic", bootstrap_servers="kafka.platform-infra.svc.cluster.local:9092")
+for msg in consumer:
+    print(msg.value)`
 
 function buildConnStr(svc: string, cred: any, conf: any): string | null {
   const host = `${svc}:${SERVICE_PORTS[svc]}`
@@ -87,6 +109,15 @@ function buildConnStr(svc: string, cred: any, conf: any): string | null {
     const db = cred?.database || ''
     return `postgresql://${user}:${pass}@${host}/${db}`
   }
+  if (svc === 'clickhouse') {
+    const user = cred?.username || 'clickhouse'
+    const pass = cred?.secret || conf?.password
+    const db = cred?.database || 'default'
+    return `clickhouse://${user}:${pass}@${host}/${db}`
+  }
+  if (svc === 'kafka') {
+    return `kafka://${host}`
+  }
   return null
 }
 
@@ -106,27 +137,60 @@ export default function InfraDatabases() {
   const [group, setGroup] = useState('')
   const [service, setService] = useState('')
   const [deleteCredTarget, setDeleteCredTarget] = useState<any | null>(null)
+  const [dbQuery, setDbQuery] = useState('')
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['infra-databases'],
     queryFn: () => api.get('/infra/databases'),
   })
 
+  const { data: chData } = useQuery<any>({
+    queryKey: ['infra-clickhouse'],
+    queryFn: () => api.get('/infra/clickhouse'),
+  })
+
+  const { data: kafkaData } = useQuery<any>({
+    queryKey: ['infra-kafka'],
+    queryFn: () => api.get('/infra/kafka'),
+  })
+
+  // Merge ClickHouse + Kafka status/creds into the main data
+  const mergedData = data ? {
+    ...data,
+    status: { ...(data.status || {}), ...(chData?.status ? { clickhouse: chData.status } : {}), ...(kafkaData?.status ? { kafka: kafkaData.status } : {}) },
+    creds: [...(data.creds || []), ...(chData?.creds || []), ...(kafkaData?.creds || [])],
+    conf: { ...(data.conf || {}), ...(chData?.conf || {}), ...(kafkaData?.conf || {}) },
+  } : data
+
   const ensureMut = useMutation({
-    mutationFn: () => api.post('/infra/databases/ensure'),
-    onSuccess: () => { toast({ type: 'success', message: '数据库服务已初始化' }); qc.invalidateQueries({ queryKey: ['infra-databases'] }) },
+    mutationFn: async () => {
+      await api.post('/infra/databases/ensure')
+      await api.post('/infra/clickhouse/ensure')
+      await api.post('/infra/kafka/ensure')
+    },
+    onSuccess: () => { toast({ type: 'success', message: '数据库服务已初始化' }); qc.invalidateQueries({ queryKey: ['infra-databases'] }); qc.invalidateQueries({ queryKey: ['infra-clickhouse'] }); qc.invalidateQueries({ queryKey: ['infra-kafka'] }) },
     onError: (e: any) => toast({ type: 'error', message: e?.message || '初始化数据库失败' }),
   })
 
   const createCredMut = useMutation({
-    mutationFn: (d: { group: string; service: string }) => api.post('/infra/databases/creds', d),
-    onSuccess: () => { toast({ type: 'success', message: '凭证已创建' }); setCreateOpen(false); qc.invalidateQueries({ queryKey: ['infra-databases'] }) },
+    mutationFn: (d: { group: string; service: string }) => {
+      const body = { group: d.group }
+      if (d.service === 'clickhouse') return api.post('/infra/clickhouse/creds', body)
+      if (d.service === 'kafka') return api.post('/infra/kafka/creds', body)
+      return api.post('/infra/databases/creds', { ...body, service: d.service })
+    },
+    onSuccess: () => { toast({ type: 'success', message: '凭证已创建' }); setCreateOpen(false); qc.invalidateQueries({ queryKey: ['infra-databases'] }); qc.invalidateQueries({ queryKey: ['infra-clickhouse'] }); qc.invalidateQueries({ queryKey: ['infra-kafka'] }) },
     onError: (e: any) => toast({ type: 'error', message: e?.message || '创建凭证失败' }),
   })
 
   const deleteCredMut = useMutation({
-    mutationFn: (id: string) => api.del(`/infra/databases/creds/${id}`),
-    onSuccess: () => { toast({ type: 'success', message: '凭证已删除' }); setDeleteCredTarget(null); qc.invalidateQueries({ queryKey: ['infra-databases'] }) },
+    mutationFn: (target: { id: string; service?: string }) => {
+      const kid = target.id
+      if (target.service === 'clickhouse') return api.del(`/infra/clickhouse/creds/${kid}`)
+      if (target.service === 'kafka') return api.del(`/infra/kafka/creds/${kid}`)
+      return api.del(`/infra/databases/creds/${kid}`)
+    },
+    onSuccess: () => { toast({ type: 'success', message: '凭证已删除' }); setDeleteCredTarget(null); qc.invalidateQueries({ queryKey: ['infra-databases'] }); qc.invalidateQueries({ queryKey: ['infra-clickhouse'] }); qc.invalidateQueries({ queryKey: ['infra-kafka'] }) },
     onError: (e: any) => toast({ type: 'error', message: e?.message || '删除凭证失败' }),
   })
 
@@ -142,12 +206,15 @@ export default function InfraDatabases() {
 
   const auth = useAuthStore()
   const canManage = auth.perms.has('*') || auth.perms.has('infra.db')
-  const anyReady = data?.status && Object.values(data.status).some((s: any) => s?.ready)
+  const anyReady = mergedData?.status && Object.values(mergedData.status).some((s: any) => s?.ready)
+  const dbServices = ['mysql', 'redis', 'qdrant', 'postgres', 'clickhouse', 'kafka']
+  const dbQueryNorm = dbQuery.trim().toLowerCase()
+  const visibleServices = dbServices.filter((svc) => !dbQueryNorm || svc.includes(dbQueryNorm))
 
   // Group credentials by service
   const credsByService: Record<string, any[]> = {}
-  if (data?.creds) {
-    for (const c of data.creds) {
+  if (mergedData?.creds) {
+    for (const c of mergedData.creds) {
       const svc = c.service || c.kind || 'unknown'
       if (!credsByService[svc]) credsByService[svc] = []
       credsByService[svc].push(c)
@@ -156,8 +223,9 @@ export default function InfraDatabases() {
 
   return (
     <>
-      <PageHeader title="数据库" description="MySQL / Redis / Qdrant / PostgreSQL 服务与凭证" doc={{ section: 'infra', item: 2, label: '数据库文档' }}>
-        <PageAiAssistant page="databases" context={data?.creds?.length > 0 ? `数据库凭证: ${data.creds.length} 个\n${Object.entries(credsByService).map(([svc, list]: [string, any[]]) => `  ${svc}: ${list.length} 个 (${list.map((c: any) => c.group ?? c.name).join(', ')})`).join('\n')}` : '暂无数据库凭证'} />
+      <InfraNav />
+      <PageHeader title="数据库" description="MySQL / Redis / Qdrant / PostgreSQL / ClickHouse / Kafka 服务与凭证" doc={{ section: 'infra', item: 2, label: '数据库文档' }}>
+        <PageAiAssistant page="databases" context={mergedData?.creds?.length > 0 ? `数据库凭证: ${mergedData.creds.length} 个\n${Object.entries(credsByService).map(([svc, list]: [string, any[]]) => `  ${svc}: ${list.length} 个 (${list.map((c: any) => c.group ?? c.name).join(', ')})`).join('\n')}` : '暂无数据库凭证'} />
         <div className="flex gap-2">
           {canManage && <>
             <Button data-onboarding-target="db-ensure" variant="secondary" size="sm" onClick={() => ensureMut.mutate()}>初始化</Button>
@@ -167,21 +235,33 @@ export default function InfraDatabases() {
       </PageHeader>
 
       {/* AI Insight */}
-      {!isLoading && data && (
+      {!isLoading && mergedData && (
         <div data-onboarding-target="db-insight" className="mb-5">
         <AiInsightPanel
           page="databases"
           title="数据库洞察"
-          context={`数据库状态: ${['mysql','redis','qdrant','postgres'].map(s => `${s}=${data?.status?.[s]?.ready ? '运行' : data?.status?.[s]?.deployed ? '启动中' : '未部署'}`).join(', ')}\n凭证: ${data?.creds?.length ?? 0} 个\n${Object.entries(credsByService).map(([svc, list]: [string, any[]]) => `  ${svc}: ${list.length} 个 (${list.map((c: any) => c.group ?? c.username ?? c.id).join(', ')})`).join('\n')}`}
+          context={`数据库状态: ${['mysql','redis','qdrant','postgres','clickhouse','kafka'].map(s => `${s}=${mergedData?.status?.[s]?.ready ? '运行' : mergedData?.status?.[s]?.deployed ? '启动中' : '未部署'}`).join(', ')}\n凭证: ${mergedData?.creds?.length ?? 0} 个\n${Object.entries(credsByService).map(([svc, list]: [string, any[]]) => `  ${svc}: ${list.length} 个 (${list.map((c: any) => c.group ?? c.username ?? c.id).join(', ')})`).join('\n')}`}
         />
         </div>
       )}
 
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input
+          data-ux="ux-db-find"
+          value={dbQuery}
+          onChange={(e) => setDbQuery(e.target.value)}
+          placeholder="按名称筛选服务"
+          aria-label="按名称筛选数据库服务"
+          className="h-8 w-full max-w-xs rounded-md border border-black/10 bg-transparent px-2 text-xs"
+        />
+      </div>
+
       {/* Service Status */}
-      <div data-onboarding-target="db-status" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        {['mysql', 'redis', 'qdrant', 'postgres'].map((svc) => {
-          const info = data?.status?.[svc]
-          const conf = data?.conf
+      <div data-onboarding-target="db-status" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
+        {visibleServices.length === 0 && <p className="text-sm text-muted col-span-full">没有匹配的服务</p>}
+        {visibleServices.map((svc) => {
+          const info = mergedData?.status?.[svc]
+          const conf = mergedData?.conf
           const port = SERVICE_PORTS[svc]
           const connStr = buildConnStr(svc, null, conf)
           return (
@@ -195,7 +275,7 @@ export default function InfraDatabases() {
               </div>
               <CodeChip code={`${svc}:${port}`} className="mt-2" />
               {connStr && (
-                <Button data-onboarding-target="db-copy" variant="ghost" size="sm" className="mt-2" onClick={() => copyConnStr(connStr)}>
+                <Button data-ux="ux-db-copy-tap" data-onboarding-target="db-copy" variant="ghost" size="sm" className="mt-2" onClick={() => copyConnStr(connStr)}>
                   <Link2 size={14} /> 复制连接串
                 </Button>
               )}
@@ -251,7 +331,7 @@ export default function InfraDatabases() {
       )}
 
       {/* Root credentials (admin only) */}
-      {anyReady && canManage && data?.root && (
+      {anyReady && canManage && mergedData?.conf && (
         <Card data-onboarding-target="db-root" padding="lg" className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <Shield size={16} className="text-muted" />
@@ -260,38 +340,47 @@ export default function InfraDatabases() {
           </div>
           <p className="text-xs text-muted mb-3">排障用，请勿分享</p>
           <div className="space-y-2">
-            {data.root.mysql_root_password && (
+            {mergedData.conf.mysql_root_password && (
               <div className="flex items-center gap-3">
                 <span className="text-xs text-muted w-20 flex-shrink-0 font-semibold">MySQL root</span>
-                <CodeChip code={maskStr(data.root.mysql_root_password)} />
-                <Button variant="ghost" size="sm" onClick={() => copyText(data.root.mysql_root_password)}>
+                <CodeChip code={maskStr(mergedData.conf.mysql_root_password)} />
+                <Button variant="ghost" size="sm" onClick={() => copyText(mergedData.conf.mysql_root_password)}>
                   <Copy size={12} />
                 </Button>
               </div>
             )}
-            {data.root.redis_password && (
+            {mergedData.conf.redis_password && (
               <div className="flex items-center gap-3">
                 <span className="text-xs text-muted w-20 flex-shrink-0 font-semibold">Redis default</span>
-                <CodeChip code={maskStr(data.root.redis_password)} />
-                <Button variant="ghost" size="sm" onClick={() => copyText(data.root.redis_password)}>
+                <CodeChip code={maskStr(mergedData.conf.redis_password)} />
+                <Button variant="ghost" size="sm" onClick={() => copyText(mergedData.conf.redis_password)}>
                   <Copy size={12} />
                 </Button>
               </div>
             )}
-            {data.root.qdrant_api_key && (
+            {mergedData.conf.qdrant_api_key && (
               <div className="flex items-center gap-3">
                 <span className="text-xs text-muted w-20 flex-shrink-0 font-semibold">Qdrant api key</span>
-                <CodeChip code={maskStr(data.root.qdrant_api_key)} />
-                <Button variant="ghost" size="sm" onClick={() => copyText(data.root.qdrant_api_key)}>
+                <CodeChip code={maskStr(mergedData.conf.qdrant_api_key)} />
+                <Button variant="ghost" size="sm" onClick={() => copyText(mergedData.conf.qdrant_api_key)}>
                   <Copy size={12} />
                 </Button>
               </div>
             )}
-            {data.root.postgres_password && (
+            {mergedData.conf.postgres_password && (
               <div className="flex items-center gap-3">
                 <span className="text-xs text-muted w-20 flex-shrink-0 font-semibold">Postgres root</span>
-                <CodeChip code={maskStr(data.root.postgres_password)} />
-                <Button variant="ghost" size="sm" onClick={() => copyText(data.root.postgres_password)}>
+                <CodeChip code={maskStr(mergedData.conf.postgres_password)} />
+                <Button variant="ghost" size="sm" onClick={() => copyText(mergedData.conf.postgres_password)}>
+                  <Copy size={12} />
+                </Button>
+              </div>
+            )}
+            {mergedData.conf.password && (
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted w-20 flex-shrink-0 font-semibold">ClickHouse root</span>
+                <CodeChip code={maskStr(mergedData.conf.password)} />
+                <Button variant="ghost" size="sm" onClick={() => copyText(mergedData.conf.password)}>
                   <Copy size={12} />
                 </Button>
               </div>
@@ -307,7 +396,7 @@ export default function InfraDatabases() {
             <Terminal size={16} className="text-muted" />
             <h2 className="text-sm font-semibold">连接示例</h2>
           </div>
-          <pre className="bg-[#3a3329] text-[#d9d2c8] p-3 rounded-lg text-xs overflow-auto">
+          <pre className="bg-[var(--surface-4)] text-[var(--ink)] p-3 rounded-lg text-xs overflow-auto">
             <code>{CONN_EXAMPLE}</code>
           </pre>
         </Card>
@@ -315,21 +404,22 @@ export default function InfraDatabases() {
 
       {/* Credentials grouped by service */}
       <div data-onboarding-target="db-creds" className="space-y-3">
-        {['mysql', 'redis', 'qdrant', 'postgres'].map((svc) => {
+        {['mysql', 'redis', 'qdrant', 'postgres', 'clickhouse', 'kafka'].map((svc) => {
           const creds = credsByService[svc]
           if (!creds?.length) return null
           return (
             <Disclosure key={svc} title={`${svc.charAt(0).toUpperCase() + svc.slice(1)} 凭证 (${creds.length})`} defaultOpen>
               <div className="space-y-2 -mx-4 -mb-3">
                 {creds.map((c: any) => {
-                  const credConnStr = buildConnStr(svc, c, data?.conf)
+                  const credConnStr = buildConnStr(svc, c, mergedData?.conf)
                   return (
                     <div key={c.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-black/[0.02]">
                       <Shield size={14} className="text-muted" />
                       <div className="flex flex-col gap-0.5 min-w-0">
                         <div className="flex items-center gap-2">
-                          <CodeChip code={c.username || c.user || c.id} />
+                          <CodeChip code={c.username || c.user || c.prefix || c.id} />
                           {c.database && <CodeChip code={c.database} />}
+                          {c.prefix && <CodeChip code={`${c.prefix}_<topic>`} />}
                           {c.label && <Badge variant="muted">{c.label}</Badge>}
                         </div>
                         <div className="flex items-center gap-2 mt-1">
@@ -355,8 +445,8 @@ export default function InfraDatabases() {
             </Disclosure>
           )
         })}
-        {/* Credentials for services not in the standard three */}
-        {Object.keys(credsByService).filter((s) => !['mysql', 'redis', 'qdrant', 'postgres'].includes(s)).map((svc) => {
+        {/* Credentials for services not in the standard list */}
+        {Object.keys(credsByService).filter((s) => !['mysql', 'redis', 'qdrant', 'postgres', 'clickhouse', 'kafka'].includes(s)).map((svc) => {
           const creds = credsByService[svc] ?? []
           return (
             <Disclosure key={svc} title={`${svc} 凭证 (${creds.length})`} defaultOpen>
@@ -377,7 +467,7 @@ export default function InfraDatabases() {
             </Disclosure>
           )
         })}
-        {!data?.creds?.length && (
+        {!mergedData?.creds?.length && (
           <Card padding="lg">
             <p className="text-sm text-muted">暂无凭证</p>
           </Card>
@@ -388,7 +478,7 @@ export default function InfraDatabases() {
       <ConfirmDialog
         open={!!deleteCredTarget}
         onClose={() => setDeleteCredTarget(null)}
-        onConfirm={() => deleteCredTarget && deleteCredMut.mutate(deleteCredTarget.id)}
+        onConfirm={() => deleteCredTarget && deleteCredMut.mutate({ id: deleteCredTarget.id, service: deleteCredTarget.service })}
         loading={deleteCredMut.isPending}
         title="删除数据库凭证"
         description={`确定删除凭证 ${deleteCredTarget?.username || deleteCredTarget?.user || String(deleteCredTarget?.id ?? '')}？使用该凭证的应用将立即失去访问权限。`}
@@ -406,6 +496,8 @@ export default function InfraDatabases() {
             { value: 'redis', label: 'Redis' },
             { value: 'qdrant', label: 'Qdrant' },
             { value: 'postgres', label: 'PostgreSQL' },
+            { value: 'clickhouse', label: 'ClickHouse' },
+            { value: 'kafka', label: 'Kafka' },
           ]} />
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setCreateOpen(false)}>取消</Button>

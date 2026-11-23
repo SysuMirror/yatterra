@@ -6,6 +6,9 @@
 
 /* ── Console design tokens ── */
 :root {
+  /* 报告大屏（reports.tsx）专用：无论明暗主题都保持深色观感 */
+  --report-bg: #070B18;
+  --report-ink: #F5F7FF;
   --surface-0: #ffffff;
   --surface-1: #ffffff;
   --surface-2: #f8fafc;
@@ -112,6 +115,13 @@ html[data-theme='dark'] ::-webkit-scrollbar-thumb { background: #475569; }
 html[data-theme='dark'] .mobile-tabbar {
   background: rgba(16, 24, 33, 0.92);
   border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Row actions stay visible on touch. A mouse reveals them on hover or keyboard focus. */
+@media (hover: hover) and (pointer: fine) {
+  .show-on-fine-hover { opacity: 0; }
+  .group:hover > .show-on-fine-hover,
+  .group:focus-within > .show-on-fine-hover { opacity: 1; }
 }
 
 /* ── Base ── */

@@ -75,10 +75,21 @@ function levelOf(score: number) {
   return LEVELS.find((l) => score >= l.min) ?? LEVELS[LEVELS.length - 1]!
 }
 
+type AttackText = Attack & { source?: string; message?: string; status?: string; severity?: string }
+
+function attackBlob(a: Attack): string {
+  const x = a as AttackText
+  return [a.ip, x.source, x.message, a.city, a.country, a.pattern, a.proxy, a.response, a.llm_reasoning]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+}
+
 export default function ThreatMap() {
   const [patternFilter, setPatternFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [timeWindow, setTimeWindow] = useState('3d')
+  const [threatQuery, setThreatQuery] = useState('')
 
   const { data, isLoading, error, refetch } = useQuery<ThreatData>({
     queryKey: ['threat-map', timeWindow],
@@ -101,8 +112,10 @@ export default function ThreatMap() {
     let rows = patternFilter ? attacks.filter((a) => a.pattern === patternFilter) : attacks
     if (statusFilter === 'banned') rows = rows.filter((a) => a.banned)
     if (statusFilter === 'active') rows = rows.filter((a) => !a.banned)
+    const q = threatQuery.trim().toLowerCase()
+    if (q) rows = rows.filter((a) => attackBlob(a).includes(q))
     return rows
-  }, [attacks, patternFilter, statusFilter])
+  }, [attacks, patternFilter, statusFilter, threatQuery])
 
   const totalAttacks = useMemo(() => attacks.reduce((s, a) => s + a.count, 0), [attacks])
   const uniqueIps = useMemo(() => new Set(attacks.map((a) => a.ip)).size, [attacks])
@@ -345,9 +358,9 @@ export default function ThreatMap() {
       {/* ── AI brief ── */}
       {data?.ai_summary && (
         <Card data-onboarding-target="threat-ai-brief" padding="md" className="mb-5 animate-fade-in-up relative overflow-hidden" style={{ animationDelay: '160ms' }}>
-          <span className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-[#a78bfa] to-[#0a84ff]" />
+          <span className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-[#bf5af2] to-accent" />
           <div className="flex items-start gap-3 pl-1">
-            <Sparkles size={15} className="text-[#a78bfa] flex-shrink-0 mt-0.5" />
+            <Sparkles size={15} className="text-accent flex-shrink-0 mt-0.5" />
             <div className="min-w-0">
               <p className="text-[11px] tracking-wider text-muted mb-1 font-medium">AI 态势简报</p>
               <p className="text-sm text-ink leading-relaxed whitespace-pre-line">{data.ai_summary}</p>
@@ -393,6 +406,14 @@ export default function ThreatMap() {
                 </button>
               ))}
             </div>
+            <input
+              data-ux="ux-threat-query"
+              value={threatQuery}
+              onChange={(e) => setThreatQuery(e.target.value)}
+              placeholder="搜索 IP 或描述"
+              aria-label="搜索 IP 或描述"
+              className="h-8 w-full sm:w-44 rounded-md border border-black/10 bg-transparent px-2 text-xs"
+            />
             <div className="w-full sm:w-48">
               <Select onboardingTarget="threat-pattern" value={patternFilter} onChange={setPatternFilter} options={patternOptions} />
             </div>
