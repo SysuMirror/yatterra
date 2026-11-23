@@ -17,6 +17,7 @@ import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
 import { AiFormHelper } from '@/components/domain/AiFormHelper'
 import { api } from '@/api/client'
+import InfraNav from '@/components/infra/InfraNav'
 import { useToastStore } from '@/stores/toast'
 import { DOMAIN } from '@/lib/site'
 
@@ -29,6 +30,7 @@ export default function InfraProxy() {
   const [note, setNote] = useState('')
   const [pod, setPod] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
+  const [mappingQuery, setMappingQuery] = useState('')
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ['infra-proxy'],
@@ -68,12 +70,20 @@ export default function InfraProxy() {
   })
 
   const mappings = data?.mappings ?? data?.items ?? []
+  const mappingQueryNorm = mappingQuery.trim().toLowerCase()
+  const shownMappings = mappings.filter((m: any) => {
+    if (!mappingQueryNorm) return true
+    const hostName = m.host ?? m.hostname ?? m.domain ?? ''
+    const hay = `${hostName} ${m.subdomain ?? ''} ${m.pod ?? m.pod_name ?? ''}`.toLowerCase()
+    return hay.includes(mappingQueryNorm)
+  })
   const enabledCount = mappings.filter((m: any) => m.enabled !== false).length
   const disabledCount = mappings.length - enabledCount
   const frpc = host?.frpc
 
   return (
     <>
+      <InfraNav />
       <PageHeader title="子域名反代" description="Nginx 反向代理映射管理" doc={{ section: 'infra', item: 3, label: '子域名文档' }}>
         <div className="flex items-center gap-2">
           <PageAiAssistant page="proxy" context={`反代映射: ${mappings.length} 个 (${enabledCount} 启用, ${disabledCount} 禁用), FRP 隧道 ${frpc?.running ?? 0}/${frpc?.total ?? 0} 运行, 反代容器 ${data?.container_running ? '运行中' : '停止'}, 远程主机 ${remoteHosts?.length ?? 0} 台\n映射列表:\n${mappings.slice(0, 20).map((m: any) => `  ${m.subdomain} → :${m.port} ${m.enabled !== false ? '✓' : '✗'} ${m.note || ''}`).join('\n')}${remoteHosts?.length ? '\n远程主机:\n' + remoteHosts.slice(0, 10).map((h: any) => `  ${h.hostname || h.name}: ${h.online !== false ? '在线' : '离线'}, 磁盘 ${Math.round(h.disk?.used_pct ?? 0)}%, 内存 ${Math.round(h.mem?.used_pct ?? 0)}%${h.nvidia?.count ? `, ${h.nvidia.count} GPU` : ''}`).join('\n') : ''}`} />
@@ -152,6 +162,16 @@ export default function InfraProxy() {
 
       {/* Proxy mapping table */}
       <Card data-onboarding-target="proxy-table" padding="none" className="mb-6">
+        <div className="flex flex-wrap items-center gap-2 border-b border-black/[0.06] px-4 py-3">
+          <input
+            data-ux="ux-proxy-find"
+            value={mappingQuery}
+            onChange={(e) => setMappingQuery(e.target.value)}
+            placeholder="按主机、子域名或 Pod 筛选"
+            aria-label="筛选反代映射"
+            className="h-8 w-full max-w-xs rounded-md border border-black/10 bg-transparent px-2 text-xs"
+          />
+        </div>
         <DataTable
           columns={[
             { key: 'subdomain', title: '子域名', sortable: true, render: (r: any) => (
@@ -174,9 +194,9 @@ export default function InfraProxy() {
               </Button>
             )},
           ]}
-          data={mappings}
+          data={shownMappings}
           keyFn={(r: any) => r.id || r.subdomain}
-          empty={<p className="text-sm text-muted text-center py-8">暂无映射</p>}
+          empty={<p className="text-sm text-muted text-center py-8">{mappingQueryNorm ? '没有匹配的映射' : '暂无映射'}</p>}
         />
       </Card>
 
@@ -272,7 +292,7 @@ export default function InfraProxy() {
             <div className="mt-1"><AiFormHelper type="general" partial={subdomain} context="子域名反代映射" onApply={setSubdomain} /></div>
           </div>
           <div>
-            <Input label="端口" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="8080" />
+            <Input data-ux="ux-proxy-port" label="端口" type="number" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value)} placeholder="8080" hint="填应用在 Pod 里监听的端口，不是公网端口。" />
             <div className="mt-1"><AiFormHelper type="general" partial={port} context="服务端口号" onApply={setPort} /></div>
           </div>
           <div>

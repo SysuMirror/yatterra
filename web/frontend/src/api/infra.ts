@@ -31,6 +31,22 @@ export const infraApi = {
     delete: (id: string) => api.del(`/infra/databases/creds/${id}`),
   },
 
+  // ClickHouse
+  clickhouse: () => api.get('/infra/clickhouse'),
+  clickhouseEnsure: () => api.post('/infra/clickhouse/ensure'),
+  clickhouseCreds: {
+    create: (data: { group: string }) => api.post('/infra/clickhouse/creds', data),
+    delete: (id: string) => api.del(`/infra/clickhouse/creds/${id}`),
+  },
+
+  // Kafka
+  kafka: () => api.get('/infra/kafka'),
+  kafkaEnsure: () => api.post('/infra/kafka/ensure'),
+  kafkaCreds: {
+    create: (data: { group: string }) => api.post('/infra/kafka/creds', data),
+    delete: (id: string) => api.del(`/infra/kafka/creds/${id}`),
+  },
+
   // Proxy
   proxy: () => api.get('/infra/proxy'),
   proxyCreate: (data: { subdomain: string; port: number; note?: string }) => api.post('/infra/proxy', data),

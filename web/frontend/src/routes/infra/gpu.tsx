@@ -1,7 +1,13 @@
+import { useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Monitor, Thermometer, Zap, Box, Activity, HardDrive, AlertTriangle } from 'lucide-react'
+import InfraNav from '@/components/infra/InfraNav'
+import { archLabel, fleetCards } from '@/lib/fleetMachines'
+import { acceleratorSeries, attributionForCard, type PodReport } from '@/lib/acceleratorSeries'
+import { Select } from '@/components/ui/Select'
+import { Monitor, Thermometer, Zap, Box, Activity, MemoryStick, AlertTriangle } from 'lucide-react'
 import {
-  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
+  ResponsiveContainer, AreaChart, Area, YAxis, Tooltip,
 } from 'recharts'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
@@ -22,8 +28,42 @@ function toRows(series: number[] = []) {
   return series.map((v, i) => ({ i, v: Number.isFinite(v) ? v : 0 }))
 }
 
+function memTick(value: number) {
+  if (!Number.isFinite(value)) return ''
+  if (value >= 1024) {
+    const gb = value / 1024
+    return `${gb >= 10 ? Math.round(gb) : gb.toFixed(1)}G`
+  }
+  return String(Math.round(value))
+}
+
+function finiteBytes(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** Device VRAM, or the host meminfo pool when the card memory is unified and unreported. */
+function cardMemory(card: { hostId: string; unified: boolean; memUsedMiB: number | null; memTotalMiB: number | null }, hosts: any[]): { used: number; total: number } | null {
+  if (card.memTotalMiB != null) return { used: card.memUsedMiB ?? 0, total: card.memTotalMiB }
+  if (!card.unified) return null
+  const host = hosts.find((item) => item?.id === card.hostId)
+  const total = finiteBytes(host?.data?.memory?.total_bytes)
+  if (total == null) return null
+  const used = finiteBytes(host?.data?.memory?.used_bytes) ?? 0
+  return { used: used / 1024 / 1024, total: total / 1024 / 1024 }
+}
+
+function plotSeries(series: number[] | null | undefined, fallback: number): number[] {
+  if (series && series.length > 1) return series
+  const value = Number.isFinite(fallback) ? fallback : 0
+  return [value, value]
+}
+
 export default function InfraGpu() {
   const dark = useThemeStore((s) => s.resolved) === 'dark'
+  const [params, setParams] = useSearchParams()
+  const hostFilter = params.get('host') || ''
+  const [focus, setFocus] = useState<string | null>(null)
+  const [hotFirst, setHotFirst] = useState(true)
 
   // 跟随主题的 recharts tooltip / 坐标轴样式（与全站图表同一来源）
   const tooltipStyle = chartTooltip(dark)
@@ -32,51 +72,93 @@ export default function InfraGpu() {
   const utilColor = seriesColor(dark, 0)
   const memColor = seriesColor(dark, 1)
 
-  const { data: gpuData, isLoading: gpuLoading, error: gpuError, refetch: refetchGpu } = useQuery<any>({
+  const { data: fleetData, isLoading: gpuLoading, error: gpuError, refetch: refetchGpu } = useQuery<any>({
+    queryKey: ['infra-fleet'],
+    queryFn: () => api.get('/infra/fleet'),
+    refetchInterval: 30_000,
+  })
+  const { data: localGpu } = useQuery<any>({
     queryKey: ['infra-gpu'],
     queryFn: () => api.get('/infra/gpu'),
     staleTime: 10_000,
   })
 
-  const { data: hostData } = useQuery<any>({
-    queryKey: ['infra-host'],
-    queryFn: () => api.get('/infra/host'),
-    staleTime: 10_000,
+  const hosts = fleetData?.hosts ?? []
+  const histories = useQuery<any[]>({
+    queryKey: ['infra-fleet-gpu-history', hosts.map((host: any) => host.id).join('|')],
+    enabled: hosts.length > 0,
+    staleTime: 30_000,
+    queryFn: () => Promise.all(hosts.map(async (host: any) => {
+      try {
+        const body = await api.get<any>(`/infra/fleet/${encodeURIComponent(host.id)}/history?range=1h`)
+        return { id: host.id, samples: body?.samples ?? [] }
+      } catch {
+        return { id: host.id, samples: [] }
+      }
+    })),
   })
 
-  const { data: metricsData } = useQuery<any>({
-    queryKey: ['infra-metrics'],
-    queryFn: () => api.get('/infra/metrics'),
-    staleTime: 10_000,
-  })
+  const cards = useMemo(() => {
+    return fleetCards(fleetData?.hosts ?? []).filter((card) => !hostFilter || card.hostId === hostFilter)
+  }, [fleetData, hostFilter])
+  const orderedGpus = useMemo(() => {
+    const list = cards.filter((card) => !card.empty)
+    if (hotFirst) list.sort((a, b) => (b.util ?? -1) - (a.util ?? -1) || (b.temp ?? 0) - (a.temp ?? 0) || a.hostName.localeCompare(b.hostName) || (a.index ?? 0) - (b.index ?? 0))
+    else list.sort((a, b) => a.hostName.localeCompare(b.hostName) || (a.index ?? 0) - (b.index ?? 0))
+    return list
+  }, [cards, hotFirst])
+  const accelerators = orderedGpus
+  const shownGpus = focus == null ? orderedGpus : orderedGpus.filter((card) => card.cardKey === focus)
+  const hostGroups = useMemo(() => {
+    const order: string[] = []
+    const grouped = new Map<string, typeof shownGpus>()
+    for (const card of shownGpus) {
+      if (!grouped.has(card.hostId)) {
+        order.push(card.hostId)
+        grouped.set(card.hostId, [])
+      }
+      grouped.get(card.hostId)!.push(card)
+    }
+    return order.map((id) => ({ id, cards: grouped.get(id)! }))
+  }, [shownGpus])
+  const driverLabels = [...new Set(accelerators.map((card) => card.driver).filter((item): item is string => !!item))]
+  const driver = driverLabels.length ? driverLabels.join(' · ') : '未上报'
+  const podReports = useMemo<PodReport[]>(() => {
+    const reports: PodReport[] = []
+    for (const host of hosts) {
+      for (const gpu of host?.data?.gpus ?? []) {
+        if (!Array.isArray(gpu?.pods) && !Array.isArray(gpu?.groups)) continue
+        reports.push({ hostId: host.id, index: gpu.index ?? null, pods: gpu.pods, groups: gpu.groups })
+      }
+    }
+    for (const gpu of localGpu?.gpus ?? []) {
+      reports.push({ hostId: 'local', index: gpu.index ?? null, pods: gpu.pods, groups: gpu.groups })
+    }
+    return reports
+  }, [hosts, localGpu])
 
-  const gpus = gpuData?.gpus ?? []
-  const driver = hostData?.nvidia?.driver_version ?? '—'
-  const gpuSeries = metricsData?.gpus ?? {}
+  const totalGpu = accelerators.length
+  const avgUtil = totalGpu > 0 ? accelerators.reduce((sum, card) => sum + (card.util ?? 0), 0) / totalGpu : 0
+  const memoryRows = accelerators.map((card) => cardMemory(card, hosts)).filter((row): row is { used: number; total: number } => row != null)
+  const totalMemUsed = memoryRows.reduce((sum, row) => sum + row.used, 0)
+  const totalMemTotal = memoryRows.reduce((sum, row) => sum + row.total, 0)
+  const temps = accelerators.map((card) => card.temp).filter((temp): temp is number => temp != null)
+  const maxTemp = temps.length ? Math.max(...temps) : 0
 
-  // Aggregate stats
-  const totalGpu = gpus.length
-  const avgUtil = totalGpu > 0 ? gpus.reduce((s: number, g: any) => s + (g.util ?? 0), 0) / totalGpu : 0
-  const totalMemUsed = gpus.reduce((s: number, g: any) => s + (parseFloat(g.mem_used) || 0), 0)
-  const totalMemTotal = gpus.reduce((s: number, g: any) => s + (parseFloat(g.mem_total) || 0), 0)
-  const maxTemp = gpus.length > 0 ? Math.max(...gpus.map((g: any) => g.temp ?? 0)) : 0
-
-  const aiContext = gpus.length > 0
-    ? `GPU 总数: ${totalGpu}, 平均利用率: ${avgUtil.toFixed(1)}%, 显存: ${totalMemUsed.toFixed(1)}/${totalMemTotal.toFixed(1)} GB, 最高温度: ${maxTemp}°C\n` +
-      gpus.map((g: any) => {
-        const pods = (g.pods ?? []).map((p: any) => `${p.name} ${(p.mem / 1024).toFixed(1)}GB/利用率${(p.util ?? 0).toFixed(0)}%`).join(', ')
-        return `GPU ${g.index ?? '?'}: ${g.name ?? 'unknown'}, 利用率 ${g.util ?? 0}%, 显存 ${g.mem_used ?? 0}/${g.mem_total ?? 0} GB, 温度 ${g.temp ?? 0}°C` + (pods ? `, 按 Pod 实际占用: ${pods}` : '')
-      }).join('\n')
-    : '暂无 GPU 数据'
+  const aiContext = accelerators.length > 0
+    ? `加速器 ${totalGpu} 块，覆盖 ${new Set(accelerators.map((card) => card.hostName)).size} 台机器, 平均利用率: ${avgUtil.toFixed(1)}%, 显存: ${totalMemUsed.toFixed(0)}/${totalMemTotal.toFixed(0)} MiB, 最高温度: ${maxTemp}°C\n` +
+      accelerators.map((card) => `${card.hostName} ${archLabel(card.arch)} GPU ${card.index}: ${card.name}, 利用率 ${card.util ?? '—'}%, 温度 ${card.temp ?? '—'}°C`).join('\n')
+    : '集群里没有上报加速器'
 
   return (
     <>
-      <PageHeader title="GPU 监控" description={`驱动 ${driver} · ${totalGpu} 块 GPU`} doc={{ section: 'infra', item: 0, label: 'GPU 文档' }}>
+      <InfraNav />
+      <PageHeader title="加速器" description={`全部机器 · 驱动 ${driver} · ${totalGpu} 块`} doc={{ section: 'infra', item: 0, label: 'GPU 文档' }}>
         <PageAiAssistant page="gpu" context={aiContext} />
       </PageHeader>
 
       {/* AI Insight */}
-      {!gpuLoading && gpus.length > 0 && (
+      {!gpuLoading && accelerators.length > 0 && (
         <div data-onboarding-target="gpu-insight" className="mb-5">
           <AiInsightPanel page="gpu" context={aiContext} title="GPU 资源洞察" />
         </div>
@@ -101,37 +183,91 @@ export default function InfraGpu() {
           <>
             <MetricCard icon={<Monitor size={15} className="text-warn" />} label="GPU 总数" value={totalGpu} suffix="块" />
             <MetricCard icon={<Activity size={15} className="text-accent" />} label="平均利用率" value={avgUtil.toFixed(1)} suffix="%" percent={avgUtil} />
-            <MetricCard icon={<HardDrive size={15} className="text-ok" />} label="总显存" value={formatBytes(totalMemUsed * 1024 * 1024)} suffix={`/ ${formatBytes(totalMemTotal * 1024 * 1024)}`} />
+            <MetricCard icon={<MemoryStick size={15} className="text-ok" />} label="总显存" value={memoryRows.length ? formatBytes(totalMemUsed * 1024 * 1024) : '—'} suffix={memoryRows.length ? `/ ${formatBytes(totalMemTotal * 1024 * 1024)}` : undefined} />
             <MetricCard icon={<Thermometer size={15} className={maxTemp > 80 ? 'text-bad' : maxTemp > 65 ? 'text-warn' : 'text-ok'} />} label="最高温度" value={maxTemp} suffix="°C" />
           </>
         )}
       </div>
 
-      {/* Per-GPU detail cards */}
-      <div data-onboarding-target="gpu-cards" className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        {gpus.map((gpu: any) => {
-          const memUsed = parseFloat(gpu.mem_used) || 0
-          const memTotal = parseFloat(gpu.mem_total) || 1
-          const memPct = (memUsed / memTotal) * 100
-          const assignedGroups: string[] = gpu.groups ?? []
-          const series = gpuSeries[String(gpu.index)]
+      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div data-ux="ux-gpu-phone-pick">
+          <Select
+            label="机器"
+            value={hostFilter}
+            placeholder="全部机器"
+            options={[{ value: '', label: '全部机器' }, ...hosts.map((host: any) => ({ value: host.id, label: `${host.name || host.id} · ${archLabel(host.hardware?.arch)} · ${host.accelerator_count ?? 0} 块` }))]}
+            onChange={(value) => { setFocus(null); setParams(value ? { host: value } : {}, { replace: true }) }}
+          />
+        </div>
+        <div data-ux="ux-gpu-focus">
+          <Select
+            label="卡片"
+            value={focus ?? ''}
+            placeholder="全部卡片"
+            options={[{ value: '', label: '全部卡片' }, ...cards.filter((card) => !card.empty).map((card) => ({ value: card.cardKey, label: `${card.hostName} #${card.index} ${card.name}` }))]}
+            onChange={(value) => setFocus(value || null)}
+          />
+        </div>
+        <div data-ux="ux-gpu-hot-sort">
+          <Select
+            label="排序"
+            value={hotFirst ? 'hot' : 'index'}
+            options={[{ value: 'hot', label: '最热优先' }, { value: 'index', label: '按序号' }]}
+            onChange={(value) => setHotFirst(value !== 'index')}
+          />
+        </div>
+      </div>
+
+      {/* Per-host accelerator cards */}
+      <div data-onboarding-target="gpu-cards" className="mb-6 space-y-6">
+        {hostGroups.map((group) => (
+        <section key={group.id}>
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <Link to={`/infra/host?machine=${encodeURIComponent(group.id)}`} className="text-sm font-semibold hover:underline">{group.cards[0]?.hostName}</Link>
+            <span className="text-xs text-muted">{archLabel(group.cards[0]?.arch)}{group.cards[0]?.cpuModel ? ` · ${group.cards[0].cpuModel}` : ''} · 驱动 {group.cards.find((card) => card.driver)?.driver || '未上报'} · {group.cards.length} 块</span>
+          </div>
+          <div className={focus == null ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
+        {group.cards.map((gpu) => {
+          const pool = cardMemory(gpu, hosts)
+          const memUsed = pool?.used ?? null
+          const memTotal = pool?.total ?? null
+          const memPct = memUsed != null && memTotal ? (memUsed / memTotal) * 100 : 0
+          const attribution = attributionForCard(gpu, podReports)
+          const assignedGroups = attribution.groups
+          const namedPods = (attribution.pods ?? []).filter((pod) => pod.mem > 0)
+          const namedSum = namedPods.reduce((sum, pod) => sum + pod.mem, 0)
+          const hostRow = hosts.find((host: any) => host.id === gpu.hostId)
+          const ramBytes = finiteBytes(hostRow?.data?.memory?.total_bytes)
+          const hostSamples = (histories.data ?? []).find((row) => row.id === gpu.hostId)?.samples ?? []
+          // Discrete cards use nvidia-smi bytes. Unified cards (GB10) report N/A there;
+          // the pool is host meminfo, already sampled on every history point.
+          const series = acceleratorSeries(hostSamples, {
+            index: gpu.index,
+            memTotalBytes: gpu.memTotalMiB != null ? gpu.memTotalMiB * 1024 * 1024 : gpu.unified && ramBytes != null ? ramBytes : null,
+            memSource: gpu.unified && gpu.memTotalMiB == null ? 'host' : 'device',
+          })
+          const utilPlot = plotSeries(series.util, gpu.util ?? 0)
+          const memPlot = plotSeries(series.mem, memUsed ?? 0)
+          const chartId = gpu.cardKey.replace(/[^a-zA-Z0-9_-]/g, '_')
+          const donutUsed = memUsed ?? namedSum
+          const donutTotal = memTotal ?? namedSum
 
           return (
-            <Card key={gpu.index} padding="lg">
+            <Card key={gpu.cardKey} padding="lg">
               {/* Header */}
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <Monitor size={16} className="text-warn" />
-                  <span className="text-sm font-semibold">GPU #{gpu.index}</span>
-                  <span className="text-xs text-muted">{gpu.name}</span>
+              <div className="flex items-start justify-between gap-2 mb-4">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                  <Monitor size={16} className="text-warn shrink-0" />
+                  <Link to={`/infra/host?machine=${encodeURIComponent(gpu.hostId)}`} className="text-sm font-semibold hover:underline">{gpu.hostName}</Link>
+                  <span className="text-xs text-muted break-words">{archLabel(gpu.arch)} · #{gpu.index} {gpu.name}</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={gpu.temp > 80 ? 'bad' : gpu.temp > 65 ? 'warn' : 'ok'} className="text-[10px]">
-                    <Thermometer size={10} className="mr-0.5" /> {gpu.temp}°C
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge variant={gpu.temp != null && gpu.temp > 80 ? 'bad' : gpu.temp != null && gpu.temp > 65 ? 'warn' : 'ok'} className="text-[10px]">
+                    <Thermometer size={10} className="mr-0.5" /> {gpu.temp == null ? '—' : `${gpu.temp}°C`}
                   </Badge>
                   {gpu.power != null && (
                     <Badge variant="muted" className="text-[10px]">
-                      <Zap size={10} className="mr-0.5" /> {gpu.power}W / {gpu.power_limit}W
+                      <Zap size={10} className="mr-0.5" /> {gpu.power}W / {gpu.powerLimit ?? '—'}W
                     </Badge>
                   )}
                 </div>
@@ -149,65 +285,63 @@ export default function InfraGpu() {
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-muted">显存</span>
-                    <span className="font-medium">{formatBytes(memUsed * 1024 * 1024)} / {formatBytes(memTotal * 1024 * 1024)}</span>
+                    <span className="font-medium">{memTotal == null ? '未上报' : `${formatBytes((memUsed ?? 0) * 1024 * 1024)} / ${formatBytes(memTotal * 1024 * 1024)}`}</span>
                   </div>
                   <Progress value={memPct} size="sm" color={memPct > 90 ? 'bad' : memPct > 70 ? 'warn' : 'accent'} />
                 </div>
               </div>
 
-              {/* Time series charts */}
-              {series && (series.util?.length > 1 || series.mem?.length > 1) && (
-                <div data-onboarding-target="gpu-trend" className="grid grid-cols-2 gap-4 mb-4">
-                  {series.util?.length > 1 && (
-                    <div>
+              {/* Both charts stay on every card, including a flat line when history is missing. */}
+              <div data-onboarding-target="gpu-trend" className="grid grid-cols-2 gap-4 mb-4">
+                  <div>
                       <p className="text-[11px] text-muted mb-1">利用率趋势</p>
                       <div className="h-16">
                         <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={toRows(series.util)} margin={{ top: 2, right: 4, bottom: 0, left: -14 }}>
+                          <AreaChart data={toRows(utilPlot)} margin={{ top: 2, right: 4, bottom: 0, left: -14 }}>
                             <defs>
-                              <linearGradient id={`gpu-util-${gpu.index}`} x1="0" y1="0" x2="0" y2="1">
+                              <linearGradient id={`gpu-util-${chartId}`} x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="0%" stopColor={utilColor} stopOpacity={0.12} />
                                 <stop offset="100%" stopColor={utilColor} stopOpacity={0} />
                               </linearGradient>
                             </defs>
                             <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: tickFill }} tickLine={false} axisLine={false} width={28} />
                             <Tooltip {...tooltipStyle} formatter={(v: any) => [`${Number(v).toFixed(1)}%`, '利用率']} />
-                            <Area type="monotone" dataKey="v" stroke={utilColor} strokeWidth={1.2} fill={`url(#gpu-util-${gpu.index})`} dot={false} isAnimationActive={false} />
+                            <Area type="monotone" dataKey="v" stroke={utilColor} strokeWidth={1.2} fill={`url(#gpu-util-${chartId})`} dot={false} isAnimationActive={false} />
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
-                  )}
-                  {series.mem?.length > 1 && (
                     <div>
                       <p className="text-[11px] text-muted mb-1">显存趋势</p>
                       <div className="h-16">
                         <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={toRows(series.mem)} margin={{ top: 2, right: 4, bottom: 0, left: -14 }}>
+                          <AreaChart data={toRows(memPlot)} margin={{ top: 2, right: 4, bottom: 0, left: -14 }}>
                             <defs>
-                              <linearGradient id={`gpu-mem-${gpu.index}`} x1="0" y1="0" x2="0" y2="1">
+                              <linearGradient id={`gpu-mem-${chartId}`} x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="0%" stopColor={memColor} stopOpacity={0.12} />
                                 <stop offset="100%" stopColor={memColor} stopOpacity={0} />
                               </linearGradient>
                             </defs>
-                            <YAxis domain={[0, Math.max(...series.mem) * 1.15]} tick={{ fontSize: 9, fill: tickFill }} tickLine={false} axisLine={false} width={28} />
+                            <YAxis domain={[0, Math.max(1, Math.ceil(Math.max(...memPlot) * 1.15))]} tick={{ fontSize: 9, fill: tickFill }} tickFormatter={memTick} tickLine={false} axisLine={false} width={32} />
                             <Tooltip {...tooltipStyle} formatter={(v: any) => [`${Number(v).toFixed(0)} MB`, '显存']} />
-                            <Area type="monotone" dataKey="v" stroke={memColor} strokeWidth={1.2} fill={`url(#gpu-mem-${gpu.index})`} dot={false} isAnimationActive={false} />
+                            <Area type="monotone" dataKey="v" stroke={memColor} strokeWidth={1.2} fill={`url(#gpu-mem-${chartId})`} dot={false} isAnimationActive={false} />
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
-
-              {/* Live per-Pod VRAM / utilisation attribution */}
-              <div className="mb-4">
-                <GpuPodDonut gpu={gpu} />
               </div>
 
+              {/* Live per-Pod VRAM. Always rendered so an idle card keeps the
+                  same layout and shows the empty state instead of no block. */}
+              <div className="mb-4">
+                <GpuPodDonut gpu={{ index: gpu.index ?? 0, mem_used: donutUsed, mem_total: donutTotal, pods: namedPods }} />
+              </div>
+              {namedPods.length === 0 && gpu.memUsedMiB != null && gpu.memUsedMiB > 256 && (
+                <p className="mb-4 text-xs text-muted">这块卡的显存没有对应到 Pod</p>
+              )}
+
               {/* Assigned pods */}
-              {assignedGroups.length > 0 && (
+              {assignedGroups && assignedGroups.length > 0 && (
                 <div data-onboarding-target="gpu-assigned">
                   <p className="text-[11px] text-muted mb-1.5">已分配 Pod</p>
                   <div className="flex flex-wrap gap-1.5">
@@ -219,19 +353,22 @@ export default function InfraGpu() {
                   </div>
                 </div>
               )}
-              {assignedGroups.length === 0 && (
+              {assignedGroups && assignedGroups.length === 0 && (
                 <p className="text-xs text-muted">无 Pod 占用</p>
               )}
             </Card>
           )
         })}
+          </div>
+        </section>
+        ))}
       </div>
 
       {/* No GPU fallback */}
-      {!gpuLoading && !gpuError && gpus.length === 0 && (
+      {!gpuLoading && !gpuError && accelerators.length === 0 && (
         <Card padding="lg" className="text-center">
           <Monitor size={32} className="mx-auto text-muted/40 mb-2" />
-          <p className="text-sm text-muted">未检测到 GPU 设备</p>
+          <p data-ux="ux-gpu-empty-who" className="text-sm text-muted">这些机器没有上报加速器：{(hostFilter ? hosts.filter((host: any) => host.id === hostFilter) : hosts.filter((host: any) => !(host.accelerator_count > 0))).map((host: any) => host.name || host.id).join('、') || '当前没有机器采样'}</p>
         </Card>
       )}
     </>

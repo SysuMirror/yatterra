@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Server, Cpu, HardDrive, Monitor, Info, HardDriveDownload, Container, ChevronRight, Clock, Activity, AlertTriangle } from 'lucide-react'
+import { Server, Cpu, HardDrive, Monitor, Info, HardDriveDownload, MemoryStick, Container, ChevronRight, Clock, Activity, AlertTriangle } from 'lucide-react'
 import PageHeader from '@/components/layout/PageHeader'
 import { PageAiAssistant } from '@/components/domain/PageAiAssistant'
 import { AiInsightPanel } from '@/components/domain/AiInsightPanel'
@@ -14,23 +14,26 @@ import { CodeChip } from '@/components/ui/CodeChip'
 import { Button } from '@/components/ui/Button'
 import { api } from '@/api/client'
 import { formatBytes } from '@/lib/format'
+import InfraNav from '@/components/infra/InfraNav'
+import { archLabel, fleetCards } from '@/lib/fleetMachines'
+import { machineVitals } from '@/lib/machineVitals'
+import { hostHistorySeries } from '@/lib/hostCharts'
 import { ClusterMetrics, type ClusterMetricsData } from '@/components/domain/ClusterMetrics'
 
-/** Reusable bar row for disk/mem/swap usage */
-function BarRow({ label, usedH, totalH, pct }: { label: string; usedH: string; totalH: string; pct: number }) {
-  const color = pct > 90 ? 'bad' : pct > 75 ? 'warn' : 'ok'
-  return (
-    <div className="mb-3">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs font-medium text-ink-2">{label}</span>
-        <span className="text-xs text-muted">{usedH} / {totalH} · {Math.round(pct)}%</span>
-      </div>
-      <Progress value={pct} size="sm" color={color} />
-    </div>
-  )
+function bytesRate(value: number | null) {
+  return value == null ? '未上报' : `${formatBytes(value)}/s`
 }
 
 export default function InfraHost() {
+  const [params] = useSearchParams()
+  const machine = params.get('machine') || 'local'
+  const fleet = useQuery<any>({
+    queryKey: ['infra-fleet'],
+    queryFn: () => api.get('/infra/fleet'),
+    refetchInterval: 30_000,
+  })
+  const fleetHosts = fleet.data?.hosts ?? []
+  const picked = fleetHosts.find((item: any) => item.id === machine) || (machine === 'local' ? fleetHosts.find((item: any) => item.id === 'local') : null)
   const { data: host, isLoading, error: hostError, refetch: refetchHost } = useQuery<any>({
     queryKey: ['infra-host'],
     queryFn: () => api.get('/infra/host'),
@@ -48,20 +51,147 @@ export default function InfraHost() {
     queryFn: () => api.get('/infra/metrics'),
     refetchInterval: 30_000,
   })
+  const historyId = picked?.id
+  const fleetHistory = useQuery<any>({
+    queryKey: ['infra-fleet-host-history', historyId],
+    enabled: !!historyId && historyId !== 'local',
+    queryFn: () => api.get(`/infra/fleet/${encodeURIComponent(historyId || '')}/history?range=1h`),
+    refetchInterval: 30_000,
+  })
 
-  const rootDisk = host?.disk?.find((d: any) => d.mount === '/') ?? host?.disk?.[0]
+  const disks: any[] = Array.isArray(host?.disk) ? host.disk : []
+  const shownDisks = disks
+  const diskSummary = disks.map((d) => (
+    d.error
+      ? `${d.mount} ${d.error}`
+      : `${d.mount} ${d.used_h ?? '?'} / ${d.total_h ?? '?'} (${(d.used_pct ?? 0).toFixed(1)}%)`
+  )).join('；')
   const uptimeH = typeof host?.uptime === 'string' ? host.uptime : host?.uptime?.human
   const aiContext = host
     ? `主机: ${host.hostname ?? 'unknown'}, OS: ${host.os ?? '?'}, 内核: ${host.kernel ?? '?'}\n` +
       `CPU: ${host.cpu?.cores ?? '?'} 核, 负载: ${host.cpu?.load1 ?? '?'} / ${host.cpu?.load5 ?? '?'} / ${host.cpu?.load15 ?? '?'}\n` +
       `内存: ${host.mem?.used_h ?? '?'} / ${host.mem?.total_h ?? '?'} (${(host.mem?.used_pct ?? 0).toFixed(1)}%)\n` +
-      `磁盘: ${rootDisk?.used_h ?? '?'} / ${rootDisk?.total_h ?? '?'} (${(rootDisk?.used_pct ?? 0).toFixed(1)}%)\n` +
+      `磁盘: ${diskSummary || '无'}\n` +
       `运行时间: ${uptimeH ?? '?'}, Pod 数: ${host.pods?.count ?? '?'} (运行 ${host.pods?.running ?? '?'})`
     : '暂无主机数据'
 
+  if (picked && picked.id !== 'local') {
+    const vitals = machineVitals(picked.data)
+    const cards = fleetCards([picked]).filter((card) => !card.empty)
+    const shownRemote = vitals.disks
+    const loadBadge = (value: number | null) => value == null ? '—' : value.toFixed(2)
+    return (
+      <>
+        <InfraNav />
+        <PageHeader title={picked.name || picked.id} description={`${archLabel(picked.hardware?.arch)} · ${picked.hardware?.cpu_model || '处理器未上报'} · ${picked.hardware?.product || '机型未上报'}`} doc={{ section: 'infra', item: 0, label: '主机监控文档' }} />
+        <Link className="mb-4 inline-block text-xs text-accent" to="/infra/host">返回本机</Link>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <MetricCard icon={<Cpu size={18} />} label="负载 (1m)" value={vitals.load1 == null ? '—' : vitals.load1.toFixed(2)} />
+          <MetricCard icon={<MemoryStick size={18} />} label="内存" value={vitals.memPct == null ? '—' : Math.round(vitals.memPct)} suffix={vitals.memPct == null ? undefined : '%'} percent={vitals.memPct ?? undefined} />
+          <MetricCard icon={<HardDrive size={18} />} label="磁盘" value={vitals.disks.length} suffix="块" />
+          <MetricCard icon={<Clock size={18} />} label="运行时间" value={vitals.uptime ?? '—'} />
+        </div>
+        <Card padding="lg" className="mb-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Info size={16} className="text-accent" />
+            <h2 className="text-sm font-semibold">系统信息</h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="space-y-1">
+              <p className="text-xs text-muted">CPU</p>
+              <p className="text-sm font-medium">{vitals.cores ?? '—'} 核 · 使用 {vitals.cpuPct == null ? '—' : `${vitals.cpuPct}%`}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-muted">内存</p>
+              <p className="text-sm font-medium">{vitals.memUsed ?? '—'} <span className="text-muted">/</span> {vitals.memTotal ?? '—'}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-muted">架构来源</p>
+              <p className="text-sm font-medium">{picked.hardware?.arch_source === 'probe' ? '本机采样' : '节点登记'}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-muted">运行时间</p>
+              <div className="flex items-center gap-1.5">
+                <Clock size={14} className="text-ok" />
+                <p className="text-sm font-medium">{vitals.uptime ?? '—'}</p>
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 pt-3 border-t border-black/[0.06]">
+            <p className="text-xs text-muted mb-2">负载均值</p>
+            <div className="flex items-center gap-4 sm:gap-6 flex-wrap">
+              <div className="flex items-center gap-2"><span className="text-xs text-muted">1 min</span><Badge variant={(vitals.load1 ?? 0) > 4 ? 'warn' : 'ok'}>{loadBadge(vitals.load1)}</Badge></div>
+              <div className="flex items-center gap-2"><span className="text-xs text-muted">5 min</span><Badge variant={(vitals.load5 ?? 0) > 4 ? 'warn' : 'default'}>{loadBadge(vitals.load5)}</Badge></div>
+              <div className="flex items-center gap-2"><span className="text-xs text-muted">15 min</span><Badge variant={(vitals.load15 ?? 0) > 4 ? 'warn' : 'default'}>{loadBadge(vitals.load15)}</Badge></div>
+            </div>
+          </div>
+          {(vitals.swapUsed != null || vitals.swapTotal != null) && (
+            <div className="mt-3 pt-3 border-t border-black/[0.06] flex items-center gap-4">
+              <span className="text-xs text-muted">Swap</span>
+              <span className="text-sm font-medium">{vitals.swapUsed ?? '—'} <span className="text-muted">/</span> {vitals.swapTotal ?? '—'}</span>
+            </div>
+          )}
+          <div className="mt-3 pt-3 border-t border-black/[0.06] grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <p className="text-xs text-muted">驱动</p>
+              <p className="text-sm font-medium">{vitals.driver ?? '未上报'}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted">网络</p>
+              <p className="text-sm font-medium">下行 {bytesRate(vitals.netRx)} · 上行 {bytesRate(vitals.netTx)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted">磁盘 IO</p>
+              <p className="text-sm font-medium">读 {bytesRate(vitals.diskRead)} · 写 {bytesRate(vitals.diskWrite)}</p>
+            </div>
+          </div>
+        </Card>
+        {(() => {
+          const series = hostHistorySeries(fleetHistory.data?.samples)
+          const hasSeries = (series.host_cpu?.length ?? 0) > 1 || (series.network?.rx_bytes_per_sec?.length ?? 0) > 1 || (series.disk?.read_bytes_per_sec?.length ?? 0) > 1
+          return hasSeries ? <div className="mb-4"><ClusterMetrics data={series} /></div> : null
+        })()}
+        <Card id="host-disks" padding="lg" className="mb-4">
+          <div className="flex items-center gap-2 mb-4">
+            <HardDriveDownload size={16} className="text-ok" />
+            <h2 className="text-sm font-semibold">磁盘使用</h2>
+          </div>
+          {shownRemote.length ? (
+            <div className="space-y-4">
+              {shownRemote.map((disk, i) => {
+                const pct = disk.usedPct ?? 0
+                const color = disk.error ? 'bad' : pct > 90 ? 'bad' : pct > 70 ? 'warn' : 'ok'
+                return (
+                  <div key={`${disk.mount}-${i}`}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <CodeChip code={disk.mount || '—'} />
+                        <span className="text-xs text-muted">{disk.error ? disk.error : `${disk.usedLabel ?? '—'} / ${disk.totalLabel ?? '—'}`}</span>
+                      </div>
+                      {!disk.error && disk.usedPct != null && <Badge variant={color}>{Math.round(pct)}%</Badge>}
+                    </div>
+                    {!disk.error && disk.usedPct != null && <Progress value={pct} size="sm" color={color} />}
+                  </div>
+                )
+              })}
+            </div>
+          ) : <p className="text-xs text-muted">没有磁盘采样</p>}
+        </Card>
+        <Card padding="lg">
+          <h2 className="mb-2 text-sm font-semibold">加速器</h2>
+          {cards.length ? cards.map((card) => (
+            <p key={card.cardKey} className="text-sm">{card.name} · {card.util == null ? '利用率未上报' : `${card.util}%`} · {card.memTotalMiB == null ? (card.unified ? '统一内存' : '显存未上报') : `${Math.round(card.memUsedMiB ?? 0)} / ${Math.round(card.memTotalMiB)} MiB`}</p>
+          )) : <p className="text-sm text-muted">这台机器没有上报加速器</p>}
+          <Link className="mt-3 inline-block text-xs text-accent" to={`/infra/gpu?host=${encodeURIComponent(picked.id)}`}>在加速器页打开这台机器</Link>
+        </Card>
+      </>
+    )
+  }
+
   return (
     <>
-      <PageHeader title="主机健康" description="集群节点状态与资源使用" doc={{ section: 'infra', item: 0, label: '主机监控文档' }}>
+      <InfraNav />
+      <PageHeader title="机器" description={picked ? `${picked.name || '本机'} · ${archLabel(picked.hardware?.arch)} · ${picked.hardware?.cpu_model || ''}` : '平台所在机器的健康与集群节点'} doc={{ section: 'infra', item: 0, label: '主机监控文档' }}>
         <PageAiAssistant page="host" context={aiContext} />
       </PageHeader>
 
@@ -95,10 +225,10 @@ export default function InfraHost() {
             <MetricCard icon={<Cpu size={18} />} label="负载 (1m)" value={(host?.load?.load1 ?? 0).toFixed(2)} />
           </motion.div>
           <motion.div variants={{ initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } }}>
-            <MetricCard icon={<HardDrive size={18} />} label="内存" value={Math.round(host?.mem?.used_pct ?? 0)} suffix="%" percent={host?.mem?.used_pct} />
+            <MetricCard icon={<MemoryStick size={18} />} label="内存" value={Math.round(host?.mem?.used_pct ?? 0)} suffix="%" percent={host?.mem?.used_pct} />
           </motion.div>
           <motion.div variants={{ initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } }}>
-            <MetricCard icon={<HardDriveDownload size={18} />} label="磁盘 /" value={Math.round(rootDisk?.used_pct ?? 0)} suffix="%" percent={rootDisk?.used_pct} />
+            <MetricCard icon={<HardDrive size={18} />} label="磁盘" value={disks.length} suffix="块" />
           </motion.div>
           <motion.div variants={{ initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } }}>
             <MetricCard icon={<Clock size={18} />} label="运行时间" value={uptimeH ?? '—'} />
@@ -181,25 +311,25 @@ export default function InfraHost() {
 
       {/* Disk Usage */}
       {host?.disk?.length > 0 && (
-        <Card data-onboarding-target="host-disks" padding="lg" className="mb-4">
+        <Card id="host-disks" data-onboarding-target="host-disks" padding="lg" className="mb-4 scroll-mt-24">
           <div className="flex items-center gap-2 mb-4">
             <HardDriveDownload size={16} className="text-ok" />
             <h2 className="text-sm font-semibold">磁盘使用</h2>
           </div>
           <div className="space-y-4">
-            {host.disk.map((d: any, i: number) => {
+            {shownDisks.map((d: any, i: number) => {
               const pct = d.used_pct ?? 0
-              const color = pct > 90 ? 'bad' : pct > 70 ? 'warn' : 'ok'
+              const color = d.error ? 'bad' : pct > 90 ? 'bad' : pct > 70 ? 'warn' : 'ok'
               return (
-                <div key={i}>
+                <div key={`${d.mount}-${i}`}>
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-2">
                       <CodeChip code={d.mount} />
-                      <span className="text-xs text-muted">{d.used_h} / {d.total_h}</span>
+                      <span className="text-xs text-muted">{d.error ? d.error : `${d.used_h} / ${d.total_h}`}</span>
                     </div>
-                    <Badge variant={color}>{Math.round(pct)}%</Badge>
+                    {!d.error && <Badge variant={color}>{Math.round(pct)}%</Badge>}
                   </div>
-                  <Progress value={pct} size="sm" color={color} />
+                  {!d.error && <Progress value={pct} size="sm" color={color} />}
                 </div>
               )
             })}
@@ -209,7 +339,7 @@ export default function InfraHost() {
 
       {/* K3s Nodes */}
       {host?.k3s?.nodes?.length > 0 && (
-        <Card data-onboarding-target="host-k3s" padding="lg" className="mb-4">
+        <Card id="host-k3s" data-onboarding-target="host-k3s" padding="lg" className="mb-4 scroll-mt-24">
           <div className="flex items-center gap-2 mb-4">
             <Container size={16} className="text-accent" />
             <h2 className="text-sm font-semibold">K3s 节点</h2>
@@ -242,7 +372,7 @@ export default function InfraHost() {
       {host?.nvidia?.gpus?.length > 0 && (
         <Link
           data-onboarding-target="host-gpu"
-          to="/infra/gpu"
+          to="/infra/gpu?host=local"
           className="glass-card rounded-2xl p-4 mb-4 flex items-center gap-4 hover:bg-black/[0.02] active:bg-black/[0.04] transition-colors group"
         >
           <div className="w-10 h-10 rounded-xl bg-warn/10 flex items-center justify-center text-warn flex-shrink-0">
@@ -253,7 +383,7 @@ export default function InfraHost() {
               <span className="text-sm font-semibold group-hover:text-accent transition-colors">GPU</span>
               <Badge variant="muted" className="text-[10px]">驱动 {host.nvidia.driver_version}</Badge>
             </div>
-            <p className="text-xs text-muted mt-0.5">{host.nvidia.gpus.length} 块 · 查看每卡利用率、显存与按 Pod 归属</p>
+            <p className="text-xs text-muted mt-0.5">{host.nvidia.gpus.length} 块本机加速器 · 3090 和 Spark 在加速器页按机器查看</p>
           </div>
           <ChevronRight size={16} className="text-muted/40 group-hover:text-muted transition-colors flex-shrink-0" />
         </Link>
@@ -285,187 +415,39 @@ export default function InfraHost() {
         </Card>
       )}
 
-      {/* Remote Hosts — detailed monitoring */}
-      {(remoteHosts?.length ?? 0) > 0 && (
-        <div className="space-y-4">
-          {remoteHosts!.map((rh: any, ri: number) => {
-            const d = rh.data ?? {}
-            const hasError = !!d.error
-            const vllm = d.vllm
-
-            return (
-              <Card key={ri} padding="lg">
-                {/* Header */}
-                <div className="flex items-center gap-2 mb-4 flex-wrap">
-                  <Server size={16} className="text-muted" />
-                  <h2 className="text-sm font-semibold">{rh.name || rh.host}</h2>
-                  {hasError ? (
-                    <Badge variant="bad" dot>采集失败</Badge>
-                  ) : d.kernel_os?.os_pretty ? (
-                    <>
-                      <Badge variant="muted" dot>{d.kernel_os.os_pretty}</Badge>
-                      {vllm != null && (
-                        vllm.healthy
-                          ? <Badge variant="ok" dot>vLLM 在线</Badge>
-                          : <Badge variant="bad" dot>vLLM 离线</Badge>
-                      )}
-                    </>
-                  ) : (
-                    <Badge variant="ok" dot>在线</Badge>
-                  )}
-                </div>
-
-                {hasError ? (
-                  <p className="text-sm text-muted">{d.error}</p>
-                ) : (
-                  <>
-                    <p className="text-xs text-muted mb-4">{rh.desc}{rh.desc && ' · '}经 {rh.host} SSH 中继采集 · 不参与 k3s 调度</p>
-
-                    {/* KPI tiles */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted">内核</p>
-                        <p className="text-sm font-medium font-mono truncate">{d.kernel_os?.release ?? d.kernel_os?.uname_error ?? '-'}</p>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted">架构</p>
-                        <p className="text-sm font-medium">{d.kernel_os?.machine ?? '-'}</p>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted">运行时长</p>
-                        <p className="text-sm font-medium">{d.uptime?.human ?? '-'}</p>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted">负载 1 / 5 / 15</p>
-                        <p className="text-sm font-medium">
-                          {d.load?.error ? '—' : `${d.load?.load1 ?? '-'} / ${d.load?.load5 ?? '-'} / ${d.load?.load15 ?? '-'}`}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* NVIDIA + vLLM stats */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-                      {(d.nvidia?.count > 0 || d.nvidia?.error) && (
-                        <div className="space-y-1">
-                          <p className="text-xs text-muted">NVIDIA</p>
-                          {d.nvidia?.error ? (
-                            <Badge variant="bad" dot>异常</Badge>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <Badge variant="ok" dot>{d.nvidia.count} GPU</Badge>
-                              <span className="text-xs text-muted">驱动 {d.nvidia.driver_version || '-'}</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {vllm != null && (
-                        <div className="space-y-1">
-                          <p className="text-xs text-muted">vLLM</p>
-                          <div className="flex items-center gap-2">
-                            {vllm.healthy
-                              ? <Badge variant="ok" dot>healthy</Badge>
-                              : <Badge variant="bad" dot>down</Badge>
-                            }
-                            {vllm.model && <span className="text-xs text-ink-2">{vllm.model}</span>}
-                            {vllm.container_status && <span className="text-xs text-muted">· 容器 {vllm.container_status}</span>}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Two columns: disk/mem/swap bars + GPU table */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      {/* Left: disk, mem, swap bars */}
-                      <div>
-                        <h3 className="text-xs font-semibold text-muted mb-2">磁盘</h3>
-                        {d.disk?.map((dk: any, di: number) => (
-                          dk.error
-                            ? <p key={di} className="text-xs text-muted mb-2">{dk.mount}: {dk.error}</p>
-                            : <BarRow key={di} label={dk.mount} usedH={dk.used_h} totalH={dk.total_h} pct={dk.used_pct} />
-                        ))}
-
-                        <h3 className="text-xs font-semibold text-muted mb-2 mt-3">内存</h3>
-                        {d.mem?.error ? (
-                          <p className="text-xs text-muted">{d.mem.error}</p>
-                        ) : d.mem && (
-                          <BarRow label="物理内存" usedH={d.mem.used_h} totalH={d.mem.total_h} pct={d.mem.used_pct} />
-                        )}
-
-                        <h3 className="text-xs font-semibold text-muted mb-2 mt-3">交换分区</h3>
-                        {d.swap?.error ? (
-                          <p className="text-xs text-muted">{d.swap.error}</p>
-                        ) : d.swap?.total === 0 ? (
-                          <p className="text-xs text-muted">未启用交换分区</p>
-                        ) : d.swap && (
-                          <BarRow label="Swap" usedH={d.swap.used_h} totalH={d.swap.total_h} pct={d.swap.used_pct} />
-                        )}
-                      </div>
-
-                      {/* Right: GPU table */}
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <h3 className="text-xs font-semibold text-muted">GPU</h3>
-                          <Badge variant="muted">{d.nvidia?.count ?? 0} 块</Badge>
-                        </div>
-                        {d.nvidia?.error ? (
-                          <p className="text-xs text-muted">{d.nvidia.error}</p>
-                        ) : d.nvidia?.gpus?.length > 0 ? (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
-                              <thead>
-                                <tr className="border-b border-black/[0.06]">
-                                  <th className="text-left py-2 px-2 text-xs font-semibold text-muted">GPU</th>
-                                  <th className="text-left py-2 px-2 text-xs font-semibold text-muted">型号</th>
-                                  <th className="text-left py-2 px-2 text-xs font-semibold text-muted">利用率</th>
-                                  <th className="text-left py-2 px-2 text-xs font-semibold text-muted">显存</th>
-                                  <th className="text-left py-2 px-2 text-xs font-semibold text-muted">温度</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {d.nvidia.gpus.map((g: any, gi: number) => (
-                                  <tr key={gi} className="border-b border-black/[0.04] last:border-0">
-                                    <td className="py-2 px-2 font-medium">{g.index}</td>
-                                    <td className="py-2 px-2 font-medium truncate max-w-[200px]">{g.name}</td>
-                                    <td className="py-2 px-2 font-mono text-xs">
-                                      {g.util != null ? `${g.util}%` : '—'}
-                                    </td>
-                                    <td className="py-2 px-2 font-mono text-xs">
-                                      {g.mem_total == null || g.mem_used == null
-                                        ? <span className="text-muted">统一内存</span>
-                                        : `${g.mem_used} / ${g.mem_total} MiB`
-                                      }
-                                    </td>
-                                    <td className="py-2 px-2 font-mono text-xs">
-                                      {g.temp != null ? `${g.temp}°C` : '—'}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        ) : (
-                          <p className="text-xs text-muted">无 GPU 信息</p>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </Card>
-            )
-          })}
-        </div>
-      )}
-
-      {/* No remote hosts fallback */}
-      {(!remoteHosts || remoteHosts.length === 0) && (
-        <Card data-onboarding-target="host-remote" padding="lg">
-          <div className="flex items-center gap-2 mb-4">
-            <Server size={16} className="text-muted" />
-            <h2 className="text-sm font-semibold">远程主机</h2>
-          </div>
-          <p className="text-sm text-muted">暂无远程主机</p>
-        </Card>
-      )}
+      {/* Other machines live on their own page. This list only points at them. */}
+      <div id="host-remote" data-onboarding-target="host-remote" className="space-y-3 scroll-mt-24">
+        <h2 className="text-sm font-semibold">其它机器</h2>
+        {fleetHosts.filter((item: any) => item.id !== 'local').map((item: any) => {
+          const cards = fleetCards([item]).filter((card) => !card.empty)
+          const relay = (remoteHosts ?? []).find((rh: any) => rh.name === item.id || rh.name === item.name)
+          const vllm = relay?.data?.vllm
+          return (
+            <Link key={item.id} to={`/infra/host?machine=${encodeURIComponent(item.id)}`} className="glass-card rounded-2xl p-4 block hover:bg-black/[0.02]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold">{item.name || item.id}</span>
+                <Badge variant={item.status === 'online' && !item.stale ? 'ok' : 'warn'} dot>{item.status || '未知'}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted">{archLabel(item.hardware?.arch)} · {item.hardware?.cpu_model || '处理器未上报'} · {item.hardware?.product || '机型未上报'}</p>
+              <p className="mt-1 text-xs">{cards.length ? cards.map((card) => card.name).join('、') : '无加速器'}</p>
+              {vllm != null && <p className="mt-1 text-xs text-muted">vLLM {vllm.healthy ? '在线' : '离线'}{vllm.model ? ` · ${vllm.model}` : ''}</p>}
+            </Link>
+          )
+        })}
+        {(remoteHosts ?? []).filter((rh: any) => !fleetHosts.some((item: any) => item.id === rh.name || item.name === rh.name)).map((rh: any) => (
+          <Card key={rh.name} padding="lg">
+            <div className="flex items-center gap-2">
+              <Server size={16} className="text-muted" />
+              <h3 className="text-sm font-semibold">{rh.name || rh.host}</h3>
+              <Badge variant={rh.data?.error ? 'bad' : 'muted'} dot>{rh.data?.error ? '采集失败' : (rh.data?.kernel_os?.machine || '架构未知')}</Badge>
+            </div>
+            <p className="mt-1 text-xs text-muted">{rh.desc || '不在集群采样里'}</p>
+          </Card>
+        ))}
+        {fleetHosts.filter((item: any) => item.id !== 'local').length === 0 && (remoteHosts?.length ?? 0) === 0 && (
+          <Card padding="lg"><p className="text-sm text-muted">暂无其它机器</p></Card>
+        )}
+      </div>
     </>
   )
 }
