@@ -48,7 +48,8 @@ def _b64(b):
 
 def _mint():
     try:
-        key = open(KEY_FILE, "rb").read().strip()
+        with open(KEY_FILE, "rb") as f:
+            key = f.read().strip()
     except OSError as e:
         raise ArtexError(f"读不到 ARTEX 签名密钥 {KEY_FILE}: {e}")
     if len(key) < 16:
@@ -135,6 +136,33 @@ def list_tasks():
     return {"tasks": d.get("tasks", []) or [], "active": d.get("active") or ""}
 
 
+def preflight():
+    """无副作用自检：签名密钥可读 + ARTEX 可达。**绝不抛**。
+
+    把面板上含糊的「不可达」细化为可读原因——区分「密钥不可读/过短」与
+    「ARTEX 网络不可达」。返回 {ok, key_file, key_readable, reachable, error?}。
+    """
+    out = {"ok": False, "url": BASE, "key_file": KEY_FILE,
+           "key_readable": False, "reachable": False}
+    try:
+        with open(KEY_FILE, "rb") as f:
+            key = f.read().strip()
+    except OSError as e:
+        out["error"] = f"读不到签名密钥 {KEY_FILE}: {e}"
+        return out
+    out["key_readable"] = len(key) >= 16
+    if not out["key_readable"]:
+        out["error"] = "签名密钥过短（<16 字节），无法自签 JWT"
+        return out
+    try:
+        out["reachable"] = bool(_get("/api/health").get("ok"))
+    except ArtexError as e:
+        out["error"] = str(e)
+        return out
+    out["ok"] = out["reachable"]
+    return out
+
+
 def create_task(description, goal="", name=None, category_id=None,
                 company_ids=None, timeout_seconds=None):
     """建一个渗透任务并让它自动起跑。返回 TaskDTO。"""
@@ -149,6 +177,46 @@ def create_task(description, goal="", name=None, category_id=None,
     if timeout_seconds:
         body["timeout_seconds"] = int(timeout_seconds)
     return _post("/api/tasks", body)
+
+
+def add_scope(task_id, kind, value, reason=""):
+    """给已建任务补一条 scope（belt-and-suspenders；描述里通常已点名目标）。
+
+    POST /api/tasks/{id}/scope {kind,value,reason}。kind ∈
+    company|root_domain|subdomain|ip|cidr|icp|keyword；裸 IP 在 ARTEX 侧存成 /32。
+    返回 TaskScope JSON。
+    """
+    kind = str(kind or "").strip()
+    value = str(value or "").strip()
+    if not kind or not value:
+        raise ArtexError("add_scope 需要 kind 和 value")
+    return _post(f"/api/tasks/{task_id}/scope",
+                 {"kind": kind, "value": value, "reason": str(reason or "")})
+
+
+def create_pod_scan(pod, ip, port=8080, goal="", name=None, reason="",
+                    timeout_seconds=None):
+    """对一个 Pod 的内部 k8s Service 建 ARTEX 渗透任务。
+
+    描述里点名 ``http://<ip>:<port>``（planner 提取目标的主要信号），随后补一条
+    ``ip`` scope（/32）。scope 补挂失败只记日志——任务已建成，不因此整体失败
+    （描述已含目标）。返回 {"task": TaskDTO, "scope": TaskScope|None, "target": str}。
+    """
+    target = f"http://{ip}:{port}"
+    desc = (f"对 Pod {pod} 的内部 k8s Service {target} 做端到端渗透测试。"
+            f"目标仅为该 Pod 的私有服务（ClusterIP {ip}:{port}），"
+            f"请勿越界扫描集群内其他资产。")
+    t = create_task(desc, goal=(goal or "").strip(),
+                    name=name or f"pod-scan:{pod}",
+                    timeout_seconds=timeout_seconds)
+    tid = t.get("id") or t.get("task_id") or t.get("ID")
+    scope = None
+    if tid and ip:
+        try:
+            scope = add_scope(tid, "ip", ip, reason=reason or f"pod-internal:{pod}")
+        except ArtexError as e:
+            log.warning("add_scope failed task=%s ip=%s: %s", tid, ip, e)
+    return {"task": t, "scope": scope, "target": target}
 
 
 def task_detail(task_id):

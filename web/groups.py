@@ -286,6 +286,17 @@ def kubectl(*args, check=True, timeout=30):
     return r
 
 
+def service_cluster_ip(name):
+    """Service ``group-<name>`` 的 ClusterIP（Service 生命周期内稳定）；不可用→''。
+
+    这是组 Pod 的「内网地址」——集群内其它 Pod（以及本机 kube-proxy）都能经它
+    访问该组 Service 的端口，且不受 Pod 重建影响。只读，绝不抛。
+    """
+    r = kubectl("get", "svc", f"group-{name}",
+                "-o", "jsonpath={.spec.clusterIP}", check=False)
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
 # --- pod status cache (Redis L1 + in-process L2) ---
 import kvcache
 

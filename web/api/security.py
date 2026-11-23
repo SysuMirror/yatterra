@@ -10,10 +10,14 @@
 """
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from flask import Blueprint, request, jsonify
 
 import audit
+import groups
 import scan_svc
 import artex_svc
 
@@ -25,6 +29,12 @@ security_bp = Blueprint("api_security", __name__, url_prefix="/api/security")
 
 # 全量巡检较重，串行化：同一时刻只允许一个手动 L1 巡检在跑。
 _SCAN_LOCK = threading.Lock()
+
+# 内网渗透目标：ARTEX 自身不扫，组的 web Service 端口恒为 8080（android 的
+# targetPort 6080 由 kube-proxy 映射，URL 仍是 :8080 —— 见 groups.service_yaml）。
+ARTEX_GROUP = "artex"
+WEB_SVC_PORT = 8080
+_TARGET_PROBE_TIMEOUT = 1.2  # 秒；判断 Pod 的 :8080 是否有服务在听
 
 
 # ── 静态巡检 ────────────────────────────────────────────────────────────────
@@ -159,6 +169,46 @@ def _artex_guard(fn):
         return jsonify({"error": str(e)}), 502
 
 
+# ---- Pod → 内网 Service 渗透目标 -----------------------------------------
+def _pod_web_up(cip):
+    """ClusterIP:8080 是否真有 HTTP 服务在听（best-effort，绝不抛）。
+
+    任何 HTTP 状态码（含 401/403）都算「在听」；连接被拒/超时/其它错误算「没在听」。
+    """
+    try:
+        req = Request(f"http://{cip}:{WEB_SVC_PORT}/", method="GET")
+        with urlopen(req, timeout=_TARGET_PROBE_TIMEOUT) as r:
+            return 200 <= getattr(r, "status", 200) < 600
+    except HTTPError as e:            # 有响应、只是状态非 2xx → 服务在
+        return 200 <= e.code < 600
+    except (URLError, OSError, ValueError):
+        return False
+
+
+def _resolve_group_target(name):
+    """组名 → 内网渗透目标描述（只读）。
+
+    用 Service ``group-<name>`` 的 **ClusterIP**（Service 生命周期内稳定，Pod 重建
+    也不变），不是 podIP。返回 {ok,name,type,node,status,running,cluster_ip,internal_url}
+    或 {ok:False,...,error}（组不存在 / 无 ClusterIP）。
+    """
+    state = groups.load_state().get("groups", {})
+    rec = state.get(name)
+    if not rec:
+        return {"ok": False, "name": name, "error": "组不存在"}
+    status = groups.pod_status(name)
+    cip = groups.service_cluster_ip(name)
+    base = {"name": name, "type": rec.get("type"), "node": rec.get("node"),
+            "status": status, "running": status == "Running"}
+    if not cip:
+        base.update(ok=False, cluster_ip=None, internal_url=None,
+                    error=f"Service group-{name} 未就绪（无 ClusterIP）")
+        return base
+    base.update(ok=True, cluster_ip=cip,
+                internal_url=f"http://{cip}:{WEB_SVC_PORT}")
+    return base
+
+
 @security_bp.route("/artex", methods=["GET"])
 @require_auth(min_role="super")
 def artex_status():
@@ -188,6 +238,86 @@ def artex_create_task():
         audit.record("api_artex_task", detail=f"desc={desc[:80]}",
                      actor=current_username() or "unknown")
         return jsonify({"ok": True, "task": t})
+    return _artex_guard(_do)
+
+
+@security_bp.route("/artex/targets", methods=["GET"])
+@require_auth(min_role="super")
+def artex_targets():
+    """可选的内网渗透目标 Pod 列表（含内网 URL），排除 ARTEX 自身。
+
+    每项带 ``web_up``（:8080 是否真有服务在听）；``selectable`` 才允许发起。
+    不可选者也列出，好让前端解释原因。
+    """
+    state = groups.load_state().get("groups", {})
+    statuses = groups.all_pod_statuses()
+    names = [n for n in sorted(state, key=lambda n: state[n].get("index", 0))
+             if n != ARTEX_GROUP]
+    # 解析每个组的 ClusterIP（kubectl），并并发探测其 :8080
+    cips = {n: groups.service_cluster_ip(n) for n in names}
+    probe = [n for n in names if cips.get(n)]
+    up = {}
+    if probe:
+        with ThreadPoolExecutor(max_workers=min(16, len(probe))) as ex:
+            for n, ok in zip(probe, ex.map(lambda x: _pod_web_up(cips[x]), probe)):
+                up[n] = ok
+
+    items = []
+    for n in names:
+        rec = state[n]
+        status = statuses.get(n, "NotFound")
+        cip = cips.get(n) or None
+        running = status == "Running"
+        web_up = bool(up.get(n))
+        err = None
+        if not cip:
+            err = f"Service group-{n} 未就绪（无 ClusterIP）"
+        elif not running:
+            err = f"Pod 未运行（{status}）"
+        elif not web_up:
+            err = "该 Pod 的 :8080 无服务响应"
+        items.append({
+            "name": n, "type": rec.get("type"), "node": rec.get("node"),
+            "internal": bool(rec.get("internal")),
+            "status": status, "running": running,
+            "cluster_ip": cip,
+            "internal_url": f"http://{cip}:{WEB_SVC_PORT}" if cip else None,
+            "web_up": web_up,
+            "selectable": bool(cip) and running and web_up,
+            "error": err,
+        })
+    return jsonify({"targets": items})
+
+
+@security_bp.route("/artex/pod-scan", methods=["POST"])
+@require_auth(min_role="super")
+def artex_pod_scan():
+    """对选中 Pod 的内网 Service 发起 ARTEX 渗透。body: {pod, goal?}"""
+    body = request.get_json(silent=True) or {}
+    pod = str(body.get("pod") or "").strip()
+    if not pod:
+        return jsonify({"error": "pod 不能为空"}), 400
+    if pod == ARTEX_GROUP:
+        return jsonify({"error": "不能对 ARTEX 自身发起渗透"}), 400
+
+    tgt = _resolve_group_target(pod)
+    if not tgt.get("ok"):
+        code = 404 if tgt.get("error") == "组不存在" else 409
+        return jsonify({"error": tgt.get("error")}), code
+    if not tgt["running"]:
+        return jsonify({"error": f"Pod {pod} 未运行（{tgt['status']}）"}), 409
+    if not _pod_web_up(tgt["cluster_ip"]):
+        return jsonify({"error": f"Pod {pod} 的 :{WEB_SVC_PORT} 无服务响应"}), 409
+
+    def _do():
+        res = artex_svc.create_pod_scan(
+            pod, tgt["cluster_ip"], port=WEB_SVC_PORT,
+            goal=str(body.get("goal") or ""),
+            reason=f"pod-internal:{pod}")
+        audit.record("api_artex_pod_scan",
+                     detail=f"pod={pod} target={tgt['internal_url']}",
+                     actor=current_username() or "unknown")
+        return jsonify({"ok": True, "target": tgt["internal_url"], **res})
     return _artex_guard(_do)
 
 

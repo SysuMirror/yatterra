@@ -350,21 +350,32 @@ function ArtexPanel() {
   const [page, setPage] = useState(1)
   const [desc, setDesc] = useState('')
   const [goal, setGoal] = useState('')
+  const [pod, setPod] = useState('')
+  const [confirm, setConfirm] = useState(false)
 
-  const { data: status } = useQuery<any>({
+  const { data: status, isError: statusError } = useQuery<any>({
     queryKey: ['artex-status'],
-    queryFn: () => api.get('/security/artex').catch(() => null),
+    queryFn: () => api.get('/security/artex'),
     staleTime: 10_000,
+    refetchInterval: 15_000,
   })
   const { data: stats } = useQuery<any>({
     queryKey: ['artex-stats'],
     queryFn: () => api.get('/security/artex/stats').catch(() => null),
     staleTime: 15_000,
+    refetchInterval: 30_000,
   })
   const { data: tasks } = useQuery<any>({
     queryKey: ['artex-tasks'],
     queryFn: () => api.get('/security/artex/tasks').catch(() => null),
     staleTime: 10_000,
+    refetchInterval: 10_000,
+  })
+  const { data: targets } = useQuery<any>({
+    queryKey: ['artex-targets'],
+    queryFn: () => api.get('/security/artex/targets').catch(() => null),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
   })
   const { data: findings } = useQuery<any>({
     queryKey: ['artex-findings', sev, task, page],
@@ -375,6 +386,7 @@ function ArtexPanel() {
       return api.get(`/security/artex/findings?${p.toString()}`)
     },
     staleTime: 10_000,
+    refetchInterval: 15_000,
   })
 
   const createTask = useMutation({
@@ -391,12 +403,24 @@ function ArtexPanel() {
       api.post(`/security/artex/tasks/${encodeURIComponent(id)}/control`, { action }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['artex-tasks'] }),
   })
+  const podScan = useMutation({
+    mutationFn: () => api.post<any>('/security/artex/pod-scan', { pod, goal: goal.trim() }),
+    onSuccess: () => {
+      setConfirm(false)
+      qc.invalidateQueries({ queryKey: ['artex-tasks'] })
+      qc.invalidateQueries({ queryKey: ['artex-status'] })
+      qc.invalidateQueries({ queryKey: ['artex-targets'] })
+    },
+  })
 
   const bySev: Record<string, number> = (stats && (stats.by_severity || stats.severity || stats)) || {}
   const taskList: any[] = (tasks?.tasks || (Array.isArray(tasks) ? tasks : [])) || []
   const activeId = status?.active != null ? String(status.active) : ''
   const findingItems: any[] = findings?.items || []
   const total = findings?.total ?? 0
+  const targetList: any[] = targets?.targets || []
+  const podList: any[] = targetList.filter((t) => t.selectable)
+  const sel = podList.find((t) => t.name === pod)
 
   return (
     <div className="space-y-5">
@@ -405,8 +429,8 @@ function ArtexPanel() {
           <span className="flex items-center gap-2 font-medium text-ink">
             <Swords size={18} />ARTEX 自主渗透平台
           </span>
-          <Badge variant={status?.ok ? 'ok' : 'bad'} dot>
-            {status?.ok ? '在线' : status?.reachable ? '异常' : '不可达'}
+          <Badge variant={status?.ok ? 'ok' : status ? 'bad' : 'muted'} dot>
+            {status?.ok ? '在线' : status?.reachable ? '异常' : status ? '不可达' : '状态未知'}
           </Badge>
           {status?.version && <span className="text-xs text-muted font-mono">v{status.version}</span>}
           {status?.url && <span className="text-xs text-muted font-mono">{status.url}</span>}
@@ -414,9 +438,13 @@ function ArtexPanel() {
             任务 {status?.tasks ?? taskList.length} · 活跃 {status?.active ?? '—'}
           </span>
         </div>
-        {!status?.ok && status?.error && (
+        {(statusError || status == null) ? (
+          <div className="mt-2 text-sm text-bad">
+            无法读取 ARTEX 状态（后端 /security/artex 未响应或返回空）。
+          </div>
+        ) : (!status.ok && status.error && (
           <div className="mt-2 text-sm text-bad">连接失败：{status.error}</div>
-        )}
+        ))}
       </Card>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -425,6 +453,69 @@ function ArtexPanel() {
         <MetricCard icon={<Radar size={18} />} label="中危" value={bySev.medium ?? 0} color="accent" />
         <MetricCard icon={<ShieldCheck size={18} />} label="低危" value={bySev.low ?? 0} color="ok" />
       </div>
+
+      <Card padding="md">
+        <div className="text-sm font-medium text-ink mb-3 flex items-center gap-2">
+          <Radar size={15} />直接对 Pod 发起渗透（k8s 内网）
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Select
+            value={pod}
+            onChange={(v) => { setPod(v); setConfirm(false) }}
+            options={[{ value: '', label: '选择 Pod…' },
+                      ...podList.map((t) => ({ value: t.name, label: `${t.name}（${t.status}）` }))]}
+            className="w-64"
+          />
+          {sel && <span className="text-xs text-muted font-mono">{sel.internal_url}</span>}
+          {targetList.length === 0 && (
+            <span className="text-xs text-muted">暂无可选 Pod（需运行中且 :8080 有服务响应）</span>
+          )}
+        </div>
+        {sel && (
+          <div className="mt-2 text-xs text-muted">
+            内部目标 <span className="font-mono text-ink">{sel.internal_url}</span>
+            {' · '}类型 {sel.type || 'cpu'}{sel.node ? ` · 节点 ${sel.node}` : ''}
+            {' · '}ARTEX 经集群内网直连该 Service 的 :8080
+          </div>
+        )}
+        <div className="mt-3 flex items-center gap-2 flex-wrap">
+          {!confirm ? (
+            <Button
+              size="sm"
+              disabled={!canRun || !sel}
+              onClick={() => setConfirm(true)}
+            >
+              对该 Pod 发起渗透
+            </Button>
+          ) : (
+            <>
+              <span className="text-sm text-warn">
+                确认对 {sel?.name}（{sel?.internal_url}）发起真实渗透？
+              </span>
+              <Button
+                size="sm"
+                variant="danger"
+                loading={podScan.isPending}
+                onClick={() => podScan.mutate()}
+              >
+                确认发起
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>取消</Button>
+            </>
+          )}
+          {!canRun && <span className="text-xs text-muted">仅超级管理员可执行</span>}
+          {podScan.isError && (
+            <span className="text-sm text-bad">
+              {(podScan.error as any)?.message || '发起失败'}
+            </span>
+          )}
+          {podScan.isSuccess && (
+            <span className="text-sm text-ok">
+              已创建任务 {podScan.data?.task?.id || '—'}（目标 {podScan.data?.target}）
+            </span>
+          )}
+        </div>
+      </Card>
 
       <Card padding="md">
         <div className="text-sm font-medium text-ink mb-3 flex items-center gap-2">
