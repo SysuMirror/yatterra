@@ -182,8 +182,47 @@ export interface MyGroupAccount {
   blocked: boolean
 }
 
+/** 计费运行自检 —— 「为什么没扣费」一眼可见(只读, 仅计费台账管理员)。 */
+export interface BillingHealth {
+  prices: { keys: number; set: number; nonzero: Record<string, number> }
+  settle: { last_period_end: number | null; charges: number; charged_cents: number }
+  pay: { configured: boolean; orders: number; paid: number; credit_cents: number }
+  accounts: {
+    total: number
+    internal: number
+    billable: number
+    suspended: string[]
+    arrears: string[]
+    zombies: string[]
+    /** 外部组里计费开关是关的 */
+    external_off?: string[]
+  }
+  policy?: BillingPolicy
+  /** 单价 > 0、结算出过账、且欠费限制已打开 */
+  ok: boolean
+}
+
+export interface BillingPolicy {
+  arrears_limit: boolean
+  settle_from: number | null
+  updated_by: string
+  /** 环境允许欠费后缩到 0 副本。关掉时，打开欠费限制也只扣费和提醒。 */
+  auto_suspend?: boolean
+}
+
+/** 归属按钮上的字。外部且计费关不能写成「计费」。 */
+export function billingScopeLabel(a: { internal?: boolean; billable?: number }) {
+  if (a.internal) return '平台内部 · 免计费'
+  return a.billable ? '外部 · 计费开' : '外部 · 计费关'
+}
+
 export const billingMoneyApi = {
   prices: (): Promise<PricesResponse> => api.get('/billing/prices'),
+  /** 计费体检：单价/结算/支付/账户四环自检。 */
+  health: (): Promise<BillingHealth> => api.get('/billing/admin/health'),
+  policy: (): Promise<BillingPolicy> => api.get('/billing/admin/policy'),
+  setPolicy: (arrearsLimit: boolean): Promise<{ ok: boolean; policy: BillingPolicy }> =>
+    api.post('/billing/admin/policy', { arrears_limit: arrearsLimit }),
   /** 调用者可见的各组余额/状态 —— 一次请求（替代逐组 /account/<name> 扇出）。 */
   myAccounts: (): Promise<{ accounts: MyGroupAccount[]; count: number }> =>
     api.get('/billing/accounts/mine'),
@@ -194,6 +233,9 @@ export const billingMoneyApi = {
   accounts: (): Promise<{ accounts: BillingAccount[] }> => api.get('/billing/admin/accounts'),
   setAccount: (group: string, body: Partial<Pick<BillingAccount, 'status' | 'billable' | 'credit_limit_cents'>>) =>
     api.post(`/billing/admin/accounts/${encodeURIComponent(group)}`, body),
+  /** 一键「恢复并启动」：解冻账户 + 把被停机的 Pod 拉起来。 */
+  restoreAccount: (group: string, start = true): Promise<{ ok: boolean; started: boolean; account: BillingAccount; start_result: unknown }> =>
+    api.post(`/billing/admin/accounts/${encodeURIComponent(group)}/restore`, { start }),
   bulkAccounts: (groups: string[], body: { internal?: boolean; billable?: number }): Promise<{ ok: boolean; updated: string[]; errors: { group: string; error: string }[] }> =>
     api.post('/billing/admin/accounts/bulk', { groups, ...body }),
   adjust: (group: string, amountCents: number, note = '') =>
@@ -221,5 +263,35 @@ export const billingMoneyApi = {
     api.post('/billing/admin/wallet/adjust', { username, amount_cents: amountCents, note }),
   adminAllocate: (username: string, group: string, amountCents: number, direction: 'in' | 'out' = 'in', note = '') =>
     api.post('/billing/admin/allocate', { username, group, amount_cents: amountCents, direction, note }),
+
+  // ── 活动：按 tag 给 Pod 发额度 ─────────────────────────────────
+  /** 按标签聚合各组（预览「某 tag 下有哪些 Pod、余额合计」）。 */
+  adminTags: (): Promise<TagsResponse> => api.get('/billing/admin/tags'),
+  /** 按 tag 给一批 Pod 发放额度（幂等；同 batch 重放不重复加钱）。 */
+  grantByTag: (tag: string, amountCents: number, opts: { note?: string; batch?: string } = {}): Promise<GrantByTagResult> =>
+    api.post('/billing/admin/grant-by-tag', { tag, amount_cents: amountCents, ...opts }),
+}
+
+export interface TagBucket {
+  tag: string
+  count: number
+  balance_cents: number
+  internal: number
+  groups: string[]
+}
+
+export interface TagsResponse {
+  tags: TagBucket[]
+  untagged: number
+  count: number
+}
+
+export interface GrantByTagResult {
+  ok: boolean
+  tag: string
+  amount_cents: number
+  batch: string
+  granted: { group: string; balance_cents: number | null; reused: boolean }[]
+  skipped: { group: string; reason: string }[]
 }
 

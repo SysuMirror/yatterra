@@ -20,12 +20,13 @@ Crash/restart safety comes from the charge being keyed by
 ``(group, period, resource)`` in ``billing_charges``: re-settling an hour that
 partially succeeded only charges the keys that did not land.
 
-By default the daemon **suspends and stops** a Pod that has been at or below zero
-credit for ``BELOW_ZERO_RUNS`` consecutive runs (after warning it: push +
-notification): the billing account is marked suspended *and* the workload is
-scaled to 0, so 停机 is real and the Pod's public web entry falls back to the
-"资源已冻结" page.  Set ``YATTERRA_BILLING_AUTO_SUSPEND=0`` to make it warn-only and
-leave the enforcement decision to an operator via the admin API.
+The platform switch ``billing_policy.arrears_limit`` defaults to **off**. While
+it is off this daemon does not charge, remind, or stop any workload — arrears
+limits nothing. Turning it on (计费总览 / 计费设置) starts charging at the next
+closed hour, sends low-balance reminders, and after ``BELOW_ZERO_RUNS``
+consecutive runs marks the account suspended and scales the workload to 0.
+``YATTERRA_BILLING_AUTO_SUSPEND=0`` still makes that path warn-only. Hours
+before the switch was turned on are not back-billed.
 
 Charges come out of each Pod's own quota (``billing_accounts``); the owner's
 wallet (``wallet``) is only debited when they *allocate* to the pod.  So a pod
@@ -63,13 +64,37 @@ def log(msg):
 
 
 def _auto_suspend_enabled():
-    """Auto-suspend at zero is the deployment default; only 0/false/no/off disables.
-
-    (Charges are per-pod and allocation is explicit, so "suspend when the pod's
-    own quota hits zero" is the intended product behaviour — not an opt-in.)
-    """
+    """When the arrears switch is on, zero balance suspends unless this is off."""
     val = os.environ.get("YATTERRA_BILLING_AUTO_SUSPEND", "1").strip().lower()
     return val not in ("0", "false", "no", "off")
+
+
+def _store_fn(name):
+    """A real function on billing_store, never a MagicMock auto-attribute."""
+    import billing_store
+    fn = billing_store.__dict__.get(name)
+    return fn if callable(fn) else None
+
+
+def _arrears_limits_resources():
+    """Off unless the store says so. Missing or failing policy stays off."""
+    fn = _store_fn("arrears_limits_resources")
+    if fn is None:
+        return False
+    try:
+        return bool(fn())
+    except Exception:
+        return False
+
+
+def _settle_floor():
+    fn = _store_fn("settle_floor")
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
 
 
 def settle_hours(since, until, actor="settle", dry_run=False):
@@ -77,10 +102,15 @@ def settle_hours(since, until, actor="settle", dry_run=False):
 
     Returns ``{"hours": n, "charged_cents": n, "groups": n}``.  ``since``/``until``
     are epoch seconds; only hours that have fully elapsed are considered.
+    A live run while the arrears switch is off returns ``skipped`` and posts
+    nothing. Dry-run still previews the numbers.
     """
     import billing_core
     import billing_store
     import groups
+
+    if not dry_run and not _arrears_limits_resources():
+        return {"hours": 0, "charged_cents": 0, "groups": 0, "skipped": True}
 
     internal = groups.internal_groups()   # 平台内部组 → 免计费(黑名单模式)
     store = UsageStore()
@@ -124,7 +154,11 @@ def settle_range(since=None, until=None, actor="settle", dry_run=False):
     now = int(until or time.time())
     if since is None:
         since = billing_store.last_settled() or (now - 2 * HOUR)
-        # last_settled() is a period_end (exclusive); start there
+        # last_settled() is a period_end (exclusive); start there.
+        # Enabling the switch records a floor so earlier hours are not billed.
+        floor = _settle_floor()
+        if floor:
+            since = max(int(since), int(floor))
     if int(since) >= hour_of(now):
         return {"hours": 0, "charged_cents": 0, "groups": 0}
     return settle_hours(int(since), now, actor=actor, dry_run=dry_run)
@@ -132,18 +166,30 @@ def settle_range(since=None, until=None, actor="settle", dry_run=False):
 
 # ── tiered enforcement ───────────────────────────────────────────
 def enforce(accounts=None):
-    """Warn / (optionally) suspend accounts that are out of credit.
+    """Warn / suspend accounts that are out of credit.
 
-    Tiering: below ``warn_ratio`` of the credit limit → one push per state
-    change; at or below zero → alert, and after ``BELOW_ZERO_RUNS`` consecutive
-    runs suspend the pod (auto-suspend is on by default; set
-    ``YATTERRA_BILLING_AUTO_SUSPEND=0`` for warn-only).
+    No-op while the arrears switch is off: no reminder and no resource limit.
+    When it is on: below ``warn_ratio`` → one push per window; at or below zero
+    → alert, and after ``BELOW_ZERO_RUNS`` consecutive runs suspend the pod
+    unless ``YATTERRA_BILLING_AUTO_SUSPEND=0``.
     """
     import billing_store
     import billing_core  # noqa: F401  (kept for symmetry / future use)
     import groups
 
+    if not _arrears_limits_resources():
+        return {"warned": [], "suspended": [], "skipped": True}
+
     internal = groups.internal_groups()
+    # An account row can outlive its group (deleted / renamed pod).  Such rows
+    # carry a zero balance forever and used to be re-warned every window, so the
+    # operator got recurring "余额不足" pushes for a group that does not exist.
+    # Skipping them is safe: when groups.json is unreadable we fall back to the
+    # old behaviour (no filtering).
+    try:
+        known = set(groups.load_state().get("groups", {}).keys()) or None
+    except Exception:
+        known = None
     out = {"warned": [], "suspended": []}
     rows = accounts if accounts is not None else billing_store.list_accounts()
     auto = _auto_suspend_enabled()
@@ -151,6 +197,8 @@ def enforce(accounts=None):
         g = acct.get("group_name")
         if not g or not int(acct.get("billable") or 0):
             continue
+        if known is not None and g not in known:
+            continue          # 组已不存在 → 遗留账户行, 不提醒/不停机
         if g in internal:
             continue          # 内部组不提醒、不停机
         if acct.get("status") == billing_store.STATUS_CLOSED:

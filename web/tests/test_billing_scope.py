@@ -168,6 +168,7 @@ class SettleSkipsInternal(unittest.TestCase):
         self.billing_core.breakdown.return_value = [{"cost_cents": 7}]
         self.groups = MagicMock()
         self.groups.internal_groups.return_value = {"internal-g"}
+        self.billing_store.arrears_limits_resources = lambda: True
         self.pwa = MagicMock()
 
         self.mods = patch.dict(sys.modules, {
@@ -216,6 +217,7 @@ class EnforceAutoSuspend(unittest.TestCase):
         self.billing_store.balance_ratio.side_effect = lambda acct: None
         self.groups = MagicMock()
         self.groups.internal_groups.return_value = set()
+        self.billing_store.arrears_limits_resources = lambda: True
         self.lifecycle = MagicMock()
         self.lifecycle.stop_group.return_value = {"ok": True, "msg": "", "error": ""}
         self.mods = patch.dict(sys.modules, {
@@ -261,6 +263,59 @@ class EnforceAutoSuspend(unittest.TestCase):
         paid = [dict(self.rows[0], balance_cents=500)]
         self.bs.enforce(paid)               # 有余额 → 计数清零
         self.assertNotIn("ext-g", self.bs._BELOW_ZERO)
+
+
+# ── 2c. 欠费限制默认关：不扣费、不提醒、不停机 ───────────────────────
+class ArrearsLimitDefaultsOff(unittest.TestCase):
+    def setUp(self):
+        self.now_hour = int(time.time() // 3600) * 3600
+        self.billing_store = MagicMock()
+        self.billing_store.charge_period.return_value = 7
+        self.usage = MagicMock()
+        self.usage.HOUR = 3600
+        self.usage.hour_of.side_effect = lambda t: int(t // 3600) * 3600
+        self.store = MagicMock()
+        self.store.summary.return_value = ({}, [{"group_name": "ext-g", "core_hours": 1.0}])
+        self.usage.UsageStore.return_value = self.store
+        self.billing_core = MagicMock()
+        self.billing_core.breakdown.return_value = [{"cost_cents": 7}]
+        self.groups = MagicMock()
+        self.groups.internal_groups.return_value = set()
+        self.pwa = MagicMock()
+        self.lifecycle = MagicMock()
+        self.mods = patch.dict(sys.modules, {
+            "logutil": MagicMock(), "siteconf": MagicMock(), "usage_store": self.usage,
+            "billing_store": self.billing_store, "billing_core": self.billing_core,
+            "groups": self.groups, "pwa_alerts": self.pwa, "lifecycle": self.lifecycle,
+        })
+        self.mods.start()
+        self.addCleanup(self.mods.stop)
+        self.bs = load("billing_settle_policy_off", "billing_settle.py")
+
+    def test_live_settle_posts_nothing(self):
+        res = self.bs.settle_hours(self.now_hour - 3600, self.now_hour)
+        self.assertTrue(res["skipped"])
+        self.assertEqual(res["charged_cents"], 0)
+        self.billing_store.charge_period.assert_not_called()
+
+    def test_dry_run_still_previews(self):
+        self.billing_store.arrears_limits_resources = lambda: False
+        res = self.bs.settle_hours(self.now_hour - 3600, self.now_hour, dry_run=True)
+        self.assertNotIn("skipped", res)
+        self.assertEqual(res["charged_cents"], 7)
+        self.billing_store.charge_period.assert_not_called()
+
+    def test_enforce_does_not_warn_or_stop(self):
+        rows = [{"group_name": "ext-g", "billable": 1, "balance_cents": -1,
+                 "status": "active", "warn_ratio": 0.2}]
+        for _ in range(self.bs.BELOW_ZERO_RUNS + 1):
+            out = self.bs.enforce(rows)
+        self.assertEqual(out["warned"], [])
+        self.assertEqual(out["suspended"], [])
+        self.assertTrue(out["skipped"])
+        self.pwa.notify_event.assert_not_called()
+        self.lifecycle.stop_group.assert_not_called()
+        self.billing_store.set_account.assert_not_called()
 
 
 # ── 3. 低余额提醒：滚动窗口 ──────────────────────────────────────────

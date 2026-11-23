@@ -43,6 +43,8 @@ KIND_CHARGE = "charge"
 KIND_TOPUP = "topup"
 KIND_ADJUSTMENT = "adjustment"
 KIND_REFUND = "refund"
+# 活动/运营发放到 Pod 的额度（与付费充值 topup 区分，便于对账）。
+KIND_GRANT = "grant"
 
 _DDL = (
     """
@@ -102,6 +104,16 @@ _DDL = (
         PRIMARY KEY (group_name, period_start, period_end, resource_key)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+    """
+    CREATE TABLE IF NOT EXISTS billing_policy (
+        id            TINYINT      PRIMARY KEY,
+        arrears_limit TINYINT      NOT NULL DEFAULT 0,
+        settle_from   BIGINT       NULL,
+        updated_by    VARCHAR(64)  NOT NULL DEFAULT '',
+        updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                   ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 )
 
 
@@ -130,6 +142,7 @@ def _migrate(cur):
         cur.execute("ALTER TABLE billing_ledger ADD COLUMN transfer_token VARCHAR(64) NULL")
     if not _index_exists(cur, "billing_ledger", "uniq_transfer"):
         cur.execute("ALTER TABLE billing_ledger ADD UNIQUE KEY uniq_transfer (transfer_token)")
+    cur.execute("INSERT IGNORE INTO billing_policy (id, arrears_limit) VALUES (1, 0)")
 
 
 def ensure_schema():
@@ -296,6 +309,41 @@ def credit_topup(group_name, amount_cents, out_trade_no, note="", actor=""):
     return bal
 
 
+def grant(group_name, amount_cents, token, note="", actor="", set_credit_limit=True):
+    """发放额度给某 Pod（活动/运营赠送），按 ``token`` 幂等。
+
+    与 ``credit_topup`` 的区别：这不是付费充值（``kind='grant'``），且复用
+    ``transfer_token`` 唯一键做**恰好一次**保证——重放同一 token 返回 ``None``
+    （调用方视为「已发放」，不是错误）。``token`` 必须全局唯一；按 tag 批量发放
+    时每组一个独立 token（``grant:<batch>:<组散列>``）。
+
+    当 ``set_credit_limit`` 为真时，把 ``credit_limit_cents`` 抬到发放后余额，
+    让「低余额比例」提醒有个基准（否则 limit=0 → 比例永远 None，不提醒）。
+    返回发放后余额，或 ``None``（token 已用过）。
+    """
+    ensure_schema()
+    cents = int(amount_cents)
+    if cents <= 0:
+        raise ValueError("发放金额必须为正")
+    ensure_account(group_name)
+    with tx() as cn, cn.cursor() as cur:
+        cur.execute(
+            """INSERT IGNORE INTO billing_ledger
+                   (group_name, kind, amount_cents, transfer_token, note, actor)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (group_name, KIND_GRANT, cents, token, note or "", actor or ""),
+        )
+        if cur.rowcount == 0:
+            return None  # token 已用过 — 已发放, 不重复加钱
+        bal = _apply_balance(cur, group_name, cents)
+        cur.execute("UPDATE billing_ledger SET balance_after=%s WHERE transfer_token=%s",
+                    (bal, token))
+        if set_credit_limit and bal is not None:
+            cur.execute("UPDATE billing_accounts SET credit_limit_cents=%s WHERE group_name=%s",
+                        (bal, group_name))
+    return bal
+
+
 def adjust(group_name, amount_cents, note="", actor=""):
     """Manual correction (signed cents).  Always applies."""
     ensure_schema()
@@ -353,6 +401,21 @@ def charge_period(group_name, period_start, period_end, rows, actor="", note="")
     return charged
 
 
+def charges_total():
+    """(count, cents, last_period_end) over every settlement charge — read-only.
+
+    Backs the billing self-check: if ``count`` is 0 the settlement daemon has
+    never posted a charge (either it never ran, or every hour priced to zero).
+    """
+    ensure_schema()
+    with users._conn() as cn, cn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n, COALESCE(SUM(cost_cents),0) AS s, "
+                    "MAX(period_end) AS m FROM billing_charges")
+        r = cur.fetchone() or {}
+    return {"count": int(r.get("n") or 0), "cents": int(r.get("s") or 0),
+            "last_period_end": int(r["m"]) if r.get("m") is not None else None}
+
+
 def last_settled():
     """Highest ``period_end`` ever charged, or None (nothing settled yet)."""
     ensure_schema()
@@ -360,6 +423,72 @@ def last_settled():
         cur.execute("SELECT MAX(period_end) AS m FROM billing_charges")
         row = cur.fetchone()
     return int(row["m"]) if row and row["m"] is not None else None
+
+
+def get_policy():
+    """Platform billing switch. ``arrears_limit`` defaults to off.
+
+    Off means the settlement daemon does not charge, remind, or stop any
+    workload. ``settle_from`` is the hour boundary set when the switch was
+    last turned on, so enabling it does not bill the hours before that.
+    """
+    ensure_schema()
+    with users._conn() as cn, cn.cursor() as cur:
+        cur.execute(
+            "SELECT arrears_limit, settle_from, updated_by FROM billing_policy WHERE id=1")
+        row = cur.fetchone()
+    if not row:
+        return {"arrears_limit": False, "settle_from": None, "updated_by": ""}
+    floor = row.get("settle_from")
+    return {
+        "arrears_limit": bool(int(row.get("arrears_limit") or 0)),
+        "settle_from": int(floor) if floor is not None else None,
+        "updated_by": row.get("updated_by") or "",
+    }
+
+
+def set_policy(arrears_limit, actor="", settle_from=None):
+    """Turn the arrears switch on or off. Enabling stores ``settle_from``."""
+    ensure_schema()
+    flag = 1 if arrears_limit else 0
+    with users._conn() as cn, cn.cursor() as cur:
+        if flag and settle_from is not None:
+            cur.execute(
+                """INSERT INTO billing_policy (id, arrears_limit, settle_from, updated_by)
+                   VALUES (1, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE arrears_limit=VALUES(arrears_limit),
+                                           settle_from=VALUES(settle_from),
+                                           updated_by=VALUES(updated_by)""",
+                (flag, int(settle_from), actor or ""),
+            )
+        else:
+            cur.execute(
+                """INSERT INTO billing_policy (id, arrears_limit, updated_by)
+                   VALUES (1, %s, %s)
+                   ON DUPLICATE KEY UPDATE arrears_limit=VALUES(arrears_limit),
+                                           updated_by=VALUES(updated_by)""",
+                (flag, actor or ""),
+            )
+    return get_policy()
+
+
+def arrears_limits_resources():
+    """True only when an operator has turned the arrears switch on.
+
+    Unreadable policy fails closed: no charge, no reminder, no stop.
+    """
+    try:
+        return bool(get_policy()["arrears_limit"])
+    except Exception:
+        return False
+
+
+def settle_floor():
+    """Hour boundary to start charging from, or None."""
+    try:
+        return get_policy().get("settle_from")
+    except Exception:
+        return None
 
 
 def ledger(group_name, limit=100, offset=0):

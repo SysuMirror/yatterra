@@ -15,6 +15,7 @@ summary, ``billing.price`` / ``billing.account`` for writes).
 The money endpoints degrade gracefully: if MySQL is unreachable the usage
 endpoints still answer, with ``cost``/``account`` omitted rather than 500.
 """
+import re
 import time
 
 from flask import Blueprint, request, jsonify, g
@@ -356,6 +357,112 @@ def bulk_accounts():
     return jsonify({"ok": True, "updated": done, "errors": errors})
 
 
+# ── 按 tag 给 Pod 发额度（活动运营）─────────────────────────────
+def _valid_batch(raw):
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    return s if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", s) else None
+
+
+def _grant_token(batch, group):
+    """每组一个独立 token —— transfer_token 是全局唯一键，同批不能共用。
+
+    组名先散列，避免「组名前缀相同被截断」时同批 token 碰撞；同一 (batch, group)
+    稳定不变，故同一 batch 重放天然幂等。
+    """
+    import hashlib
+    h = hashlib.sha1((group or "").encode("utf-8")).hexdigest()[:12]
+    return f"grant:{batch}:{h}"[:64]
+
+
+@billing_bp.route("/admin/tags", methods=["GET"])
+@require_auth("billing.account")
+def admin_tags():
+    """按标签聚合各组（活动方用它预览「某 tag 下有哪些 Pod、余额合计」）。"""
+    if (bad := _money_ready()):
+        return bad
+    try:
+        state = _load_groups()
+    except Exception:
+        return jsonify({"error": {"code": "ERROR", "message": "组状态不可用"}}), 500
+    internal = {n for n, g in state.items() if g.get("internal")}
+    rows = {r["group_name"]: r for r in billing_store.list_accounts()}
+    buckets, untagged = {}, 0
+    for name, g in state.items():
+        tag = (g.get("tag") or "").strip()
+        if not tag:
+            untagged += 1
+            continue
+        acct = rows.get(name) or {}
+        b = buckets.setdefault(tag, {"tag": tag, "count": 0, "balance_cents": 0,
+                                     "internal": 0, "groups": []})
+        b["count"] += 1
+        b["balance_cents"] += int(acct.get("balance_cents") or 0)
+        if name in internal:
+            b["internal"] += 1
+        b["groups"].append(name)
+    tags = sorted(buckets.values(), key=lambda x: (-x["count"], x["tag"]))
+    for b in tags:
+        b["groups"].sort()
+    return jsonify({"tags": tags, "untagged": untagged, "count": len(tags)})
+
+
+@billing_bp.route("/admin/grant-by-tag", methods=["POST"])
+@require_auth("billing.account")
+def grant_by_tag():
+    """按 tag 给一批 Pod 发放额度（活动发钱）。
+
+    body: ``{tag, amount_cents, note?, batch?}``。只命中「tag 匹配、非平台内部组、
+    且 billable 非 0」的组，逐组幂等发放（每组独立 token）。返回逐组结果与跳过原因；
+    提供 ``batch`` 时同一 batch 重放不会重复加钱。
+    """
+    if (bad := _money_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    tag = str(body.get("tag") or "").strip()
+    if not tag:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "缺少 tag"}}), 400
+    try:
+        cents = int(body.get("amount_cents"))
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "amount_cents 必须为整数"}}), 400
+    if cents <= 0:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": "发放金额必须为正"}}), 400
+    batch = _valid_batch(body.get("batch")) or _gen_transfer_token()
+    actor = _caller_name()
+    try:
+        state = _load_groups()
+    except Exception:
+        return jsonify({"error": {"code": "ERROR", "message": "组状态不可用"}}), 500
+    internal = {n for n, g in state.items() if g.get("internal")}
+    rows = {r["group_name"]: r for r in billing_store.list_accounts()}
+    note = body.get("note") or f"活动发放 tag={tag}"
+    granted, skipped = [], []
+    for name, g in sorted(state.items()):
+        if (g.get("tag") or "").strip() != tag:
+            continue
+        if name in internal:
+            skipped.append({"group": name, "reason": "内部组免计费"})
+            continue
+        acct = rows.get(name)
+        if acct is not None and not int(acct.get("billable") or 0):
+            skipped.append({"group": name, "reason": "已关闭计费"})
+            continue
+        try:
+            bal = billing_store.grant(name, cents, _grant_token(batch, name),
+                                      note=note, actor=actor)
+        except Exception as exc:
+            skipped.append({"group": name, "reason": str(exc)})
+            continue
+        granted.append({"group": name, "balance_cents": bal, "reused": bal is None})
+    _audit("billing_grant_by_tag",
+           f"tag={tag} amount={cents} batch={batch} "
+           f"granted={len(granted)} skipped={len(skipped)}", actor)
+    return jsonify({"ok": True, "tag": tag, "amount_cents": cents, "batch": batch,
+                    "granted": granted, "skipped": skipped})
+
+
 @billing_bp.route("/admin/accounts/<name>", methods=["POST"])
 @require_auth("billing.account")
 def set_account(name):
@@ -375,6 +482,40 @@ def set_account(name):
         return jsonify({"error": {"code": "BAD_REQUEST", "message": str(exc)}}), 400
     _audit("billing_account_set", f"group={name} body={body}", actor)
     return jsonify({"ok": True, "account": acct})
+
+
+@billing_bp.route("/admin/accounts/<name>/restore", methods=["POST"])
+@require_auth("billing.account")
+def restore_account(name):
+    """一键「恢复并启动」—— 停机的反操作。
+
+    停机是两步(账户置 suspended + 工作负载缩到 0),所以恢复也必须两步,
+    否则会出现「账户已 active 但 Pod 还停着」的半开状态。 这里把两步合成
+    一次调用:置回 active,再 ``lifecycle.start_group`` 把 Pod 拉起来。
+
+    body: ``{"start": bool}`` —— 传 ``false`` 只解冻账户、不启 Pod
+    (例如先改价格/额度,稍后再手动启)。 返回 ``start_result`` 便于定位
+    「账户恢复成功但 Pod 起不来」的原因(如节点无资源、组不存在)。
+    """
+    if (bad := _money_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    actor = (getattr(g, "api_user", None) or {}).get("username") or ""
+    try:
+        acct = billing_store.set_account(name, status=billing_store.STATUS_ACTIVE)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "BAD_REQUEST", "message": str(exc)}}), 400
+    started, start_result = False, None
+    if body.get("start", True):
+        try:
+            import lifecycle
+            start_result = lifecycle.start_group(name)
+            started = bool((start_result or {}).get("ok"))
+        except Exception as exc:
+            start_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    _audit("billing_account_restore", f"group={name} started={started}", actor)
+    return jsonify({"ok": True, "account": acct, "started": started,
+                    "start_result": start_result})
 
 
 @billing_bp.route("/admin/adjust", methods=["POST"])
@@ -425,6 +566,118 @@ def income():
         return bad
     since = request.args.get("since")
     return jsonify({"by_kind": billing_store.income_summary(int(since) if since else None)})
+
+
+@billing_bp.route("/admin/health", methods=["GET"])
+@require_auth("billing.account")
+def billing_health():
+    """计费运行自检 —— 让「为什么没扣费」一眼可见(只读)。
+
+    Four checks in one request:
+
+    * **prices** — how many unit prices are non-zero.  All-zero means billing is
+      effectively off, however busy the settlement daemon looks.
+    * **settle** — charges posted so far and the last settled period.  A zero
+      count means the daemon has never posted anything.
+    * **pay** — whether the payment gateway is configured and how many top-up
+      orders exist (a configured gateway with zero orders = nobody has recharged).
+    * **accounts** — groups in arrears / suspended, plus "zombie" rows: accounts
+      whose group no longer exists in ``groups.json`` (they inflate the account
+      table and used to generate meaningless low-balance alerts).
+    """
+    if (bad := _money_ready()):
+        return bad
+    try:
+        state = _load_groups()
+        known = set(state.keys())
+        internal = {n for n, g in state.items() if g.get("internal")}
+    except Exception:
+        known, internal = set(), set()
+
+    prices = billing_store.get_prices()
+    nonzero = {k: float(v or 0) for k, v in prices.items() if float(v or 0) > 0}
+
+    rows = billing_store.list_accounts()
+    merged = _merge_groups(rows)
+    zombies = sorted(r["group_name"] for r in rows
+                     if known and r["group_name"] not in known)
+    live = [r for r in rows if not known or r["group_name"] in known]
+    billable = [r for r in live
+                if int(r.get("billable") or 0) and r["group_name"] not in internal]
+    external_off = sorted(
+        r["group_name"] for r in merged
+        if not r.get("internal") and not int(r.get("billable") or 0))
+    try:
+        policy = billing_store.get_policy()
+    except Exception:
+        policy = {"arrears_limit": False, "settle_from": None, "updated_by": ""}
+    suspended = sorted(r["group_name"] for r in billable
+                       if r.get("status") in ("suspended", "closed"))
+    arrears = sorted(r["group_name"] for r in billable
+                     if r.get("status") == "active" and int(r.get("balance_cents") or 0) <= 0)
+
+    try:
+        import pay
+        pay_ok = bool(pay.configured())
+        orders = pay.order_stats()["total"]
+    except Exception:
+        pay_ok, orders = False, {}
+
+    ch = billing_store.charges_total()
+    return jsonify({
+        "prices": {"keys": len(prices), "set": len(nonzero), "nonzero": nonzero},
+        "settle": {"last_period_end": ch["last_period_end"], "charges": ch["count"],
+                   "charged_cents": ch["cents"]},
+        "pay": {"configured": pay_ok, "orders": int(orders.get("orders") or 0),
+                "paid": int(orders.get("paid") or 0),
+                "credit_cents": int(orders.get("credit_cents") or 0)},
+        "accounts": {"total": len(rows), "internal": len(internal),
+                     "billable": len(billable), "suspended": suspended,
+                     "arrears": arrears, "zombies": zombies,
+                     "external_off": external_off},
+        "policy": policy,
+        # 欠费限制关掉时，扣费和停机都没在跑。
+        "ok": bool(nonzero) and ch["count"] > 0 and bool(policy.get("arrears_limit")),
+    })
+
+
+@billing_bp.route("/admin/policy", methods=["GET"])
+@require_auth("billing.account")
+def billing_policy():
+    """Whether arrears limits resources. Default is off."""
+    if (bad := _money_ready()):
+        return bad
+    policy = billing_store.get_policy()
+    import billing_settle
+    policy["auto_suspend"] = billing_settle._auto_suspend_enabled()
+    return jsonify(policy)
+
+
+@billing_bp.route("/admin/policy", methods=["POST"])
+@require_auth("billing.account")
+def set_billing_policy():
+    """Turn the arrears switch on or off.
+
+    Enabling records the current hour as ``settle_from`` so earlier usage is
+    not back-billed. Disabling stops charges, reminders, and stops.
+    """
+    if (bad := _money_ready()):
+        return bad
+    body = request.get_json(silent=True) or {}
+    if "arrears_limit" not in body:
+        return jsonify({"error": {"code": "BAD_REQUEST",
+                                  "message": "缺少 arrears_limit"}}), 400
+    flag = bool(body.get("arrears_limit"))
+    actor = (getattr(g, "api_user", None) or {}).get("username") or ""
+    floor = (int(time.time()) // 3600 * 3600) if flag else None
+    try:
+        policy = billing_store.set_policy(flag, actor=actor, settle_from=floor)
+    except Exception as exc:
+        return jsonify({"error": {"code": "ERROR", "message": str(exc)}}), 500
+    _audit("billing_policy_set", f"arrears_limit={flag} settle_from={floor}", actor)
+    import billing_settle
+    policy["auto_suspend"] = billing_settle._auto_suspend_enabled()
+    return jsonify({"ok": True, "policy": policy})
 
 
 # ── money: per-user wallet + pod allocation ──────────────────────
